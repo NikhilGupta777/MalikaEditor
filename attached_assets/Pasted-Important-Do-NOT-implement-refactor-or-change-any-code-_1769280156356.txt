@@ -1,0 +1,89 @@
+Important: Do NOT implement, refactor, or change any code yet.
+First, ONLY analyze, understand, and report.
+
+Task:
+Carefully review the entire codebase of this AI Video Editor (frontend, backend, services, pipelines, integrations, configs, environment variables, and Replit integrations).
+
+What to do (step by step):
+
+Read and understand the full architecture and data flow end-to-end (upload → analysis → AI → editing → render → download).
+
+Identify everything that is not real, not wired correctly, mocked, incomplete, broken, misleading, or assumed to work but actually doesn’t.
+
+Find:
+
+APIs that are referenced but not actually used correctly
+
+AI features that are claimed but not truly implemented
+
+Gemini / OpenAI / FFmpeg logic that does not match real capabilities
+
+Video processing steps that cannot work as written
+
+UI features that do not reflect backend reality
+
+Race conditions, async issues, temp file problems
+
+Replit-specific limitations or misuse
+
+Hardcoded assumptions, fake placeholders, or “happy path only” logic
+
+Clearly distinguish between:
+
+✅ Fully working & correctly implemented
+
+⚠️ Partially implemented / fragile
+
+❌ Not implemented / concept-only / incorrect
+
+Verify actual execution paths (not comments or intent).
+
+Check file handling, memory usage, long-running jobs, and cleanup.
+
+Check security & privacy issues (file access, API keys, temp storage).
+
+Check error handling and where failures would silently break.
+
+Check Replit environment compatibility (CPU, storage, FFmpeg, long tasks).
+
+Output format (important):
+
+Do NOT change code.
+
+Do NOT propose fixes yet.
+
+Do NOT optimize yet.
+
+Do NOT rewrite anything.
+
+Return only:
+
+High-level system understanding (short)
+
+Detailed list of issues, grouped by:
+
+Frontend
+
+Backend
+
+AI services
+
+Video processing
+
+Storage & files
+
+Replit environment
+
+For each issue:
+
+What is wrong
+
+Why it will fail or behave incorrectly
+
+How severe it is (low / medium / high / critical)
+
+A final section:
+
+“What the app actually does today vs what it claims to do”
+
+Wait for confirmation before suggesting or implementing any fixes.

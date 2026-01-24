@@ -64,9 +64,18 @@ export function VideoPreview({
       }
     };
 
-    const handlePlay = () => setIsPlaying(true);
-    const handlePause = () => setIsPlaying(false);
-    const handleEnded = () => setIsPlaying(false);
+    const handlePlay = () => {
+      console.log("Video started playing");
+      setIsPlaying(true);
+    };
+    const handlePause = () => {
+      console.log("Video paused");
+      setIsPlaying(false);
+    };
+    const handleEnded = () => {
+      console.log("Video ended");
+      setIsPlaying(false);
+    };
     const handleLoadedMetadata = () => {
       setIsLoaded(true);
       setError(null);
@@ -182,9 +191,12 @@ export function VideoPreview({
     if (!video) return;
 
     if (video.paused) {
-      video.play().catch(console.error);
+      video.play().then(() => {
+        setIsPlaying(true);
+      }).catch(console.error);
     } else {
       video.pause();
+      setIsPlaying(false);
     }
   }, []);
 

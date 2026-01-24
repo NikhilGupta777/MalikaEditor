@@ -50,6 +50,7 @@ export const processingStatusEnum = z.enum([
   "transcribing",
   "planning",
   "fetching_stock",
+  "generating_ai_images",
   "editing",
   "rendering",
   "completed",

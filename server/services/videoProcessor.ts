@@ -678,32 +678,51 @@ export async function applyEdits(
   console.log(`Text overlay actions: ${textOverlayActions.length}`);
   console.log(`Caption actions: ${captionActions.length}`);
 
-  // Download stock media for B-roll overlays
+  // Download stock media for B-roll overlays (including AI-generated images)
   const downloadedStockMedia: DownloadedStock[] = [];
   
   if (options.addBroll && stockMedia.length > 0) {
-    console.log(`Downloading ${Math.min(stockMedia.length, 6)} stock media items for overlays...`);
+    console.log(`Processing ${Math.min(stockMedia.length, 8)} media items for overlays...`);
     
-    for (let i = 0; i < Math.min(stockMedia.length, 6); i++) {
+    for (let i = 0; i < Math.min(stockMedia.length, 8); i++) {
       const item = stockMedia[i];
       try {
         let localPath: string;
         
-        if (item.type === "video") {
+        if (item.type === "ai_generated") {
+          // AI-generated images are already saved locally, use path directly
+          localPath = item.url; // URL is the local file path for AI images
+          console.log(`Using AI-generated image ${i}: ${item.query}`);
+          
+          // Verify file exists
+          try {
+            await fs.access(localPath);
+            downloadedStockMedia.push({ 
+              item: { ...item, type: "image" as const }, // Treat as image for overlay
+              localPath 
+            });
+            console.log(`AI image ready: ${localPath}`);
+          } catch {
+            console.error(`AI image file not found: ${localPath}`);
+          }
+        } else if (item.type === "video") {
           localPath = path.join(STOCK_DIR, `${outputId}_stock_${i}.mp4`);
           console.log(`Downloading stock video ${i}: ${item.query}`);
+          await downloadFile(item.url, localPath);
+          downloadedStockMedia.push({ item, localPath });
+          tempFiles.push(localPath);
+          console.log(`Downloaded: ${localPath}`);
         } else {
           const ext = item.url.includes(".png") ? "png" : "jpg";
           localPath = path.join(STOCK_DIR, `${outputId}_stock_${i}.${ext}`);
           console.log(`Downloading stock image ${i}: ${item.query}`);
+          await downloadFile(item.url, localPath);
+          downloadedStockMedia.push({ item, localPath });
+          tempFiles.push(localPath);
+          console.log(`Downloaded: ${localPath}`);
         }
-        
-        await downloadFile(item.url, localPath);
-        downloadedStockMedia.push({ item, localPath });
-        tempFiles.push(localPath);
-        console.log(`Downloaded: ${localPath}`);
       } catch (e) {
-        console.error(`Failed to download stock media ${i}:`, e);
+        console.error(`Failed to process media ${i}:`, e);
       }
     }
   }

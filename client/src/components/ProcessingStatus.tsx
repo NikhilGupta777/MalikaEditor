@@ -16,6 +16,7 @@ const STEPS = [
   { id: "transcribing", label: "Transcribing speech" },
   { id: "planning", label: "Creating edit plan" },
   { id: "fetching_stock", label: "Finding stock media" },
+  { id: "generating_ai_images", label: "Generating AI images" },
   { id: "editing", label: "Applying edits" },
   { id: "rendering", label: "Rendering video" },
 ];

@@ -50,6 +50,29 @@ The frontend follows a component-based architecture with:
 5. **Stock Media**: Fetch relevant images/videos from Pexels API
 6. **Rendering**: Apply edits with FFmpeg, output to `/tmp/output`
 
+### B-Roll Implementation (Traditional Style)
+The B-roll system uses traditional TV/documentary style overlay:
+- **Full-frame overlay**: Stock media covers the entire screen during B-roll moments
+- **Audio continuity**: Original audio continues playing uninterrupted while B-roll is visible
+- **Fade transitions**: 0.3s fade in/out using FFmpeg alpha channel for smooth blending
+- **No timeline cuts**: B-roll is overlaid on top of the video at specific timestamps without splicing
+- **Ken Burns effect**: Static images get subtle zoom animation for visual interest
+
+Technical implementation:
+- `insert_stock` actions in edit plans are visual overlays, not timeline replacements
+- Uses `overlay=0:0:eof_action=pass` FFmpeg filter for full-frame compositing
+- Audio preserved via `-c:a copy` during overlay phase
+- Timing controlled via `setpts` filter for precise positioning
+
+## Recent Changes
+
+### January 2026
+- Implemented traditional B-roll overlay system with fade effects
+- Added path traversal protection for static file serving
+- Added ID parameter validation for API routes
+- Added EventSource cleanup on component unmount
+- Comprehensive security and reliability hardening
+
 ### Replit Integrations (`server/replit_integrations/`)
 Pre-built modules for common AI patterns:
 - **Audio**: Voice chat with real-time streaming, speech-to-text, text-to-speech

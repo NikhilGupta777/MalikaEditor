@@ -657,6 +657,145 @@ export async function transcribeAudio(
 }
 
 /**
+ * Detect language of transcript text using simple heuristics
+ * Returns ISO 639-1 language code (en, hi, es, etc.)
+ */
+export function detectTranscriptLanguage(transcript: TranscriptSegment[]): string {
+  if (!transcript || transcript.length === 0) return "en";
+  
+  const allText = transcript.map(t => t.text).join(" ");
+  
+  // Check for Devanagari script (Hindi, Sanskrit, Marathi, etc.)
+  const devanagariPattern = /[\u0900-\u097F]/;
+  if (devanagariPattern.test(allText)) {
+    console.log("Detected language: Hindi (Devanagari script)");
+    return "hi";
+  }
+  
+  // Check for Arabic script
+  const arabicPattern = /[\u0600-\u06FF]/;
+  if (arabicPattern.test(allText)) {
+    console.log("Detected language: Arabic");
+    return "ar";
+  }
+  
+  // Check for Chinese characters
+  const chinesePattern = /[\u4E00-\u9FFF]/;
+  if (chinesePattern.test(allText)) {
+    console.log("Detected language: Chinese");
+    return "zh";
+  }
+  
+  // Check for Japanese (Hiragana/Katakana)
+  const japanesePattern = /[\u3040-\u30FF]/;
+  if (japanesePattern.test(allText)) {
+    console.log("Detected language: Japanese");
+    return "ja";
+  }
+  
+  // Check for Korean (Hangul)
+  const koreanPattern = /[\uAC00-\uD7AF]/;
+  if (koreanPattern.test(allText)) {
+    console.log("Detected language: Korean");
+    return "ko";
+  }
+  
+  // Check for Cyrillic (Russian, etc.)
+  const cyrillicPattern = /[\u0400-\u04FF]/;
+  if (cyrillicPattern.test(allText)) {
+    console.log("Detected language: Russian/Cyrillic");
+    return "ru";
+  }
+  
+  // Default to English
+  console.log("Detected language: English (default)");
+  return "en";
+}
+
+/**
+ * Translate transcript segments to English using Gemini
+ * Preserves original timestamps - only translates text
+ * Returns new segments with translated text
+ */
+export async function translateTranscriptToEnglish(
+  transcript: TranscriptSegment[],
+  sourceLanguage: string
+): Promise<TranscriptSegment[]> {
+  if (!transcript || transcript.length === 0) return [];
+  if (sourceLanguage === "en") return transcript;
+  
+  const languageNames: Record<string, string> = {
+    hi: "Hindi",
+    ar: "Arabic",
+    zh: "Chinese",
+    ja: "Japanese",
+    ko: "Korean",
+    ru: "Russian",
+    es: "Spanish",
+    fr: "French",
+    de: "German",
+    pt: "Portuguese",
+  };
+  
+  const langName = languageNames[sourceLanguage] || sourceLanguage;
+  console.log(`Translating transcript from ${langName} to English for semantic analysis...`);
+  
+  // Prepare text for translation (batch all segments)
+  const textsToTranslate = transcript.map((seg, i) => `[${i}]: ${seg.text}`).join("\n");
+  
+  const prompt = `Translate the following ${langName} transcript segments to English.
+Each line starts with [index]: followed by the text to translate.
+Return ONLY a JSON array where each element is the translated text for that index.
+
+Input:
+${textsToTranslate}
+
+Output format (JSON array only, no markdown):
+["translated text for segment 0", "translated text for segment 1", ...]
+
+Important:
+- Maintain the meaning and context of the original
+- Keep it natural English
+- Do NOT include the index numbers in the output
+- Return exactly ${transcript.length} translated strings`;
+
+  try {
+    const response = await geminiClient.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+    
+    const responseText = response.text || "";
+    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+    
+    if (!jsonMatch) {
+      console.warn("Failed to parse translation response, using original text");
+      return transcript;
+    }
+    
+    const translations = JSON.parse(jsonMatch[0]);
+    
+    if (!Array.isArray(translations) || translations.length !== transcript.length) {
+      console.warn(`Translation count mismatch: got ${translations.length}, expected ${transcript.length}`);
+      return transcript;
+    }
+    
+    // Create new segments with translated text, preserving timestamps
+    const translatedSegments: TranscriptSegment[] = transcript.map((seg, i) => ({
+      start: seg.start,  // PRESERVE original timestamp
+      end: seg.end,      // PRESERVE original timestamp
+      text: translations[i] || seg.text,
+    }));
+    
+    console.log(`Translation complete: ${translatedSegments.length} segments translated to English`);
+    return translatedSegments;
+  } catch (error) {
+    console.error("Translation failed:", error);
+    return transcript;
+  }
+}
+
+/**
  * Parse whisper.cpp timestamp format "HH:MM:SS,mmm" to milliseconds
  * Handles variations: 1-3 digit ms, comma or dot separator, optional ms
  */

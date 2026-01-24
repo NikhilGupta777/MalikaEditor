@@ -2,6 +2,7 @@ import type { Express, Response } from "express";
 import { Modality } from "@google/genai";
 import { ai } from "./client";
 import { requireAuth, type AuthenticatedRequest } from "../../middleware/auth";
+import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 
 export function registerImageRoutes(app: Express): void {
   app.post("/api/generate-image", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
@@ -12,13 +13,17 @@ export function registerImageRoutes(app: Express): void {
         return res.status(400).json({ error: "Prompt is required" });
       }
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image",
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseModalities: [Modality.TEXT, Modality.IMAGE],
-        },
-      });
+      const response = await withRetry(
+        () => ai.models.generateContent({
+          model: "gemini-2.5-flash-image",
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: {
+            responseModalities: [Modality.TEXT, Modality.IMAGE],
+          },
+        }),
+        "generateImage",
+        AI_RETRY_OPTIONS
+      );
 
       const candidate = response.candidates?.[0];
       const imagePart = candidate?.content?.parts?.find((part: any) => part.inlineData);

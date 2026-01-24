@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI, { toFile } from "openai";
 import { promises as fs } from "fs";
 import { z } from "zod";
+import { withRetry, AI_RETRY_OPTIONS } from "../utils/retry";
 import type {
   VideoAnalysis,
   FrameAnalysis,
@@ -398,18 +399,22 @@ Respond in JSON format only (no markdown):
     },
   }));
 
-  const response = await geminiClient.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { text: prompt },
-          ...imageParts,
-        ],
-      },
-    ],
-  });
+  const response = await withRetry(
+    () => geminiClient.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: prompt },
+            ...imageParts,
+          ],
+        },
+      ],
+    }),
+    "analyzeVideoFrames",
+    AI_RETRY_OPTIONS
+  );
 
   const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -806,10 +811,14 @@ Important:
 - Return exactly ${transcript.length} translated strings`;
 
   try {
-    const response = await geminiClient.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    });
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+      "translateTranscript",
+      AI_RETRY_OPTIONS
+    );
     
     const responseText = response.text || "";
     const jsonMatch = responseText.match(/\[[\s\S]*\]/);
@@ -970,10 +979,14 @@ Respond in JSON format only (no markdown):
 }`;
 
   try {
-    const response = await geminiClient.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    });
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+      "analyzeTranscriptSemantics",
+      AI_RETRY_OPTIONS
+    );
 
     const text = response.text || "";
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -1057,18 +1070,22 @@ export async function generateAiImage(
 
     console.log(`Generating AI image with prompt: ${contextualPrompt.substring(0, 100)}...`);
     
-    const response = await geminiClient.models.generateContent({
-      model: "gemini-2.5-flash-image",
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: contextualPrompt }],
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash-image",
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: contextualPrompt }],
+          },
+        ],
+        config: {
+          responseModalities: ["TEXT", "IMAGE"],
         },
-      ],
-      config: {
-        responseModalities: ["TEXT", "IMAGE"],
-      },
-    });
+      }),
+      "generateAiImage",
+      AI_RETRY_OPTIONS
+    );
 
     const candidate = response.candidates?.[0];
     const imagePart = candidate?.content?.parts?.find(
@@ -1380,15 +1397,19 @@ Respond with a JSON object only (no markdown):
   }
 }`;
 
-  const response = await geminiClient.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: systemPrompt + "\n\n" + userPrompt }],
-      },
-    ],
-  });
+  const response = await withRetry(
+    () => geminiClient.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: systemPrompt + "\n\n" + userPrompt }],
+        },
+      ],
+    }),
+    "generateEditPlan",
+    AI_RETRY_OPTIONS
+  );
 
   const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);

@@ -2,6 +2,7 @@ import type { Express, Response } from "express";
 import { GoogleGenAI } from "@google/genai";
 import { chatStorage } from "./storage";
 import { requireAuth, type AuthenticatedRequest } from "../../middleware/auth";
+import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 
 /*
 Supported models: gemini-2.5-flash (fast), gemini-2.5-pro (advanced reasoning)
@@ -90,11 +91,15 @@ export function registerChatRoutes(app: Express): void {
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
 
-      // Stream response from Gemini
-      const stream = await ai.models.generateContentStream({
-        model: "gemini-2.5-flash",
-        contents: chatMessages,
-      });
+      // Stream response from Gemini with retry logic
+      const stream = await withRetry(
+        () => ai.models.generateContentStream({
+          model: "gemini-2.5-flash",
+          contents: chatMessages,
+        }),
+        "chatGenerateContentStream",
+        AI_RETRY_OPTIONS
+      );
 
       let fullResponse = "";
 

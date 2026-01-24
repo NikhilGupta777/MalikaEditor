@@ -46,11 +46,17 @@ The frontend follows a component-based architecture with:
   - Topic segmentation with importance scoring
   - Pre-identified B-roll opportunities with timing and priority
 - **Audio Transcription**: OpenAI Whisper for speech-to-text with timestamps
+- **Semantic Transcript Analysis** (NEW): Deep semantic analysis of transcripts for context-aware B-roll
+  - Extracts main topics, overall tone, key moments, and extractedKeywords
+  - Identifies B-roll windows with specific timestamps and contextual search queries
+  - Provides content summary for better edit planning
+  - Ensures B-roll queries match ACTUAL transcript content (not generic queries)
 - **Edit Plan Generation**: Context-aware AI editing with:
   - Genre-specific editing guidelines (spiritual = calm/minimal, tech = fast-paced, etc.)
-  - Intelligent B-roll placement with timing rules (2-6 second duration, 2+ second spacing)
+  - Intelligent B-roll placement with timing rules (2-6 second duration, 3+ second spacing)
   - Validation to prevent overlapping B-roll actions
-  - Context-appropriate stock media search queries
+  - Context-appropriate stock media search queries derived from transcript semantics
+  - Support for AI image generation (insert_ai_image action type)
 
 ### Video Processing Pipeline
 1. **Upload**: Video file stored in `/tmp/uploads`
@@ -77,11 +83,17 @@ Technical implementation:
 ## Recent Changes
 
 ### January 2026
+- **Semantic Transcript Analysis**: NEW - Deep transcript-first workflow (like Opus Clip, Submagic)
+  - Extracts keywords, emotions, topics from transcript for intelligent B-roll matching
+  - B-roll windows identified based on transcript content, not random frame selection
+  - Search queries derived from actual spoken content (e.g., "peaceful meditation mindfulness" not generic "nature")
+- **Enhanced Edit Options UI**: Added Transitions toggle and AI Generated Images placeholder (Coming Soon)
+- **Improved Edit Planning**: Uses semantic analysis for transcript-aligned B-roll placement
 - **Enhanced AI Analysis**: Comprehensive video context understanding with genre, tone, pacing, and narrative structure detection
 - **Smart B-Roll Placement**: AI now understands video context (spiritual, tech, tutorial, etc.) and places B-roll intelligently based on content type
 - **Topic Segmentation**: Videos are analyzed for distinct topic segments with importance scoring
 - **Genre-Specific Editing**: Different editing styles for spiritual content (calm, minimal) vs tech (fast-paced) vs tutorials (instructional focus)
-- **B-Roll Validation**: Automatic prevention of overlapping B-roll with proper timing constraints (2-6 second duration, 2+ second spacing)
+- **B-Roll Validation**: Automatic prevention of overlapping B-roll with proper timing constraints (2-6 second duration, 3+ second spacing)
 - Implemented traditional B-roll overlay system with fade effects
 - Added upload cancel functionality
 - Added real-time video preview during processing

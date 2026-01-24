@@ -91,20 +91,22 @@ export async function searchVideos(
       },
     });
 
-    return response.data.videos.map((video: PexelsVideo) => {
-      const hdFile = video.video_files.find((f) => f.quality === "hd") ||
-        video.video_files.find((f) => f.quality === "sd") ||
-        video.video_files[0];
+    return response.data.videos
+      .map((video: PexelsVideo) => {
+        const hdFile = video.video_files.find((f) => f.quality === "hd") ||
+          video.video_files.find((f) => f.quality === "sd") ||
+          video.video_files[0];
 
-      return {
-        type: "video" as const,
-        query,
-        url: hdFile?.link || "",
-        thumbnailUrl: video.video_pictures[0]?.picture || "",
-        duration: video.duration,
-        photographer: video.user.name,
-      };
-    });
+        return {
+          type: "video" as const,
+          query,
+          url: hdFile?.link || "",
+          thumbnailUrl: video.video_pictures[0]?.picture || "",
+          duration: video.duration,
+          photographer: video.user.name,
+        };
+      })
+      .filter((item: { url: string }) => item.url && item.url.length > 0);
   } catch (error) {
     console.error("Pexels video search error:", error);
     return [];

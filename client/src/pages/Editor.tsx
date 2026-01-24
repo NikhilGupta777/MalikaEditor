@@ -181,12 +181,17 @@ export default function Editor() {
           }
         };
 
-        eventSource.onerror = () => {
+        eventSource.onerror = (error) => {
           eventSource.close();
           setIsProcessing(false);
+          setProject((prev) =>
+            prev
+              ? { ...prev, status: "failed", errorMessage: "Connection lost. Please try again." }
+              : null
+          );
           toast({
             title: "Connection lost",
-            description: "Please try again",
+            description: "The server connection was interrupted. Please try again.",
             variant: "destructive",
           });
         };
@@ -208,6 +213,12 @@ export default function Editor() {
     setPreviewUrl(null);
     setCurrentTime(0);
   };
+
+  const handleRetryProcessing = useCallback(() => {
+    if (project) {
+      setProject((prev) => prev ? { ...prev, status: "pending", errorMessage: undefined } : null);
+    }
+  }, [project]);
 
   const handleTimeUpdate = useCallback((time: number) => {
     setCurrentTime(time);
@@ -322,6 +333,7 @@ export default function Editor() {
                 <ProcessingStatus
                   status={project.status}
                   error={project.errorMessage}
+                  onRetry={project.status === "failed" ? handleRetryProcessing : undefined}
                 />
               )}
 

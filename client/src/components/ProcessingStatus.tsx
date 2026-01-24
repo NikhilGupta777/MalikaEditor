@@ -1,12 +1,14 @@
-import { Check, Loader2, AlertCircle } from "lucide-react";
+import { Check, Loader2, AlertCircle, RotateCcw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ProcessingStatus as ProcessingStatusType } from "@shared/schema";
 
 interface ProcessingStatusProps {
   status: ProcessingStatusType;
   error?: string;
+  onRetry?: () => void;
 }
 
 const STEPS = [
@@ -18,7 +20,7 @@ const STEPS = [
   { id: "rendering", label: "Rendering video" },
 ];
 
-export function ProcessingStatus({ status, error }: ProcessingStatusProps) {
+export function ProcessingStatus({ status, error, onRetry }: ProcessingStatusProps) {
   if (status === "pending" || status === "completed") return null;
 
   const currentIndex = STEPS.findIndex(s => s.id === status);
@@ -34,10 +36,22 @@ export function ProcessingStatus({ status, error }: ProcessingStatusProps) {
         <CardContent className="p-4">
           <div className="flex items-start gap-3">
             <AlertCircle className="h-5 w-5 text-destructive flex-shrink-0" />
-            <div>
+            <div className="flex-1">
               <p className="font-medium text-destructive">Processing failed</p>
               {error && (
                 <p className="text-sm text-muted-foreground mt-1">{error}</p>
+              )}
+              {onRetry && (
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={onRetry}
+                  className="mt-3"
+                  data-testid="button-retry-processing"
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Try Again
+                </Button>
               )}
             </div>
           </div>

@@ -143,13 +143,38 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Project not found" });
     }
 
+    const videoPath = path.join(
+      UPLOADS_DIR,
+      path.basename(project.originalPath)
+    );
+    
+    try {
+      await fs.access(videoPath);
+    } catch {
+      return res.status(404).json({ error: "Video file not found. Please re-upload your video." });
+    }
+
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    let connectionClosed = false;
+    req.on("close", () => {
+      connectionClosed = true;
+    });
 
     const sendEvent = (type: string, data: any) => {
-      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      if (!connectionClosed) {
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
     };
+
+    const heartbeatInterval = setInterval(() => {
+      if (!connectionClosed) {
+        res.write(": heartbeat\n\n");
+      }
+    }, 15000);
 
     const updateStatus = async (status: string) => {
       await storage.updateVideoProject(id, { status });
@@ -163,10 +188,6 @@ export async function registerRoutes(
       await storage.updateVideoProject(id, { prompt });
 
       await updateStatus("analyzing");
-      const videoPath = path.join(
-        UPLOADS_DIR,
-        path.basename(project.originalPath)
-      );
       const metadata = await getVideoMetadata(videoPath);
 
       const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
@@ -259,9 +280,12 @@ Please create an edit plan that follows these preferences.`;
       });
 
       await cleanupTempFiles(tempFiles);
+    } finally {
+      clearInterval(heartbeatInterval);
+      if (!connectionClosed) {
+        res.end();
+      }
     }
-
-    res.end();
   });
 
   app.get("/api/videos", async (req: Request, res: Response) => {

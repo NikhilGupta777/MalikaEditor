@@ -1,6 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import OpenAI, { toFile } from "openai";
 import { promises as fs } from "fs";
+import { z } from "zod";
 import type {
   VideoAnalysis,
   FrameAnalysis,
@@ -8,6 +9,61 @@ import type {
   EditAction,
   TranscriptSegment,
 } from "@shared/schema";
+
+const CutKeepActionSchema = z.object({
+  type: z.enum(["cut", "keep"]),
+  start: z.number().min(0),
+  end: z.number().min(0),
+  reason: z.string().optional(),
+}).refine(data => data.end >= data.start, { message: "end must be >= start" });
+
+const InsertStockActionSchema = z.object({
+  type: z.literal("insert_stock"),
+  start: z.number().min(0).optional(),
+  stockQuery: z.string(),
+  reason: z.string().optional(),
+});
+
+const TextActionSchema = z.object({
+  type: z.enum(["add_caption", "add_text_overlay"]),
+  start: z.number().min(0).optional(),
+  end: z.number().min(0).optional(),
+  text: z.string(),
+  reason: z.string().optional(),
+});
+
+const TransitionActionSchema = z.object({
+  type: z.literal("transition"),
+  transitionType: z.string().optional(),
+  reason: z.string().optional(),
+});
+
+const EditActionSchema = z.union([
+  CutKeepActionSchema,
+  InsertStockActionSchema,
+  TextActionSchema,
+  TransitionActionSchema,
+]);
+
+const EditPlanResponseSchema = z.object({
+  actions: z.array(z.any()),
+  stockQueries: z.array(z.string()).optional(),
+  keyPoints: z.array(z.string()).optional(),
+  estimatedDuration: z.number().optional(),
+});
+
+const FrameAnalysisSchema = z.object({
+  timestamp: z.number().optional(),
+  description: z.string().optional().default(""),
+  keyMoment: z.boolean().optional().default(false),
+  suggestedStockQuery: z.string().nullable().optional(),
+});
+
+const VideoAnalysisResponseSchema = z.object({
+  frames: z.array(FrameAnalysisSchema),
+  summary: z.string().optional().default(""),
+  contentType: z.string().optional(),
+});
 
 const geminiClient = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
@@ -91,12 +147,43 @@ Respond in JSON format only (no markdown):
   const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    throw new Error("Failed to parse AI response");
+    console.warn("Failed to parse AI response for frame analysis, using defaults");
+    return {
+      duration,
+      frames: framePaths.map((_, i) => ({
+        timestamp: frameInterval * (i + 1),
+        description: "Frame analysis unavailable",
+        keyMoment: false,
+        suggestedStockQuery: undefined,
+      })),
+      silentSegments,
+      summary: "Analysis unavailable",
+    };
   }
 
-  const parsed = JSON.parse(jsonMatch[0]);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+    const validated = VideoAnalysisResponseSchema.safeParse(parsed);
+    if (!validated.success) {
+      console.warn("AI response validation failed:", validated.error);
+    }
+  } catch (parseError) {
+    console.warn("JSON parse error in frame analysis:", parseError);
+    return {
+      duration,
+      frames: framePaths.map((_, i) => ({
+        timestamp: frameInterval * (i + 1),
+        description: "Frame analysis unavailable",
+        keyMoment: false,
+        suggestedStockQuery: undefined,
+      })),
+      silentSegments,
+      summary: "Analysis unavailable",
+    };
+  }
 
-  const frames: FrameAnalysis[] = parsed.frames.map((f: any, i: number) => ({
+  const frames: FrameAnalysis[] = (parsed.frames || []).map((f: any, i: number) => ({
     timestamp: f.timestamp || frameInterval * (i + 1),
     description: f.description || "",
     keyMoment: f.keyMoment || false,
@@ -121,18 +208,28 @@ export async function transcribeAudio(
     const response = await openaiClient.audio.transcriptions.create({
       file,
       model: "gpt-4o-mini-transcribe",
-    });
+      response_format: "verbose_json",
+      timestamp_granularities: ["segment"],
+    }) as any;
+
+    if (response.segments && Array.isArray(response.segments)) {
+      return response.segments.map((seg: any) => ({
+        start: seg.start || 0,
+        end: seg.end || (seg.start || 0) + 3,
+        text: (seg.text || "").trim(),
+      })).filter((s: TranscriptSegment) => s.text.length > 0);
+    }
 
     const text = response.text || "";
-    
     if (!text.trim()) {
       return [];
     }
 
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim());
-    const segmentDuration = 5;
+    console.warn("Transcription returned text only, timestamps will be approximate");
+    const sentences = text.split(/[.!?]+/).filter((s: string) => s.trim());
+    const segmentDuration = 4;
     
-    return sentences.map((sentence, i) => ({
+    return sentences.map((sentence: string, i: number) => ({
       start: i * segmentDuration,
       end: (i + 1) * segmentDuration,
       text: sentence.trim(),
@@ -205,7 +302,8 @@ Respond with a JSON object only (no markdown code blocks):
 
   const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
+  
+  const fallbackPlan = (): EditPlan => {
     const keepAction: EditAction = {
       type: "keep",
       start: 0,
@@ -216,20 +314,46 @@ Respond with a JSON object only (no markdown code blocks):
       actions: [keepAction],
       estimatedDuration: analysis.duration,
     };
+  };
+  
+  if (!jsonMatch) {
+    console.warn("No JSON found in AI response for edit plan");
+    return fallbackPlan();
   }
 
-  const parsed = JSON.parse(jsonMatch[0]);
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+    const validated = EditPlanResponseSchema.safeParse(parsed);
+    if (!validated.success) {
+      console.warn("Edit plan validation warning:", validated.error);
+    }
+  } catch (parseError) {
+    console.warn("JSON parse error in edit plan:", parseError);
+    return fallbackPlan();
+  }
 
-  const actions: EditAction[] = parsed.actions.map((a: any) => ({
-    type: a.type,
-    start: a.start,
-    end: a.end,
-    text: a.text,
-    stockQuery: a.stockQuery,
-    transitionType: a.transitionType,
-    speed: a.speed,
-    reason: a.reason,
-  }));
+  if (!parsed.actions || !Array.isArray(parsed.actions)) {
+    console.warn("No valid actions array in AI response");
+    return fallbackPlan();
+  }
+
+  const actions: EditAction[] = [];
+  for (const a of parsed.actions) {
+    const actionValidation = EditActionSchema.safeParse(a);
+    if (actionValidation.success) {
+      const validAction = actionValidation.data as any;
+      if ('start' in validAction && validAction.start !== undefined && validAction.start < 0) {
+        validAction.start = 0;
+      }
+      if ('end' in validAction && validAction.end !== undefined && validAction.end > analysis.duration) {
+        validAction.end = analysis.duration;
+      }
+      actions.push(validAction as EditAction);
+    } else {
+      console.warn("Skipping invalid action:", a, actionValidation.error);
+    }
+  }
 
   const hasKeepActions = actions.some((a) => a.type === "keep");
   if (!hasKeepActions) {

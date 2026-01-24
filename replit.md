@@ -74,7 +74,8 @@ The frontend follows a component-based architecture with:
   - Quality heuristics: pacing rules, genre-specific constraints, quality scoring
 - **AI Image Generation** (NEW): Fully functional custom image generation
   - Uses Gemini 2.5-flash-image model for cost-effective image generation
-  - Images generated from semantic B-roll windows (high/medium priority)
+  - **Smart distribution**: Images evenly spread across entire video timeline
+  - **Dynamic count**: ~1 AI image per 8 seconds (min 3, max 12 per video)
   - Auto-placed at deterministic timestamps from semantic analysis
   - Context-aware prompts derived from transcript content and video context
   - Separate media queue for type integrity (no stock/AI substitution)

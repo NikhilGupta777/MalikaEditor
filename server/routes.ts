@@ -61,6 +61,14 @@ export async function registerRoutes(
     }
     try {
       await fs.access(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === '.mp4') {
+        res.setHeader("Content-Type", "video/mp4");
+      } else if (ext === '.webm') {
+        res.setHeader("Content-Type", "video/webm");
+      } else if (ext === '.mov') {
+        res.setHeader("Content-Type", "video/quicktime");
+      }
       res.sendFile(filePath);
     } catch {
       next();

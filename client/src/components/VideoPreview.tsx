@@ -78,6 +78,14 @@ export function VideoPreview({
     const handleCanPlay = () => {
       setIsLoaded(true);
       setError(null);
+      if (video.duration && isFinite(video.duration)) {
+        setDuration(video.duration);
+        onDurationChange?.(video.duration);
+      }
+    };
+    const handleLoadedData = () => {
+      setIsLoaded(true);
+      setError(null);
     };
     const handleError = () => {
       setError("Failed to load video");
@@ -93,6 +101,7 @@ export function VideoPreview({
     video.addEventListener("pause", handlePause);
     video.addEventListener("ended", handleEnded);
     video.addEventListener("loadedmetadata", handleLoadedMetadata);
+    video.addEventListener("loadeddata", handleLoadedData);
     video.addEventListener("canplay", handleCanPlay);
     video.addEventListener("error", handleError);
     video.addEventListener("seeked", handleSeeked);
@@ -104,6 +113,7 @@ export function VideoPreview({
       video.removeEventListener("pause", handlePause);
       video.removeEventListener("ended", handleEnded);
       video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      video.removeEventListener("loadeddata", handleLoadedData);
       video.removeEventListener("canplay", handleCanPlay);
       video.removeEventListener("error", handleError);
       video.removeEventListener("seeked", handleSeeked);
@@ -117,9 +127,23 @@ export function VideoPreview({
       setInternalTime(0);
       setDuration(0);
       setIsPlaying(false);
-      videoRef.current.load();
+      
+      const video = videoRef.current;
+      video.load();
+      
+      const loadTimeout = setTimeout(() => {
+        if (video.readyState >= 2) {
+          setIsLoaded(true);
+          if (video.duration && isFinite(video.duration)) {
+            setDuration(video.duration);
+            onDurationChange?.(video.duration);
+          }
+        }
+      }, 1000);
+      
+      return () => clearTimeout(loadTimeout);
     }
-  }, [src]);
+  }, [src, onDurationChange]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -267,7 +291,8 @@ export function VideoPreview({
         className="w-full h-full object-contain"
         onClick={togglePlay}
         playsInline
-        preload="metadata"
+        preload="auto"
+        crossOrigin="anonymous"
       />
 
       {error && (

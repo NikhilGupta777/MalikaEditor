@@ -83,8 +83,8 @@ const VideoContextSchema = z.object({
   pacing: z.enum(["slow", "moderate", "fast", "dynamic"]),
   visualStyle: z.string().optional(),
   suggestedEditStyle: z.enum(["minimal", "moderate", "dynamic", "cinematic", "fast-paced"]),
-  regionalContext: z.string().optional(),
-  languageDetected: z.string().optional(),
+  regionalContext: z.string().nullish(),
+  languageDetected: z.string().nullish(),
 });
 
 const TopicSegmentSchema = z.object({
@@ -110,13 +110,13 @@ const VideoAnalysisResponseSchema = z.object({
   context: VideoContextSchema.optional(),
   topicSegments: z.array(TopicSegmentSchema).optional(),
   narrativeStructure: z.object({
-    hasIntro: z.boolean().optional(),
-    introEnd: z.number().optional(),
-    hasOutro: z.boolean().optional(),
-    outroStart: z.number().optional(),
-    mainContentStart: z.number().optional(),
-    mainContentEnd: z.number().optional(),
-    peakMoments: z.array(z.number()).optional(),
+    hasIntro: z.boolean().nullish(),
+    introEnd: z.number().nullish(),
+    hasOutro: z.boolean().nullish(),
+    outroStart: z.number().nullish(),
+    mainContentStart: z.number().nullish(),
+    mainContentEnd: z.number().nullish(),
+    peakMoments: z.array(z.number()).nullish(),
   }).optional(),
   brollOpportunities: z.array(BrollOpportunitySchema).optional(),
 });
@@ -502,7 +502,7 @@ export async function transcribeAudio(
 
     const response = await openaiClient.audio.transcriptions.create({
       file,
-      model: "gpt-4o-mini-transcribe",
+      model: "whisper-1",
       response_format: "verbose_json",
       timestamp_granularities: ["segment"],
     }) as any;

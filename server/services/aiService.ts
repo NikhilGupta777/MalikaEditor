@@ -10,6 +10,7 @@ import type {
   TranscriptSegment,
   VideoContext,
   TopicSegment,
+  SemanticAnalysis,
 } from "@shared/schema";
 
 const CutKeepActionSchema = z.object({
@@ -27,6 +28,17 @@ const InsertStockActionSchema = z.object({
   stockQuery: z.string(),
   reason: z.string().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
+  transcriptContext: z.string().optional(),
+});
+
+const InsertAiImageActionSchema = z.object({
+  type: z.literal("insert_ai_image"),
+  start: z.number().min(0).optional(),
+  duration: z.number().min(1).max(8).optional(),
+  aiImagePrompt: z.string(),
+  reason: z.string().optional(),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+  transcriptContext: z.string().optional(),
 });
 
 const TextActionSchema = z.object({
@@ -46,6 +58,7 @@ const TransitionActionSchema = z.object({
 const EditActionSchema = z.union([
   CutKeepActionSchema,
   InsertStockActionSchema,
+  InsertAiImageActionSchema,
   TextActionSchema,
   TransitionActionSchema,
 ]);
@@ -535,13 +548,219 @@ export async function transcribeAudio(
   }
 }
 
+/**
+ * Semantic Transcript Analysis - Core Intelligence Engine
+ * Analyzes transcript to extract keywords, emotions, topics, and B-roll windows
+ * This is the key to context-aware B-roll selection (like Opus Clip, Submagic)
+ */
+export async function analyzeTranscriptSemantics(
+  transcript: TranscriptSegment[],
+  videoContext?: VideoContext,
+  videoDuration?: number
+): Promise<SemanticAnalysis> {
+  if (!transcript || transcript.length === 0) {
+    return {
+      mainTopics: [],
+      overallTone: "casual",
+      keyMoments: [],
+      brollWindows: [],
+      extractedKeywords: [],
+      contentSummary: "No transcript available for analysis",
+    };
+  }
+
+  const fullTranscript = transcript.map(t => `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`).join("\n");
+  const duration = videoDuration || (transcript[transcript.length - 1]?.end || 60);
+
+  const prompt = `You are an expert content analyst for a professional AI video editing system like Opus Clip or Submagic.
+Your task is to perform DEEP SEMANTIC ANALYSIS of this video transcript to enable CONTEXT-AWARE B-roll placement.
+
+VIDEO CONTEXT:
+- Genre: ${videoContext?.genre || "general"}
+- Tone: ${videoContext?.tone || "casual"}
+- Pacing: ${videoContext?.pacing || "moderate"}
+- Duration: ${duration.toFixed(1)} seconds
+
+TRANSCRIPT:
+${fullTranscript}
+
+PERFORM COMPREHENSIVE ANALYSIS:
+
+1. **MAIN TOPICS** - What are the core subjects discussed? List 3-7 main topics.
+
+2. **OVERALL TONE** - Classify: educational, entertaining, inspirational, professional, casual, or serious
+
+3. **KEY MOMENTS** - Identify 3-8 peak engagement moments where:
+   - Important points are made
+   - Emotional emphasis occurs
+   - Key information is delivered
+
+4. **B-ROLL WINDOWS** - CRITICAL: Identify specific moments where visual support would ENHANCE the content:
+   - When speaker discusses abstract concepts
+   - When examples/illustrations are mentioned
+   - During transitions between topics
+   - When specific objects/places/actions are referenced
+   
+   For each B-roll window, provide:
+   - Exact start/end timestamps (must align with transcript segments)
+   - Context (what's being discussed)
+   - Specific, contextual search query that matches the ACTUAL content being discussed
+   - Priority (high = essential visual support, medium = enhances understanding, low = optional decoration)
+   - Reason why B-roll helps here
+
+5. **EXTRACTED KEYWORDS** - List 10-20 important keywords/phrases from the content
+
+6. **CONTENT SUMMARY** - 2-3 sentence summary of the video content
+
+CRITICAL B-ROLL QUERY GUIDELINES:
+- Queries must be SPECIFIC to what's being discussed in the transcript
+- DO NOT use generic queries like "nature" or "business" 
+- If speaker says "meditation brings peace of mind" → query: "peaceful meditation mindfulness calm person meditating"
+- If speaker discusses "technology trends" → query: "modern technology innovation digital devices"
+- If speaker mentions "cooking healthy meals" → query: "healthy cooking vegetables kitchen preparation"
+- Match the genre and tone: ${videoContext?.genre || "general"} content should have ${videoContext?.tone || "appropriate"} imagery
+
+B-ROLL TIMING RULES:
+- Duration: 2-6 seconds per B-roll
+- Spacing: minimum 3 seconds between B-roll clips
+- Never place B-roll during important visual moments or climactic points
+- Place B-roll at the START of concepts, not during key revelations
+- Maximum 5-8 B-roll windows for a ${duration.toFixed(0)}s video
+
+Respond in JSON format only (no markdown):
+{
+  "mainTopics": ["topic1", "topic2", ...],
+  "overallTone": "educational|entertaining|inspirational|professional|casual|serious",
+  "keyMoments": [
+    {"timestamp": number, "description": "string", "importance": "low|medium|high"}
+  ],
+  "brollWindows": [
+    {
+      "start": number,
+      "end": number,
+      "context": "what is being discussed",
+      "suggestedQuery": "specific contextual search query",
+      "priority": "low|medium|high",
+      "reason": "why B-roll enhances this moment"
+    }
+  ],
+  "extractedKeywords": ["keyword1", "keyword2", ...],
+  "contentSummary": "2-3 sentence summary"
+}`;
+
+  try {
+    const response = await geminiClient.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    });
+
+    const text = response.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      console.warn("Failed to parse semantic analysis response");
+      return getDefaultSemanticAnalysis(transcript, duration);
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Validate and clamp B-roll windows
+    const validatedBrollWindows = (parsed.brollWindows || [])
+      .filter((b: any) => b.start !== undefined && b.suggestedQuery)
+      .map((b: any) => ({
+        start: Math.max(0, b.start),
+        end: Math.min(duration, b.end || b.start + 4),
+        context: b.context || "",
+        suggestedQuery: b.suggestedQuery,
+        priority: b.priority || "medium",
+        reason: b.reason || "Enhance visual interest",
+      }))
+      .slice(0, 8); // Maximum 8 B-roll windows
+
+    return {
+      mainTopics: parsed.mainTopics || [],
+      overallTone: parsed.overallTone || "casual",
+      keyMoments: (parsed.keyMoments || []).map((k: any) => ({
+        timestamp: k.timestamp || 0,
+        description: k.description || "",
+        importance: k.importance || "medium",
+      })),
+      brollWindows: validatedBrollWindows,
+      extractedKeywords: parsed.extractedKeywords || [],
+      contentSummary: parsed.contentSummary || "",
+    };
+  } catch (error) {
+    console.error("Semantic analysis error:", error);
+    return getDefaultSemanticAnalysis(transcript, duration);
+  }
+}
+
+function getDefaultSemanticAnalysis(transcript: TranscriptSegment[], duration: number): SemanticAnalysis {
+  // Extract basic keywords from transcript text
+  const allText = transcript.map(t => t.text).join(" ");
+  const words = allText.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+  const wordCount = new Map<string, number>();
+  words.forEach(w => wordCount.set(w, (wordCount.get(w) || 0) + 1));
+  const topWords = Array.from(wordCount.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([word]) => word);
+
+  return {
+    mainTopics: topWords.slice(0, 3),
+    overallTone: "casual",
+    keyMoments: [],
+    brollWindows: [],
+    extractedKeywords: topWords,
+    contentSummary: `Video content with ${transcript.length} segments over ${duration.toFixed(0)} seconds`,
+  };
+}
+
+/**
+ * Generate AI image using Gemini Imagen
+ * Used for creating contextual images based on video content
+ */
+export async function generateAiImage(prompt: string): Promise<string | null> {
+  try {
+    const response = await geminiClient.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Generate a simple, clean visual description for this concept that would work well as B-roll footage: "${prompt}". 
+              Describe a single, clear image that could be created to illustrate this concept.
+              Keep it simple and professional. Just describe the image, nothing else.`,
+            },
+          ],
+        },
+      ],
+    });
+    
+    // For now, return null as we'll use stock footage
+    // In future, this would call an image generation API
+    console.log("AI Image prompt generated:", response.text);
+    return null;
+  } catch (error) {
+    console.error("AI image generation error:", error);
+    return null;
+  }
+}
+
 export async function generateEditPlan(
   prompt: string,
   analysis: VideoAnalysis,
-  transcript: TranscriptSegment[]
+  transcript: TranscriptSegment[],
+  semanticAnalysis?: SemanticAnalysis
 ): Promise<EditPlan> {
   const contextInfo = analysis.context;
   const editStyleGuidance = getEditStyleGuidance(contextInfo);
+  
+  // Use semantic analysis for intelligent B-roll placement
+  const semanticBrollWindows = semanticAnalysis?.brollWindows || [];
+  const extractedKeywords = semanticAnalysis?.extractedKeywords || [];
+  const contentSummary = semanticAnalysis?.contentSummary || analysis.summary || "";
   
   const systemPrompt = `You are an expert professional video editor with years of experience in ${contextInfo?.genre || "video"} content. Your task is to create a precise, intelligent edit plan that maximizes viewer engagement while respecting the content's nature and purpose.
 
@@ -592,18 +811,38 @@ B-ROLL SEARCH QUERY GUIDELINES:
 - Match the video's tone: ${contextInfo?.tone || "casual"}
 - For ${contextInfo?.genre || "general"} content, prefer: ${getBrollStyleHint(contextInfo?.genre)}`;
 
-  const brollOppsSummary = analysis.brollOpportunities?.slice(0, 5).map(b => 
-    `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.query}" (${b.priority} priority) - ${b.reason}`
-  ).join("\n") || "No specific opportunities identified";
+  // Prioritize semantic B-roll windows over frame-based opportunities
+  const brollOppsSummary = semanticBrollWindows.length > 0 
+    ? semanticBrollWindows.map(b => 
+        `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.suggestedQuery}" (${b.priority} priority)
+      Context: ${b.context}
+      Reason: ${b.reason}`
+      ).join("\n")
+    : analysis.brollOpportunities?.slice(0, 5).map(b => 
+        `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.query}" (${b.priority} priority) - ${b.reason}`
+      ).join("\n") || "No specific opportunities identified";
 
   const topicsSummary = analysis.topicSegments?.map(t =>
     `  - ${t.start.toFixed(1)}s-${t.end.toFixed(1)}s: ${t.topic} (${t.importance || "medium"} importance)`
   ).join("\n") || "No topic segments identified";
 
+  // Build semantic context for better edit planning
+  const semanticContext = semanticAnalysis ? `
+SEMANTIC ANALYSIS (from transcript):
+- Main Topics: ${semanticAnalysis.mainTopics.join(", ")}
+- Overall Tone: ${semanticAnalysis.overallTone}
+- Key Keywords: ${extractedKeywords.slice(0, 15).join(", ")}
+- Content Summary: ${contentSummary}
+
+KEY MOMENTS IDENTIFIED:
+${semanticAnalysis.keyMoments.map(k => `  - ${k.timestamp.toFixed(1)}s: ${k.description} (${k.importance} importance)`).join("\n") || "None"}
+` : "";
+
   const userPrompt = `User's editing instructions: "${prompt}"
 
 VIDEO SUMMARY:
-${analysis.summary || "No summary available"}
+${contentSummary || analysis.summary || "No summary available"}
+${semanticContext}
 
 NARRATIVE STRUCTURE:
 ${analysis.narrativeStructure ? `
@@ -616,24 +855,29 @@ ${analysis.narrativeStructure ? `
 TOPIC SEGMENTS:
 ${topicsSummary}
 
-PRE-IDENTIFIED B-ROLL OPPORTUNITIES:
+CONTEXT-AWARE B-ROLL OPPORTUNITIES (from semantic transcript analysis):
 ${brollOppsSummary}
+
+IMPORTANT: These B-roll queries are DERIVED FROM THE TRANSCRIPT CONTENT. 
+Use these EXACT queries - they match what the speaker is actually discussing!
+Do NOT substitute with generic queries.
 
 SILENT SEGMENTS (candidates for cutting):
 ${analysis.silentSegments?.map(s => `  - ${s.start.toFixed(1)}s to ${s.end.toFixed(1)}s`).join("\n") || "None detected"}
 
-TRANSCRIPT:
+TRANSCRIPT WITH CONTEXT:
 ${transcript.slice(0, 50).map(t => `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`).join("\n")}
 ${transcript.length > 50 ? `\n... (${transcript.length - 50} more segments)` : ""}
 
 Total video duration: ${analysis.duration.toFixed(1)} seconds
 
-CREATE YOUR EDIT PLAN:
-1. Use the pre-identified B-roll opportunities as a starting point
-2. Adjust timing based on transcript alignment
-3. Ensure B-roll doesn't overlap and has appropriate spacing
-4. Cut silent/boring sections while preserving narrative flow
-5. Add captions for key moments
+CREATE YOUR EDIT PLAN - CRITICAL INSTRUCTIONS:
+1. USE the pre-identified B-roll opportunities - they are contextually matched to transcript
+2. For each insert_stock action, include "transcriptContext" field with what speaker is saying
+3. Stock queries MUST be specific to content (e.g., "peaceful meditation mindfulness" NOT just "nature")
+4. Ensure B-roll doesn't overlap and has 3+ seconds spacing between clips
+5. Cut silent/boring sections while preserving narrative flow
+6. Add captions for key moments identified in semantic analysis
 
 Respond with a JSON object only (no markdown):
 {

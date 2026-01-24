@@ -21,7 +21,9 @@ import {
   analyzeVideoFrames,
   transcribeAudio,
   generateEditPlan,
+  analyzeTranscriptSemantics,
 } from "./services/aiService";
+import type { SemanticAnalysis } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 
 const upload = multer({
@@ -154,6 +156,8 @@ export async function registerRoutes(
       addCaptions: req.query.addCaptions !== "false",
       addBroll: req.query.addBroll !== "false",
       removeSilence: req.query.removeSilence !== "false",
+      generateAiImages: req.query.generateAiImages === "true",
+      addTransitions: req.query.addTransitions === "true",
     };
 
     if (!prompt) {
@@ -241,16 +245,39 @@ export async function registerRoutes(
 
       await updateStatus("planning");
       
+      // Perform semantic transcript analysis for context-aware B-roll
+      let semanticAnalysis: SemanticAnalysis | undefined;
+      if (editOptions.addBroll && transcript.length > 0) {
+        console.log("Performing semantic transcript analysis...");
+        semanticAnalysis = await analyzeTranscriptSemantics(
+          transcript,
+          analysis.context,
+          metadata.duration
+        );
+        console.log("Semantic analysis complete:", {
+          topics: semanticAnalysis.mainTopics,
+          brollWindows: semanticAnalysis.brollWindows.length,
+          keywords: semanticAnalysis.extractedKeywords.length,
+        });
+        
+        // Store semantic analysis in the video analysis
+        await storage.updateVideoProject(id, {
+          analysis: { ...analysis, semanticAnalysis }
+        });
+      }
+      
       const enhancedPrompt = `${prompt}
       
 User has selected these options:
 - Add Captions: ${editOptions.addCaptions ? "Yes" : "No"}
 - Add B-Roll Stock Footage: ${editOptions.addBroll ? "Yes" : "No"}  
 - Remove Silent Parts: ${editOptions.removeSilence ? "Yes" : "No"}
+- Generate AI Images: ${editOptions.generateAiImages ? "Yes" : "No"}
+- Add Transitions: ${editOptions.addTransitions ? "Yes" : "No"}
 
 Please create an edit plan that follows these preferences.`;
 
-      const editPlan = await generateEditPlan(enhancedPrompt, analysis, transcript);
+      const editPlan = await generateEditPlan(enhancedPrompt, analysis, transcript, semanticAnalysis);
 
       await storage.updateVideoProject(id, { editPlan });
       sendEvent("editPlan", { editPlan });

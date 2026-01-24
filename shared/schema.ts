@@ -62,9 +62,38 @@ export const transcriptSegmentSchema = z.object({
   start: z.number(),
   end: z.number(),
   text: z.string(),
+  // Semantic analysis fields
+  keywords: z.array(z.string()).optional(),
+  emotion: z.enum(["neutral", "excited", "serious", "calm", "urgent", "inspirational"]).optional(),
+  isBrollWindow: z.boolean().optional(),
+  suggestedBrollQuery: z.string().optional(),
+  topic: z.string().optional(),
 });
 
 export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>;
+
+// Semantic transcript analysis result
+export const semanticAnalysisSchema = z.object({
+  mainTopics: z.array(z.string()),
+  overallTone: z.enum(["educational", "entertaining", "inspirational", "professional", "casual", "serious"]),
+  keyMoments: z.array(z.object({
+    timestamp: z.number(),
+    description: z.string(),
+    importance: z.enum(["low", "medium", "high"]),
+  })),
+  brollWindows: z.array(z.object({
+    start: z.number(),
+    end: z.number(),
+    context: z.string(),
+    suggestedQuery: z.string(),
+    priority: z.enum(["low", "medium", "high"]),
+    reason: z.string(),
+  })),
+  extractedKeywords: z.array(z.string()),
+  contentSummary: z.string(),
+});
+
+export type SemanticAnalysis = z.infer<typeof semanticAnalysisSchema>;
 
 export const frameAnalysisSchema = z.object({
   timestamp: z.number(),
@@ -137,23 +166,30 @@ export const videoAnalysisSchema = z.object({
     priority: z.enum(["low", "medium", "high"]),
     reason: z.string(),
   })).optional(),
+  // New semantic analysis from transcript
+  semanticAnalysis: semanticAnalysisSchema.optional(),
 });
 
 export type VideoAnalysis = z.infer<typeof videoAnalysisSchema>;
 
 export const editActionSchema = z.object({
-  type: z.enum(["cut", "keep", "insert_stock", "add_caption", "add_text_overlay", "transition", "speed_change"]),
+  type: z.enum(["cut", "keep", "insert_stock", "insert_ai_image", "add_caption", "add_text_overlay", "transition", "speed_change"]),
   start: z.number().optional(),
   end: z.number().optional(),
   duration: z.number().optional(),
   text: z.string().optional(),
   stockQuery: z.string().optional(),
   stockUrl: z.string().optional(),
+  // AI image generation fields
+  aiImagePrompt: z.string().optional(),
+  aiImageUrl: z.string().optional(),
   transitionType: z.string().optional(),
   speed: z.number().optional(),
   reason: z.string().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
   confidence: z.number().optional(),
+  // Context from transcript for better matching
+  transcriptContext: z.string().optional(),
 });
 
 export type EditAction = z.infer<typeof editActionSchema>;
@@ -174,12 +210,26 @@ export const editPlanSchema = z.object({
 export type EditPlan = z.infer<typeof editPlanSchema>;
 
 export const stockMediaItemSchema = z.object({
-  type: z.enum(["image", "video"]),
+  type: z.enum(["image", "video", "ai_generated"]),
   query: z.string(),
   url: z.string(),
   thumbnailUrl: z.string().optional(),
   duration: z.number().optional(),
   photographer: z.string().optional(),
+  // AI generation metadata
+  aiPrompt: z.string().optional(),
+  generatedAt: z.number().optional(),
 });
 
 export type StockMediaItem = z.infer<typeof stockMediaItemSchema>;
+
+// Edit options passed from frontend
+export const editOptionsSchema = z.object({
+  addCaptions: z.boolean().default(true),
+  addBroll: z.boolean().default(true),
+  removeSilence: z.boolean().default(true),
+  generateAiImages: z.boolean().default(false),
+  addTransitions: z.boolean().default(false),
+});
+
+export type EditOptionsType = z.infer<typeof editOptionsSchema>;

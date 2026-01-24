@@ -190,6 +190,8 @@ export interface EditOptions {
   addCaptions: boolean;
   addBroll: boolean;
   removeSilence: boolean;
+  generateAiImages?: boolean;
+  addTransitions?: boolean;
 }
 
 interface DownloadedStock {

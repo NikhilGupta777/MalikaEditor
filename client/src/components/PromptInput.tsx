@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Sparkles, Wand2, Scissors, Type, Image, Zap, Settings2 } from "lucide-react";
+import { Sparkles, Wand2, Scissors, Type, Image, Zap, Settings2, Film, ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,8 @@ export interface EditOptions {
   addCaptions: boolean;
   addBroll: boolean;
   removeSilence: boolean;
+  generateAiImages: boolean;
+  addTransitions: boolean;
 }
 
 interface PromptInputProps {
@@ -115,6 +117,40 @@ export function PromptInput({
             >
               <Scissors className="h-4 w-4 text-orange-500" />
               <span>Remove Silent Parts</span>
+            </Label>
+          </div>
+          
+          <div className="flex items-center space-x-3">
+            <Checkbox
+              id="addTransitions"
+              checked={editOptions.addTransitions}
+              onCheckedChange={() => handleOptionChange("addTransitions")}
+              disabled={isProcessing}
+              data-testid="checkbox-transitions"
+            />
+            <Label 
+              htmlFor="addTransitions" 
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <Film className="h-4 w-4 text-green-500" />
+              <span>Add Transitions</span>
+            </Label>
+          </div>
+          
+          <div className="flex items-center space-x-3 opacity-70">
+            <Checkbox
+              id="generateAiImages"
+              checked={editOptions.generateAiImages}
+              onCheckedChange={() => handleOptionChange("generateAiImages")}
+              disabled={isProcessing || true}
+              data-testid="checkbox-ai-images"
+            />
+            <Label 
+              htmlFor="generateAiImages" 
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <ImagePlus className="h-4 w-4 text-pink-500" />
+              <span>AI Generated Images (Coming Soon)</span>
             </Label>
           </div>
         </CardContent>

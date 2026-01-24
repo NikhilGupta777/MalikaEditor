@@ -35,6 +35,8 @@ export interface EditOptions {
   addCaptions: boolean;
   addBroll: boolean;
   removeSilence: boolean;
+  generateAiImages: boolean;
+  addTransitions: boolean;
 }
 
 export default function Editor() {
@@ -49,6 +51,8 @@ export default function Editor() {
     addCaptions: true,
     addBroll: true,
     removeSilence: true,
+    generateAiImages: false,
+    addTransitions: false,
   });
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -151,6 +155,8 @@ export default function Editor() {
           addCaptions: String(editOptions.addCaptions),
           addBroll: String(editOptions.addBroll),
           removeSilence: String(editOptions.removeSilence),
+          generateAiImages: String(editOptions.generateAiImages),
+          addTransitions: String(editOptions.addTransitions),
         });
 
         if (eventSourceRef.current) {

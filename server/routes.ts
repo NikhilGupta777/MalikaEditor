@@ -1,5 +1,5 @@
-import type { Express, Request, Response } from "express";
-import { createServer, type Server } from "http";
+import type { Express, Response } from "express";
+import { type Server } from "http";
 import multer from "multer";
 import path from "path";
 import { promises as fs } from "fs";
@@ -28,6 +28,8 @@ import {
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
+import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
+import { registerAuthRoutes } from "./routes/auth";
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -57,6 +59,8 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   await ensureDirs();
+  
+  registerAuthRoutes(app);
 
   app.use("/uploads", async (req, res, next) => {
     const requestedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
@@ -97,8 +101,9 @@ export async function registerRoutes(
 
   app.post(
     "/api/videos/upload",
+    requireAuth,
     upload.single("video"),
-    async (req: Request, res: Response) => {
+    async (req: AuthenticatedRequest, res: Response) => {
       try {
         if (!req.file) {
           return res.status(400).json({ error: "No video file uploaded" });

@@ -133,7 +133,7 @@ export async function registerRoutes(
     }
   );
 
-  app.get("/api/videos/:id", async (req: Request, res: Response) => {
+  app.get("/api/videos/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const id = parseInt(req.params.id as string);
       if (isNaN(id)) {
@@ -153,7 +153,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/videos/:id/process", async (req: Request, res: Response) => {
+  app.get("/api/videos/:id/process", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     const id = parseInt(req.params.id as string);
     if (isNaN(id)) {
       return res.status(400).json({ error: "Invalid project ID" });
@@ -463,7 +463,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     }
   });
 
-  app.get("/api/videos", async (req: Request, res: Response) => {
+  app.get("/api/videos", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const projects = await storage.getAllVideoProjects();
       res.json(projects);

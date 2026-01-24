@@ -15,7 +15,16 @@ export interface AuthenticatedRequest extends Request {
 }
 
 const SALT_ROUNDS = 10;
-const SESSION_SECRET = process.env.SESSION_SECRET || "video-editor-secret-key-change-in-production";
+
+function getSessionSecret(): string {
+  const secret = process.env.SESSION_SECRET;
+  if (process.env.NODE_ENV === "production" && !secret) {
+    throw new Error("SESSION_SECRET environment variable is required in production");
+  }
+  return secret || "video-editor-dev-secret-change-in-production";
+}
+
+const SESSION_SECRET = getSessionSecret();
 
 export const sessionMiddleware = session({
   secret: SESSION_SECRET,

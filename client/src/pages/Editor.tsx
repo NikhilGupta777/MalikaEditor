@@ -19,6 +19,13 @@ import type {
   StockMediaItem,
 } from "@shared/schema";
 
+interface AiImageStats {
+  applied: number;
+  skipped: number;
+  stockApplied?: number;
+  totalOverlays?: number;
+}
+
 interface VideoProject {
   id: number;
   fileName: string;
@@ -29,6 +36,7 @@ interface VideoProject {
   editPlan?: EditPlan;
   stockMedia?: StockMediaItem[];
   errorMessage?: string;
+  aiImageStats?: AiImageStats;
 }
 
 export interface EditOptions {
@@ -183,6 +191,10 @@ export default function Editor() {
             setProject((prev) =>
               prev ? { ...prev, stockMedia: data.stockMedia } : null
             );
+          } else if (data.type === "aiImageStats") {
+            setProject((prev) =>
+              prev ? { ...prev, aiImageStats: data } : null
+            );
           } else if (data.type === "complete") {
             setProject((prev) =>
               prev
@@ -191,6 +203,7 @@ export default function Editor() {
                     status: "completed",
                     outputPath: data.outputPath,
                     duration: data.duration,
+                    aiImageStats: data.aiImageStats || prev.aiImageStats,
                   }
                 : null
             );
@@ -201,7 +214,9 @@ export default function Editor() {
 
             toast({
               title: "Your video is ready!",
-              description: "Download your edited video below",
+              description: data.aiImageStats 
+                ? `Applied ${data.aiImageStats.applied} AI images to your video`
+                : "Download your edited video below",
             });
           } else if (data.type === "error") {
             setProject((prev) =>
@@ -384,6 +399,7 @@ export default function Editor() {
                   status={project.status}
                   error={project.errorMessage}
                   onRetry={project.status === "failed" ? handleRetryProcessing : undefined}
+                  aiImageStats={project.aiImageStats}
                 />
               )}
 

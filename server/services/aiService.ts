@@ -788,9 +788,24 @@ export async function generateAiImagesForVideo(
   const generatedImages: GeneratedAiImage[] = [];
   
   // Get B-roll windows that are good candidates for AI images (high/medium priority)
+  // STRICT VALIDATION: Only accept candidates with valid timing data
   const aiImageCandidates = semanticAnalysis.brollWindows
-    .filter(w => w.priority === "high" || w.priority === "medium")
+    .filter(w => {
+      if (w.priority !== "high" && w.priority !== "medium") return false;
+      // Strict timing validation - require start, end, and positive duration
+      if (typeof w.start !== "number" || typeof w.end !== "number") {
+        console.warn(`Rejecting AI image candidate: missing start/end time - ${w.suggestedQuery}`);
+        return false;
+      }
+      if (w.start < 0 || w.end <= w.start) {
+        console.warn(`Rejecting AI image candidate: invalid timing (${w.start}s-${w.end}s) - ${w.suggestedQuery}`);
+        return false;
+      }
+      return true;
+    })
     .slice(0, maxImages);
+
+  console.log(`AI Image candidates after validation: ${aiImageCandidates.length}/${semanticAnalysis.brollWindows.length}`);
 
   for (const candidate of aiImageCandidates) {
     try {

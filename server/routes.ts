@@ -344,16 +344,27 @@ Please create an edit plan that follows these preferences.`;
       await updateStatus("editing");
       await updateStatus("rendering");
 
-      const outputPath = await applyEdits(
+      const editResult = await applyEdits(
         videoPath, 
         editPlan, 
         transcript,
         stockMedia,
         editOptions
       );
-      const outputMetadata = await getVideoMetadata(outputPath);
+      
+      // Send SSE event with AI image placement stats
+      if (editOptions.generateAiImages) {
+        sendEvent("aiImageStats", {
+          applied: editResult.aiImagesApplied,
+          skipped: editResult.aiImagesSkipped,
+          stockApplied: editResult.stockMediaApplied,
+          totalOverlays: editResult.brollOverlaysTotal,
+        });
+      }
+      
+      const outputMetadata = await getVideoMetadata(editResult.outputPath);
 
-      const publicOutputPath = `/output/${path.basename(outputPath)}`;
+      const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
       await storage.updateVideoProject(id, {
         status: "completed",
         outputPath: publicOutputPath,
@@ -363,6 +374,10 @@ Please create an edit plan that follows these preferences.`;
       sendEvent("complete", {
         outputPath: publicOutputPath,
         duration: Math.round(outputMetadata.duration),
+        aiImageStats: editOptions.generateAiImages ? {
+          applied: editResult.aiImagesApplied,
+          skipped: editResult.aiImagesSkipped,
+        } : undefined,
       });
 
       await cleanupTempFiles(tempFiles);

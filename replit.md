@@ -90,11 +90,23 @@ Technical implementation:
 ## Recent Changes
 
 ### January 2026
-- **Semantic Transcript Analysis**: NEW - Deep transcript-first workflow (like Opus Clip, Submagic)
+- **AI Image Generation**: Fully functional using Gemini 2.5-flash-image model
+  - Context-aware image generation from semantic transcript analysis
+  - Deterministic placement based on B-roll windows (not edit plan actions)
+  - Strict timing validation with detailed error reporting
+  - SSE feedback with applied/skipped counts visible in UI
+- **Enhanced User Feedback**: Real-time AI image stats in ProcessingStatus component
+  - Shows applied/skipped AI images during and after processing
+  - Toast notifications include AI image placement summary
+- **Strict Validation Pipeline**: 
+  - AI image candidates must have valid startTime, endTime, and positive duration
+  - Images extending beyond video bounds are skipped with clear warnings
+  - Separate media queues for stock and AI content (no cross-type substitution)
+- **Semantic Transcript Analysis**: Deep transcript-first workflow (like Opus Clip, Submagic)
   - Extracts keywords, emotions, topics from transcript for intelligent B-roll matching
   - B-roll windows identified based on transcript content, not random frame selection
   - Search queries derived from actual spoken content (e.g., "peaceful meditation mindfulness" not generic "nature")
-- **Enhanced Edit Options UI**: Added Transitions toggle and AI Generated Images placeholder (Coming Soon)
+- **Enhanced Edit Options UI**: Added Transitions toggle and AI Generated Images
 - **Improved Edit Planning**: Uses semantic analysis for transcript-aligned B-roll placement
 - **Enhanced AI Analysis**: Comprehensive video context understanding with genre, tone, pacing, and narrative structure detection
 - **Smart B-Roll Placement**: AI now understands video context (spiritual, tech, tutorial, etc.) and places B-roll intelligently based on content type
@@ -107,6 +119,24 @@ Technical implementation:
 - Path traversal protection for static file serving
 - ID parameter validation for API routes
 - EventSource cleanup on component unmount
+
+## Scalability Considerations
+
+### Current Architecture Limitations
+- **Synchronous Processing**: Video processing runs within the HTTP request lifecycle using SSE for progress updates. For very long videos (>1 hour), this may approach timeout limits.
+- **Single Server**: Currently designed for single-server deployment; no distributed job queue.
+
+### Recommended Future Improvements
+1. **Background Job Queue**: Implement a Redis-backed job queue (Bull, BullMQ) for FFmpeg processing to handle timeouts gracefully
+2. **Worker Processes**: Separate worker processes for CPU-intensive FFmpeg operations
+3. **Object Storage**: Move from local `/tmp` storage to cloud object storage for scalability
+4. **Caching**: Cache AI analysis results and edit plans for re-processing workflows
+
+### Error Handling Strategy
+- **AI Services**: Return fallback values (empty arrays, default semantic analysis) on failure
+- **Video Processing**: Propagate structured errors via SSE to the frontend
+- **File Operations**: Cleanup temp files in `finally` blocks to prevent disk space issues
+- **Validation**: Strict validation at generation and processing stages with detailed console logging
 
 ### Replit Integrations (`server/replit_integrations/`)
 Pre-built modules for common AI patterns:

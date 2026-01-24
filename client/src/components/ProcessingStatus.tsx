@@ -5,10 +5,18 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ProcessingStatus as ProcessingStatusType } from "@shared/schema";
 
+interface AiImageStats {
+  applied: number;
+  skipped: number;
+  stockApplied?: number;
+  totalOverlays?: number;
+}
+
 interface ProcessingStatusProps {
   status: ProcessingStatusType;
   error?: string;
   onRetry?: () => void;
+  aiImageStats?: AiImageStats;
 }
 
 const STEPS = [
@@ -21,7 +29,7 @@ const STEPS = [
   { id: "rendering", label: "Rendering video" },
 ];
 
-export function ProcessingStatus({ status, error, onRetry }: ProcessingStatusProps) {
+export function ProcessingStatus({ status, error, onRetry, aiImageStats }: ProcessingStatusProps) {
   if (status === "pending" || status === "completed") return null;
 
   const currentIndex = STEPS.findIndex(s => s.id === status);
@@ -75,6 +83,14 @@ export function ProcessingStatus({ status, error, onRetry }: ProcessingStatusPro
         </div>
         
         <Progress value={progress} className="h-2" />
+        
+        {aiImageStats && (
+          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-2">
+            AI Images: {aiImageStats.applied} applied
+            {aiImageStats.skipped > 0 && `, ${aiImageStats.skipped} skipped`}
+            {aiImageStats.stockApplied !== undefined && `, ${aiImageStats.stockApplied} stock clips`}
+          </div>
+        )}
         
         <div className="flex justify-between">
           {STEPS.map((step, i) => {

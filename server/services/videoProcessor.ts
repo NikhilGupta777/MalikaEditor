@@ -631,6 +631,14 @@ async function applyAllBrollOverlays(
   await fs.copyFile(currentPath, outputPath);
 }
 
+export interface EditResult {
+  outputPath: string;
+  aiImagesApplied: number;
+  aiImagesSkipped: number;
+  stockMediaApplied: number;
+  brollOverlaysTotal: number;
+}
+
 export async function applyEdits(
   videoPath: string,
   editPlan: EditPlan,
@@ -638,7 +646,7 @@ export async function applyEdits(
   stockMedia: StockMediaItem[],
   options: EditOptions,
   outputFileName?: string
-): Promise<string> {
+): Promise<EditResult> {
   await ensureDirs();
   
   console.log("=== APPLY EDITS START (OVERLAY MODE) ===");
@@ -847,19 +855,32 @@ export async function applyEdits(
   let stockIdx = 0;
   let aiIdx = 0;
   
+  // Track stats for result reporting
+  let aiImagesApplied = 0;
+  let aiImagesSkipped = 0;
+  let stockMediaApplied = 0;
+  
   // Keep media queues separate - no cross-type substitution for integrity
   const allDownloadedMedia = [...downloadedStockMedia, ...downloadedAiMedia];
   
   if (options.addBroll && allDownloadedMedia.length > 0) {
     // FIRST: Process AI-generated images with their embedded timing (deterministic)
     // AI images have startTime/endTime from semantic analysis - use directly
-    let aiImagesApplied = 0;
-    let aiImagesSkipped = 0;
     
     for (const aiMedia of downloadedAiMedia) {
       const sourceTime = aiMedia.item.startTime;
-      if (sourceTime === undefined) {
-        console.warn(`AI image missing startTime, skipping: ${aiMedia.item.query}`);
+      const itemDuration = aiMedia.item.duration;
+      const itemQuery = aiMedia.item.query || "unknown";
+      
+      // STRICT VALIDATION: Require both startTime and duration
+      if (typeof sourceTime !== "number" || sourceTime < 0) {
+        console.warn(`[AI Image SKIP] Missing/invalid startTime (${sourceTime}): ${itemQuery}`);
+        aiImagesSkipped++;
+        continue;
+      }
+      
+      if (typeof itemDuration !== "number" || itemDuration <= 0) {
+        console.warn(`[AI Image SKIP] Missing/invalid duration (${itemDuration}): ${itemQuery}`);
         aiImagesSkipped++;
         continue;
       }
@@ -873,8 +894,15 @@ export async function applyEdits(
         }
       }
       
-      if (outputTime !== null) {
-        const duration = Math.min(aiMedia.item.duration || 4, 5);
+      if (outputTime !== null && outputTime >= 0) {
+        const duration = Math.min(itemDuration, 5);
+        
+        // Ensure overlay doesn't extend beyond video
+        if (outputTime + duration > baseMetadata.duration) {
+          console.warn(`[AI Image SKIP] Would extend beyond video (${outputTime}+${duration} > ${baseMetadata.duration}s): ${itemQuery}`);
+          aiImagesSkipped++;
+          continue;
+        }
         
         brollOverlays.push({
           localPath: aiMedia.localPath,
@@ -884,10 +912,10 @@ export async function applyEdits(
         });
         
         aiImagesApplied++;
-        console.log(`Applied AI image at ${outputTime.toFixed(2)}s for ${duration.toFixed(2)}s (prompt: ${aiMedia.item.query?.substring(0, 50)}...)`);
+        console.log(`[AI Image OK] Applied at ${outputTime.toFixed(2)}s for ${duration.toFixed(2)}s: ${itemQuery.substring(0, 50)}`);
       } else {
         aiImagesSkipped++;
-        console.warn(`AI image timing outside video bounds, skipping: ${aiMedia.item.query}`);
+        console.warn(`[AI Image SKIP] Timing outside video bounds (source=${sourceTime}s): ${itemQuery}`);
       }
     }
     
@@ -936,6 +964,7 @@ export async function applyEdits(
             text: action.text,
           });
           stockIdx++;
+          stockMediaApplied++;
         } else {
           console.log(`Skipping stock at ${outputTime.toFixed(2)}s - overlaps with AI image`);
         }
@@ -1060,7 +1089,15 @@ export async function applyEdits(
   }
 
   console.log("=== APPLY EDITS COMPLETE (OVERLAY MODE) ===");
-  return outputPath;
+  console.log(`Final Stats: aiImagesApplied=${aiImagesApplied}, aiImagesSkipped=${aiImagesSkipped}, stockMediaApplied=${stockMediaApplied}, brollOverlays=${brollOverlays.length}`);
+  
+  return {
+    outputPath,
+    aiImagesApplied,
+    aiImagesSkipped,
+    stockMediaApplied,
+    brollOverlaysTotal: brollOverlays.length,
+  };
 }
 
 export async function cleanupTempFiles(paths: string[]): Promise<void> {

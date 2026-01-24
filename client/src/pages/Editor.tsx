@@ -301,7 +301,7 @@ export default function Editor() {
       <div className="flex-1 flex flex-col lg:flex-row">
         {/* Video Preview - Left/Top */}
         <div className="flex-1 p-4 flex flex-col min-h-[300px] lg:min-h-0">
-          <div className="flex-1 rounded-lg overflow-hidden bg-black">
+          <div className="flex-1 rounded-lg overflow-hidden bg-black relative">
             <VideoPreview
               src={previewUrl || undefined}
               className="h-full"
@@ -309,6 +309,14 @@ export default function Editor() {
               onTimeUpdate={handleTimeUpdate}
               onDurationChange={handleDurationChange}
             />
+            {isProcessing && project?.status !== "pending" && project?.status !== "completed" && (
+              <div className="absolute top-4 right-4 z-50">
+                <Badge variant="secondary" className="bg-background/80 backdrop-blur-sm animate-pulse flex items-center gap-2 py-1.5 px-3">
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />
+                  <span className="text-xs font-semibold">Processing...</span>
+                </Badge>
+              </div>
+            )}
           </div>
           
           {/* Video info bar */}

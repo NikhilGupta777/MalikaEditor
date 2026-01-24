@@ -23,6 +23,8 @@ import {
   generateEditPlan,
   analyzeTranscriptSemantics,
   generateAiImagesForVideo,
+  detectTranscriptLanguage,
+  translateTranscriptToEnglish,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
@@ -252,9 +254,20 @@ export async function registerRoutes(
       
       if (needsSemanticAnalysis) {
         if (transcript.length > 0) {
+          // Detect transcript language
+          const detectedLanguage = detectTranscriptLanguage(transcript);
+          
+          // Translate to English if non-English (for Gemini semantic analysis)
+          let transcriptForAnalysis = transcript;
+          if (detectedLanguage !== "en") {
+            console.log(`Transcript is in ${detectedLanguage}, translating to English for semantic analysis...`);
+            transcriptForAnalysis = await translateTranscriptToEnglish(transcript, detectedLanguage);
+          }
+          
           console.log("Performing semantic transcript analysis...");
+          // Use translated transcript for analysis, but original timestamps are preserved
           semanticAnalysis = await analyzeTranscriptSemantics(
-            transcript,
+            transcriptForAnalysis,
             analysis.context,
             metadata.duration
           );

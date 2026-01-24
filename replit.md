@@ -49,9 +49,18 @@ The frontend follows a component-based architecture with:
   - Uses multilingual ggml-base model at `/tmp/whisper_models/ggml-base.bin`
   - Supports Hindi, Arabic, Chinese, Japanese, Korean, Russian, and more
   - Zero API cost, no external dependencies
+  - **Word-level timing**: Extracts individual word timestamps from tokens for karaoke-style captions
   - Accurate segment timing critical for captions and B-roll placement
   - **Multilingual Pipeline**: Non-English transcripts are automatically detected and translated to English for semantic analysis while preserving original timestamps
   - Fallback to OpenAI if whisper.cpp fails
+- **Karaoke-Style Captions** (NEW): Professional word-by-word caption animation
+  - Word-level timing from whisper.cpp tokens or estimated from segment timing
+  - ASS (Advanced SubStation Alpha) subtitle format for precise styling control
+  - Words grouped into 4-word chunks for readability
+  - Progressive word highlighting using {\kf} karaoke fill effect (white → cyan highlight)
+  - Positioned between center and bottom (~68% from top via 32% MarginV from bottom)
+  - Font size scales with video height for consistent readability
+  - Cyan highlight color with white base, black outline for visibility on any background
 - **Semantic Transcript Analysis** (NEW): Deep semantic analysis of transcripts for context-aware B-roll
   - Extracts main topics, overall tone, key moments, and extractedKeywords
   - Identifies B-roll windows with specific timestamps and contextual search queries

@@ -59,10 +59,21 @@ export const processingStatusEnum = z.enum([
 
 export type ProcessingStatus = z.infer<typeof processingStatusEnum>;
 
+// Word-level timing for karaoke-style captions
+export const wordTimingSchema = z.object({
+  word: z.string(),
+  start: z.number(),
+  end: z.number(),
+});
+
+export type WordTiming = z.infer<typeof wordTimingSchema>;
+
 export const transcriptSegmentSchema = z.object({
   start: z.number(),
   end: z.number(),
   text: z.string(),
+  // Word-level timing for karaoke-style captions
+  words: z.array(wordTimingSchema).optional(),
   // Semantic analysis fields
   keywords: z.array(z.string()).optional(),
   emotion: z.enum(["neutral", "excited", "serious", "calm", "urgent", "inspirational"]).optional(),

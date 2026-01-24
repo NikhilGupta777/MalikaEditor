@@ -557,7 +557,7 @@ export async function transcribeAudio(
     const jsonContent = await fs.readFile(jsonPath, "utf-8");
     const whisperOutput = JSON.parse(jsonContent);
     
-    // Parse whisper.cpp JSON format into TranscriptSegment[]
+    // Parse whisper.cpp JSON format into TranscriptSegment[] with word-level timing
     const segments: TranscriptSegment[] = [];
     const rawSegmentCount = whisperOutput.transcription?.length || 0;
     
@@ -579,10 +579,56 @@ export async function transcribeAudio(
         const text = (seg.text || "").trim();
         
         if (text.length > 0 && startMs !== null && endMs !== null && endMs > startMs) {
+          // Extract word-level timing from tokens if available
+          const words: { word: string; start: number; end: number }[] = [];
+          
+          if (seg.tokens && Array.isArray(seg.tokens)) {
+            for (const token of seg.tokens) {
+              const tokenText = (token.text || "").trim();
+              if (tokenText.length > 0 && !tokenText.startsWith("[") && !tokenText.endsWith("]")) {
+                // Token timing - use offsets (in milliseconds)
+                let tokenStart = token.offsets?.from;
+                let tokenEnd = token.offsets?.to;
+                
+                // Fallback to timestamp parsing if offsets not available
+                if (typeof tokenStart !== "number" && token.timestamps?.from) {
+                  tokenStart = parseWhisperTimestamp(token.timestamps.from);
+                }
+                if (typeof tokenEnd !== "number" && token.timestamps?.to) {
+                  tokenEnd = parseWhisperTimestamp(token.timestamps.to);
+                }
+                
+                if (typeof tokenStart === "number" && typeof tokenEnd === "number" && tokenEnd > tokenStart) {
+                  words.push({
+                    word: tokenText,
+                    start: tokenStart / 1000,
+                    end: tokenEnd / 1000,
+                  });
+                }
+              }
+            }
+          }
+          
+          // If no token-level timing, estimate word timing from segment
+          if (words.length === 0 && text.length > 0) {
+            const segmentWords = text.split(/\s+/).filter((w: string) => w.length > 0);
+            const segDuration = (endMs - startMs) / 1000;
+            const wordDuration = segDuration / Math.max(segmentWords.length, 1);
+            
+            segmentWords.forEach((word: string, idx: number) => {
+              words.push({
+                word,
+                start: (startMs / 1000) + (idx * wordDuration),
+                end: (startMs / 1000) + ((idx + 1) * wordDuration),
+              });
+            });
+          }
+          
           segments.push({
             start: startMs / 1000,
             end: endMs / 1000,
             text,
+            words: words.length > 0 ? words : undefined,
           });
         } else if (text.length > 0) {
           console.warn(`Skipping segment with invalid timestamps: "${text.substring(0, 30)}..." (from=${startMs}, to=${endMs})`);

@@ -173,6 +173,130 @@ function escapeFFmpegText(text: string): string {
     .replace(/\]/g, "\\]");
 }
 
+// Word timing type for karaoke-style captions
+interface WordTiming {
+  word: string;
+  start: number;
+  end: number;
+}
+
+interface CaptionWithWords {
+  start: number;
+  end: number;
+  text: string;
+  words?: WordTiming[];
+}
+
+// Escape special ASS characters in text
+function escapeAssText(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')  // Escape backslashes first
+    .replace(/\{/g, '\\{')   // Escape opening braces
+    .replace(/\}/g, '\\}')   // Escape closing braces
+    .replace(/\n/g, '\\N');  // Convert newlines to ASS format
+}
+
+// Generate ASS (Advanced SubStation Alpha) subtitle file for karaoke-style captions
+// This provides word-by-word highlighting with professional styling
+function generateAssContent(
+  captions: CaptionWithWords[],
+  videoWidth: number,
+  videoHeight: number
+): string {
+  // Position captions at ~65-70% from top (between center and bottom)
+  // MarginV controls vertical positioning from bottom
+  // 32% from bottom = 68% from top (target range 65-70%)
+  const marginBottom = Math.round(videoHeight * 0.32);
+  
+  // Font size scales with video height for readability
+  const fontSize = Math.max(Math.round(videoHeight / 18), 28);
+  
+  // ASS karaoke colors:
+  // - SecondaryColour (&H00FFFFFF white): Color BEFORE the word is spoken (unhighlighted)
+  // - PrimaryColour (&H0000D4FF cyan/yellow): Color AS the word is being spoken (highlighted)
+  // The \k tags progressively fill from Secondary to Primary color
+  const highlightColor = "&H0000D4FF";  // Cyan/Yellow highlight (BGR format)
+  const baseColor = "&H00FFFFFF";       // White base color
+  const outlineColor = "&H00000000";    // Black outline
+  const backColor = "&H80000000";       // Semi-transparent black background
+  
+  // ASS file header with styles
+  const header = `[Script Info]
+Title: Karaoke Captions
+ScriptType: v4.00+
+PlayResX: ${videoWidth}
+PlayResY: ${videoHeight}
+WrapStyle: 0
+Timer: 100.0000
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,${fontSize},${highlightColor},${baseColor},${outlineColor},${backColor},1,0,0,0,100,100,0,0,1,3,1,2,20,20,${marginBottom},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  const formatAssTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const cs = Math.floor((seconds % 1) * 100); // Centiseconds for ASS
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+  };
+
+  // Build dialogue lines with karaoke effect
+  const dialogueLines: string[] = [];
+  
+  for (const cap of captions) {
+    if (cap.words && cap.words.length > 0) {
+      // Karaoke-style: show words progressively with highlighting
+      // Group words into chunks of ~4 words for readability
+      const wordsPerChunk = 4;
+      const chunks: WordTiming[][] = [];
+      
+      for (let i = 0; i < cap.words.length; i += wordsPerChunk) {
+        chunks.push(cap.words.slice(i, i + wordsPerChunk));
+      }
+      
+      // For each chunk, show with progressive word highlighting
+      for (const chunk of chunks) {
+        if (chunk.length === 0) continue;
+        
+        const chunkStart = chunk[0].start;
+        const chunkEnd = chunk[chunk.length - 1].end;
+        
+        // Create karaoke text with {\k} timing codes
+        // \k (or \kf for smooth fill) fills word from SecondaryColour to PrimaryColour
+        // The number is duration in centiseconds
+        let karaokeText = '';
+        
+        for (let i = 0; i < chunk.length; i++) {
+          const word = chunk[i];
+          const wordDuration = Math.max(Math.round((word.end - word.start) * 100), 10); // Min 10cs
+          const escapedWord = escapeAssText(word.word);
+          
+          // \kf creates a smooth fill effect (character by character highlight)
+          karaokeText += `{\\kf${wordDuration}}${escapedWord} `;
+        }
+        
+        dialogueLines.push(
+          `Dialogue: 0,${formatAssTime(chunkStart)},${formatAssTime(chunkEnd)},Default,,0,0,0,,${karaokeText.trim()}`
+        );
+      }
+    } else {
+      // Fallback: simple subtitle without word-level timing
+      const escapedText = escapeAssText(cap.text);
+      dialogueLines.push(
+        `Dialogue: 0,${formatAssTime(cap.start)},${formatAssTime(cap.end)},Default,,0,0,0,,${escapedText}`
+      );
+    }
+  }
+  
+  return header + dialogueLines.join('\n') + '\n';
+}
+
+// Legacy SRT generation (kept for compatibility)
 function generateSrtContent(captions: { start: number; end: number; text: string }[]): string {
   return captions.map((cap, i) => {
     const formatTime = (seconds: number) => {
@@ -373,16 +497,25 @@ async function concatSegmentsSimple(
 async function burnSubtitles(
   inputPath: string,
   outputPath: string,
-  srtPath: string
+  subtitlePath: string
 ): Promise<void> {
-  const escapedSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
+  const escapedPath = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
+  const isAss = subtitlePath.endsWith('.ass');
   
   await new Promise<void>((resolve, reject) => {
-    ffmpeg(inputPath)
-      .videoFilters([
-        `subtitles='${escapedSrtPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1'`
-      ])
-      .outputOptions([
+    const cmd = ffmpeg(inputPath);
+    
+    if (isAss) {
+      // ASS subtitles use the ass filter which preserves all styling
+      cmd.videoFilters([`ass='${escapedPath}'`]);
+    } else {
+      // SRT fallback with basic styling
+      cmd.videoFilters([
+        `subtitles='${escapedPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1'`
+      ]);
+    }
+    
+    cmd.outputOptions([
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
@@ -1051,16 +1184,23 @@ export async function applyEdits(
     overlayedPath = baseVideoPath;
   }
 
-  // STEP 4: Build and apply captions
-  const adjustedCaptions: { start: number; end: number; text: string }[] = [];
+  // STEP 4: Build and apply captions with word-level timing for karaoke effect
+  const adjustedCaptions: CaptionWithWords[] = [];
   
   if (options.addCaptions) {
-    const allCaptions = [
-      ...transcript,
+    // Include word-level timing from transcript segments
+    const allCaptions: CaptionWithWords[] = [
+      ...transcript.map(t => ({
+        start: t.start,
+        end: t.end,
+        text: t.text,
+        words: t.words,
+      })),
       ...captionActions.map(a => ({
         start: a.start || 0,
         end: a.end || (a.start || 0) + 3,
-        text: a.text || ""
+        text: a.text || "",
+        words: undefined,
       }))
     ];
     
@@ -1075,10 +1215,27 @@ export async function applyEdits(
         const adjustedStart = mapping.outputStart + (overlapStart - mapping.sourceStart);
         const adjustedEnd = mapping.outputStart + (overlapEnd - mapping.sourceStart);
         
+        // Adjust word timings as well - use overlap window for correct mapping
+        let adjustedWords: WordTiming[] | undefined;
+        if (cap.words && cap.words.length > 0) {
+          adjustedWords = cap.words
+            // Only include words that fall within the overlap window
+            .filter(w => w.start >= overlapStart && w.end <= overlapEnd)
+            .map(w => ({
+              word: w.word,
+              // Map from source time (relative to mapping.sourceStart) to output time
+              start: mapping.outputStart + (w.start - mapping.sourceStart),
+              end: mapping.outputStart + (w.end - mapping.sourceStart),
+            }))
+            // Ensure adjusted times are within the adjusted caption bounds
+            .filter(w => w.start >= adjustedStart && w.end <= adjustedEnd);
+        }
+        
         adjustedCaptions.push({
           start: adjustedStart,
           end: adjustedEnd,
-          text: cap.text
+          text: cap.text,
+          words: adjustedWords,
         });
       }
     }
@@ -1086,16 +1243,20 @@ export async function applyEdits(
     console.log(`Mapped ${adjustedCaptions.length} captions to output timeline`);
   }
 
-  // Apply captions if any
+  // Apply captions if any - use ASS format for karaoke-style highlighting
   if (adjustedCaptions.length > 0) {
-    console.log(`Burning ${adjustedCaptions.length} captions into final video`);
+    console.log(`Burning ${adjustedCaptions.length} karaoke-style captions into final video`);
     
-    const srtPath = path.join(OUTPUT_DIR, `${outputId}.srt`);
-    const srtContent = generateSrtContent(adjustedCaptions);
-    await fs.writeFile(srtPath, srtContent);
-    tempFiles.push(srtPath);
+    // Get video dimensions for proper ASS rendering
+    const videoMeta = await getVideoMetadata(overlayedPath);
     
-    await burnSubtitles(overlayedPath, outputPath, srtPath);
+    // Generate ASS file with karaoke timing
+    const assPath = path.join(OUTPUT_DIR, `${outputId}.ass`);
+    const assContent = generateAssContent(adjustedCaptions, videoMeta.width, videoMeta.height);
+    await fs.writeFile(assPath, assContent);
+    tempFiles.push(assPath);
+    
+    await burnSubtitles(overlayedPath, outputPath, assPath);
   } else {
     // Just copy the result
     if (overlayedPath !== outputPath) {

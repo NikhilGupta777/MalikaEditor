@@ -29,13 +29,28 @@ export async function getVideoMetadata(
       const videoStream = metadata.streams.find((s) => s.codec_type === "video");
       const duration = metadata.format.duration || 0;
 
+      let fps = 30;
+      if (videoStream?.r_frame_rate) {
+        const parts = videoStream.r_frame_rate.split("/");
+        if (parts.length === 2) {
+          const num = parseFloat(parts[0]);
+          const den = parseFloat(parts[1]);
+          if (den !== 0 && !isNaN(num) && !isNaN(den)) {
+            fps = num / den;
+          }
+        } else {
+          const parsed = parseFloat(videoStream.r_frame_rate);
+          if (!isNaN(parsed)) {
+            fps = parsed;
+          }
+        }
+      }
+
       resolve({
         duration,
         width: videoStream?.width || 1920,
         height: videoStream?.height || 1080,
-        fps: videoStream?.r_frame_rate
-          ? eval(videoStream.r_frame_rate)
-          : 30,
+        fps,
       });
     });
   });

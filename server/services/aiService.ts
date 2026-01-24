@@ -1,4 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import { promises as fs } from "fs";
 import type {
@@ -9,14 +8,12 @@ import type {
   TranscriptSegment,
 } from "@shared/schema";
 
-const genAI = new GoogleGenAI({
+const geminiClient = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  httpOptions: {
-    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-  },
+  baseURL: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
 });
 
-const openai = new OpenAI({
+const openaiClient = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
@@ -42,10 +39,10 @@ export async function analyzeVideoFrames(
     })
   );
 
-  const imageParts = frameContents.map((frame) => ({
-    inlineData: {
-      mimeType: "image/jpeg",
-      data: frame.base64,
+  const imageContent = frameContents.map((frame) => ({
+    type: "image_url" as const,
+    image_url: {
+      url: `data:image/jpeg;base64,${frame.base64}`,
     },
   }));
 
@@ -60,7 +57,7 @@ Also provide an overall summary of the video content.
 
 Silent segments detected in the video: ${JSON.stringify(silentSegments)}
 
-Respond in JSON format:
+Respond in JSON format only (no markdown):
 {
   "frames": [
     {
@@ -74,17 +71,21 @@ Respond in JSON format:
   "contentType": "string (e.g., 'tutorial', 'vlog', 'interview', 'presentation')"
 }`;
 
-  const response = await genAI.models.generateContent({
+  const response = await geminiClient.chat.completions.create({
     model: "gemini-2.5-flash",
-    contents: [
+    messages: [
       {
         role: "user",
-        parts: [{ text: prompt }, ...imageParts],
+        content: [
+          { type: "text", text: prompt },
+          ...imageContent,
+        ],
       },
     ],
+    max_completion_tokens: 4096,
   });
 
-  const text = response.text || "";
+  const text = response.choices[0]?.message?.content || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     throw new Error("Failed to parse AI response");
@@ -116,28 +117,26 @@ export async function transcribeAudio(
       type: "audio/mpeg",
     });
 
-    const response = await openai.audio.transcriptions.create({
+    const response = await openaiClient.audio.transcriptions.create({
       file: audioFile,
       model: "gpt-4o-mini-transcribe",
-      response_format: "verbose_json",
-      timestamp_granularities: ["segment"],
+      response_format: "json",
     });
 
-    if (response.segments && Array.isArray(response.segments)) {
-      return response.segments.map((seg: any) => ({
-        start: seg.start,
-        end: seg.end,
-        text: seg.text,
-      }));
+    const text = response.text || "";
+    
+    if (!text.trim()) {
+      return [];
     }
 
-    return [
-      {
-        start: 0,
-        end: 0,
-        text: response.text || "",
-      },
-    ];
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim());
+    const segmentDuration = 5;
+    
+    return sentences.map((sentence, i) => ({
+      start: i * segmentDuration,
+      end: (i + 1) * segmentDuration,
+      text: sentence.trim(),
+    }));
   } catch (error) {
     console.error("Transcription error:", error);
     return [];
@@ -186,7 +185,7 @@ Create an edit plan that follows the user's instructions. Make sure to:
 4. Add captions for key dialogue
 5. Estimate the final video duration
 
-Respond with a JSON object:
+Respond with a JSON object only (no markdown code blocks):
 {
   "actions": [...],
   "stockQueries": ["unique stock search terms"],
@@ -194,17 +193,22 @@ Respond with a JSON object:
   "estimatedDuration": number
 }`;
 
-  const response = await genAI.models.generateContent({
+  const response = await geminiClient.chat.completions.create({
     model: "gemini-2.5-flash",
-    contents: [
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt,
+      },
       {
         role: "user",
-        parts: [{ text: systemPrompt + "\n\n" + userPrompt }],
+        content: userPrompt,
       },
     ],
+    max_completion_tokens: 4096,
   });
 
-  const text = response.text || "";
+  const text = response.choices[0]?.message?.content || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     const keepAction: EditAction = {
@@ -234,14 +238,14 @@ Respond with a JSON object:
 
   const hasKeepActions = actions.some((a) => a.type === "keep");
   if (!hasKeepActions) {
-    const sortedActions = actions
+    const sortedCuts = actions
       .filter((a) => a.type === "cut" && a.start !== undefined && a.end !== undefined)
       .sort((a, b) => (a.start || 0) - (b.start || 0));
 
     const keepActions: EditAction[] = [];
     let currentTime = 0;
 
-    for (const cut of sortedActions) {
+    for (const cut of sortedCuts) {
       if (cut.start! > currentTime) {
         keepActions.push({
           type: "keep",
@@ -259,6 +263,15 @@ Respond with a JSON object:
         start: currentTime,
         end: analysis.duration,
         reason: "Content after last cut",
+      });
+    }
+
+    if (keepActions.length === 0) {
+      keepActions.push({
+        type: "keep",
+        start: 0,
+        end: analysis.duration,
+        reason: "Keep entire video",
       });
     }
 

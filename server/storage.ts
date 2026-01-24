@@ -57,7 +57,7 @@ export class MemStorage implements IStorage {
       fileName: project.fileName,
       originalPath: project.originalPath,
       outputPath: project.outputPath || null,
-      prompt: project.prompt,
+      prompt: project.prompt || null,
       status: project.status || "pending",
       duration: project.duration || null,
       analysis: project.analysis || null,

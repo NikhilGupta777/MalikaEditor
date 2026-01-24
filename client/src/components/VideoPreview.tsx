@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Play,
   Pause,
@@ -17,34 +17,85 @@ interface VideoPreviewProps {
   src?: string;
   poster?: string;
   className?: string;
+  currentTime?: number;
+  onTimeUpdate?: (time: number) => void;
+  onDurationChange?: (duration: number) => void;
 }
 
-export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
+export function VideoPreview({
+  src,
+  poster,
+  className,
+  currentTime: externalTime,
+  onTimeUpdate,
+  onDurationChange,
+}: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [internalTime, setInternalTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isSeeking, setIsSeeking] = useState(false);
+
+  const currentTime = externalTime !== undefined ? externalTime : internalTime;
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const handleTimeUpdate = () => setCurrentTime(video.currentTime);
-    const handleDurationChange = () => setDuration(video.duration);
+    const handleTimeUpdate = () => {
+      if (!isSeeking) {
+        const time = video.currentTime;
+        setInternalTime(time);
+        onTimeUpdate?.(time);
+      }
+    };
+
+    const handleDurationChange = () => {
+      if (video.duration && isFinite(video.duration)) {
+        setDuration(video.duration);
+        onDurationChange?.(video.duration);
+      }
+    };
+
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
     const handleEnded = () => setIsPlaying(false);
+    const handleLoadedMetadata = () => {
+      setIsLoaded(true);
+      setError(null);
+      if (video.duration && isFinite(video.duration)) {
+        setDuration(video.duration);
+        onDurationChange?.(video.duration);
+      }
+    };
+    const handleCanPlay = () => {
+      setIsLoaded(true);
+      setError(null);
+    };
+    const handleError = () => {
+      setError("Failed to load video");
+      setIsLoaded(false);
+    };
+    const handleSeeked = () => {
+      setIsSeeking(false);
+    };
 
     video.addEventListener("timeupdate", handleTimeUpdate);
     video.addEventListener("durationchange", handleDurationChange);
     video.addEventListener("play", handlePlay);
     video.addEventListener("pause", handlePause);
     video.addEventListener("ended", handleEnded);
+    video.addEventListener("loadedmetadata", handleLoadedMetadata);
+    video.addEventListener("canplay", handleCanPlay);
+    video.addEventListener("error", handleError);
+    video.addEventListener("seeked", handleSeeked);
 
     return () => {
       video.removeEventListener("timeupdate", handleTimeUpdate);
@@ -52,8 +103,36 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
       video.removeEventListener("play", handlePlay);
       video.removeEventListener("pause", handlePause);
       video.removeEventListener("ended", handleEnded);
+      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      video.removeEventListener("canplay", handleCanPlay);
+      video.removeEventListener("error", handleError);
+      video.removeEventListener("seeked", handleSeeked);
     };
+  }, [isSeeking, onTimeUpdate, onDurationChange]);
+
+  useEffect(() => {
+    if (src && videoRef.current) {
+      setIsLoaded(false);
+      setError(null);
+      setInternalTime(0);
+      setDuration(0);
+      setIsPlaying(false);
+      videoRef.current.load();
+    }
   }, [src]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (
+      video &&
+      isLoaded &&
+      externalTime !== undefined &&
+      Math.abs(video.currentTime - externalTime) > 0.5
+    ) {
+      setIsSeeking(true);
+      video.currentTime = externalTime;
+    }
+  }, [externalTime, isLoaded]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -66,69 +145,87 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
     };
   }, []);
 
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !isLoaded) return;
 
     if (isPlaying) {
       video.pause();
     } else {
-      video.play();
+      video.play().catch(console.error);
     }
-  };
+  }, [isLoaded, isPlaying]);
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
 
     video.muted = !video.muted;
     setIsMuted(video.muted);
-  };
+  }, []);
 
-  const handleSeek = (value: number[]) => {
-    const video = videoRef.current;
-    if (!video) return;
+  const handleSeek = useCallback(
+    (value: number[]) => {
+      const video = videoRef.current;
+      if (!video || !isLoaded) return;
 
-    video.currentTime = value[0];
-    setCurrentTime(value[0]);
-  };
+      const newTime = value[0];
+      setIsSeeking(true);
+      video.currentTime = newTime;
+      setInternalTime(newTime);
+      onTimeUpdate?.(newTime);
+    },
+    [isLoaded, onTimeUpdate]
+  );
 
-  const handleVolumeChange = (value: number[]) => {
+  const handleVolumeChange = useCallback((value: number[]) => {
     const video = videoRef.current;
     if (!video) return;
 
     video.volume = value[0];
     setVolume(value[0]);
     setIsMuted(value[0] === 0);
-  };
+  }, []);
 
-  const skipBackward = () => {
+  const skipBackward = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !isLoaded) return;
 
-    video.currentTime = Math.max(0, video.currentTime - 10);
-  };
+    const newTime = Math.max(0, video.currentTime - 10);
+    setIsSeeking(true);
+    video.currentTime = newTime;
+    setInternalTime(newTime);
+    onTimeUpdate?.(newTime);
+  }, [isLoaded, onTimeUpdate]);
 
-  const skipForward = () => {
+  const skipForward = useCallback(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !isLoaded) return;
 
-    video.currentTime = Math.min(duration, video.currentTime + 10);
-  };
+    const newTime = Math.min(duration, video.currentTime + 10);
+    setIsSeeking(true);
+    video.currentTime = newTime;
+    setInternalTime(newTime);
+    onTimeUpdate?.(newTime);
+  }, [duration, isLoaded, onTimeUpdate]);
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
     if (!container) return;
 
-    if (isFullscreen) {
-      document.exitFullscreen();
-    } else {
-      container.requestFullscreen();
+    try {
+      if (isFullscreen) {
+        await document.exitFullscreen();
+      } else {
+        await container.requestFullscreen();
+      }
+    } catch (err) {
+      console.error("Fullscreen error:", err);
     }
-  };
+  }, [isFullscreen]);
 
   const formatTime = (time: number): string => {
-    if (!isFinite(time)) return "0:00";
+    if (!isFinite(time) || isNaN(time)) return "0:00";
     const minutes = Math.floor(time / 60);
     const seconds = Math.floor(time % 60);
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
@@ -170,10 +267,19 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
         className="w-full h-full object-contain"
         onClick={togglePlay}
         playsInline
+        preload="metadata"
       />
 
-      {/* Play button overlay */}
-      {!isPlaying && (
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+          <div className="text-center text-white">
+            <Film className="h-12 w-12 mx-auto mb-2 opacity-50" />
+            <p>{error}</p>
+          </div>
+        </div>
+      )}
+
+      {!isPlaying && !error && isLoaded && (
         <div
           className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer"
           onClick={togglePlay}
@@ -184,14 +290,21 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
         </div>
       )}
 
-      {/* Controls */}
+      {!isLoaded && !error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+          <div className="text-center text-white">
+            <div className="h-8 w-8 border-2 border-white border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+            <p className="text-sm">Loading video...</p>
+          </div>
+        </div>
+      )}
+
       <div
         className={cn(
           "absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 transition-opacity",
           showControls || !isPlaying ? "opacity-100" : "opacity-0"
         )}
       >
-        {/* Progress bar */}
         <div className="mb-3">
           <Slider
             value={[currentTime]}
@@ -200,6 +313,7 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
             step={0.1}
             onValueChange={handleSeek}
             className="cursor-pointer"
+            disabled={!isLoaded}
             data-testid="slider-video-progress"
           />
         </div>
@@ -211,6 +325,7 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
               size="icon"
               onClick={skipBackward}
               className="text-white hover:bg-white/20"
+              disabled={!isLoaded}
               data-testid="button-skip-back"
             >
               <SkipBack className="h-4 w-4" />
@@ -220,6 +335,7 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
               size="icon"
               onClick={togglePlay}
               className="text-white hover:bg-white/20"
+              disabled={!isLoaded}
               data-testid="button-play-pause"
             >
               {isPlaying ? (
@@ -233,6 +349,7 @@ export function VideoPreview({ src, poster, className }: VideoPreviewProps) {
               size="icon"
               onClick={skipForward}
               className="text-white hover:bg-white/20"
+              disabled={!isLoaded}
               data-testid="button-skip-forward"
             >
               <SkipForward className="h-4 w-4" />

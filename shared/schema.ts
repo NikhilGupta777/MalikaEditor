@@ -22,7 +22,7 @@ export const videoProjects = pgTable("video_projects", {
   fileName: text("file_name").notNull(),
   originalPath: text("original_path").notNull(),
   outputPath: text("output_path"),
-  prompt: text("prompt").notNull(),
+  prompt: text("prompt"),
   status: text("status").notNull().default("pending"),
   duration: integer("duration"),
   analysis: jsonb("analysis"),

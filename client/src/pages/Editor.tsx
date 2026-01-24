@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { Film, Sparkles, Upload } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
@@ -191,6 +191,20 @@ export default function Editor() {
     setCurrentTime(0);
   };
 
+  const handleTimeUpdate = useCallback((time: number) => {
+    setCurrentTime(time);
+  }, []);
+
+  const handleSeek = useCallback((time: number) => {
+    setCurrentTime(time);
+  }, []);
+
+  const handleDurationChange = useCallback((duration: number) => {
+    setProject((prev) =>
+      prev ? { ...prev, duration: Math.round(duration) } : null
+    );
+  }, []);
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
@@ -234,6 +248,9 @@ export default function Editor() {
             <VideoPreview
               src={previewUrl || undefined}
               className="h-full"
+              currentTime={currentTime}
+              onTimeUpdate={handleTimeUpdate}
+              onDurationChange={handleDurationChange}
             />
           </div>
 
@@ -242,7 +259,7 @@ export default function Editor() {
             duration={project?.duration || 0}
             editPlan={project?.editPlan}
             currentTime={currentTime}
-            onSeek={setCurrentTime}
+            onSeek={handleSeek}
           />
         </div>
 

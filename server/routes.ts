@@ -87,7 +87,6 @@ export async function registerRoutes(
         const project = await storage.createVideoProject({
           fileName: req.file.originalname,
           originalPath: `/uploads/${path.basename(filePath)}`,
-          prompt: "",
           status: "pending",
           duration: Math.round(metadata.duration),
         });

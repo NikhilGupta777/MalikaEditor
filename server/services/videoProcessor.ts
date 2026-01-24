@@ -169,51 +169,88 @@ export async function applyEdits(
     return outputPath;
   }
 
-  const filterComplex: string[] = [];
-  const concatInputs: string[] = [];
-
-  for (let i = 0; i < keepSegments.length; i++) {
-    const seg = keepSegments[i];
-    filterComplex.push(
-      `[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[v${i}]`
-    );
-    filterComplex.push(
-      `[0:a]atrim=start=${seg.start}:end=${seg.end},asetpts=PTS-STARTPTS[a${i}]`
-    );
-    concatInputs.push(`[v${i}][a${i}]`);
+  if (keepSegments.length === 1) {
+    const seg = keepSegments[0];
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(videoPath)
+        .setStartTime(seg.start)
+        .setDuration(seg.end - seg.start)
+        .outputOptions([
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-c:a", "aac",
+          "-b:a", "96k",
+          "-max_muxing_queue_size", "1024",
+          "-threads", "1",
+        ])
+        .output(outputPath)
+        .on("end", () => resolve())
+        .on("error", (err) => {
+          console.error("FFmpeg error:", err);
+          reject(err);
+        })
+        .run();
+    });
+    return outputPath;
   }
 
-  filterComplex.push(
-    `${concatInputs.join("")}concat=n=${keepSegments.length}:v=1:a=1[outv][outa]`
-  );
+  const tempSegmentPaths: string[] = [];
+  
+  for (let i = 0; i < keepSegments.length; i++) {
+    const seg = keepSegments[i];
+    const segmentPath = path.join(OUTPUT_DIR, `segment_${outputId}_${i}.ts`);
+    tempSegmentPaths.push(segmentPath);
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(videoPath)
+        .setStartTime(seg.start)
+        .setDuration(seg.end - seg.start)
+        .outputOptions([
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-c:a", "aac",
+          "-b:a", "96k",
+          "-max_muxing_queue_size", "1024",
+          "-threads", "1",
+          "-f", "mpegts",
+        ])
+        .output(segmentPath)
+        .on("end", () => resolve())
+        .on("error", (err) => {
+          console.error(`FFmpeg segment ${i} error:`, err);
+          reject(err);
+        })
+        .run();
+    });
+  }
+
+  const concatListPath = path.join(OUTPUT_DIR, `concat_${outputId}.txt`);
+  const concatContent = tempSegmentPaths.map(p => `file '${p}'`).join("\n");
+  await fs.writeFile(concatListPath, concatContent);
 
   await new Promise<void>((resolve, reject) => {
-    ffmpeg(videoPath)
-      .complexFilter(filterComplex.join(";"))
+    ffmpeg()
+      .input(concatListPath)
+      .inputOptions(["-f", "concat", "-safe", "0"])
       .outputOptions([
-        "-map",
-        "[outv]",
-        "-map",
-        "[outa]",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "23",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
+        "-c", "copy",
+        "-max_muxing_queue_size", "1024",
       ])
       .output(outputPath)
       .on("end", () => resolve())
       .on("error", (err) => {
-        console.error("FFmpeg error:", err);
+        console.error("FFmpeg concat error:", err);
         reject(err);
       })
       .run();
   });
+
+  await fs.unlink(concatListPath).catch(() => {});
+  for (const segPath of tempSegmentPaths) {
+    await fs.unlink(segPath).catch(() => {});
+  }
 
   return outputPath;
 }

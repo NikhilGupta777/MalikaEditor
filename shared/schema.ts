@@ -174,16 +174,14 @@ export const videoAnalysisSchema = z.object({
 export type VideoAnalysis = z.infer<typeof videoAnalysisSchema>;
 
 export const editActionSchema = z.object({
-  type: z.enum(["cut", "keep", "insert_stock", "insert_ai_image", "add_caption", "add_text_overlay", "transition", "speed_change"]),
+  // Note: AI images are auto-placed from semantic analysis (not in edit plan)
+  type: z.enum(["cut", "keep", "insert_stock", "add_caption", "add_text_overlay", "transition", "speed_change"]),
   start: z.number().optional(),
   end: z.number().optional(),
   duration: z.number().optional(),
   text: z.string().optional(),
   stockQuery: z.string().optional(),
   stockUrl: z.string().optional(),
-  // AI image generation fields
-  aiImagePrompt: z.string().optional(),
-  aiImageUrl: z.string().optional(),
   transitionType: z.string().optional(),
   speed: z.number().optional(),
   reason: z.string().optional(),
@@ -220,6 +218,9 @@ export const stockMediaItemSchema = z.object({
   // AI generation metadata
   aiPrompt: z.string().optional(),
   generatedAt: z.number().optional(),
+  // Timing info for deterministic placement (AI images)
+  startTime: z.number().optional(),
+  endTime: z.number().optional(),
 });
 
 export type StockMediaItem = z.infer<typeof stockMediaItemSchema>;

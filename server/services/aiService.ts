@@ -31,15 +31,7 @@ const InsertStockActionSchema = z.object({
   transcriptContext: z.string().optional(),
 });
 
-const InsertAiImageActionSchema = z.object({
-  type: z.literal("insert_ai_image"),
-  start: z.number().min(0).optional(),
-  duration: z.number().min(1).max(8).optional(),
-  aiImagePrompt: z.string(),
-  reason: z.string().optional(),
-  priority: z.enum(["low", "medium", "high"]).optional(),
-  transcriptContext: z.string().optional(),
-});
+// Note: InsertAiImageActionSchema removed - AI images are auto-placed from semantic analysis
 
 const TextActionSchema = z.object({
   type: z.enum(["add_caption", "add_text_overlay"]),
@@ -58,7 +50,6 @@ const TransitionActionSchema = z.object({
 const EditActionSchema = z.union([
   CutKeepActionSchema,
   InsertStockActionSchema,
-  InsertAiImageActionSchema,
   TextActionSchema,
   TransitionActionSchema,
 ]);
@@ -234,9 +225,9 @@ function getBrollStyleHint(genre?: string): string {
 }
 
 function validateAndFixBrollActions(actions: EditAction[], duration: number): EditAction[] {
-  // Include both insert_stock and insert_ai_image actions in B-roll validation
-  const brollActions = actions.filter(a => a.type === "insert_stock" || a.type === "insert_ai_image");
-  const otherActions = actions.filter(a => a.type !== "insert_stock" && a.type !== "insert_ai_image");
+  // Validate insert_stock actions only (AI images are auto-placed from semantic analysis)
+  const brollActions = actions.filter(a => a.type === "insert_stock");
+  const otherActions = actions.filter(a => a.type !== "insert_stock");
   
   const brollWithTiming = brollActions.map((a, index) => ({
     ...a,
@@ -779,14 +770,24 @@ export async function generateAiImage(
  * Generate multiple AI images for B-roll based on semantic analysis
  * Returns array of generated images with their prompts
  */
+export interface GeneratedAiImage {
+  prompt: string;
+  base64Data: string;
+  mimeType: string;
+  startTime: number;
+  endTime: number;
+  duration: number;
+  context: string;
+}
+
 export async function generateAiImagesForVideo(
   semanticAnalysis: SemanticAnalysis,
   videoContext?: VideoContext,
   maxImages: number = 3
-): Promise<Array<{ prompt: string; base64Data: string; mimeType: string; timestamp: number }>> {
-  const generatedImages: Array<{ prompt: string; base64Data: string; mimeType: string; timestamp: number }> = [];
+): Promise<GeneratedAiImage[]> {
+  const generatedImages: GeneratedAiImage[] = [];
   
-  // Get B-roll windows that are good candidates for AI images
+  // Get B-roll windows that are good candidates for AI images (high/medium priority)
   const aiImageCandidates = semanticAnalysis.brollWindows
     .filter(w => w.priority === "high" || w.priority === "medium")
     .slice(0, maxImages);
@@ -798,11 +799,15 @@ export async function generateAiImagesForVideo(
       const result = await generateAiImage(imagePrompt, videoContext);
       
       if (result) {
+        // Return complete timing info from the ACTUAL candidate (not indexed from original)
         generatedImages.push({
           prompt: candidate.suggestedQuery,
           base64Data: result.base64Data,
           mimeType: result.mimeType,
-          timestamp: candidate.start,
+          startTime: candidate.start,
+          endTime: candidate.end,
+          duration: Math.min(candidate.end - candidate.start, 5),
+          context: candidate.context,
         });
       }
     } catch (error) {
@@ -858,13 +863,11 @@ AVAILABLE EDIT ACTIONS:
    - Provide: start time, duration (2-6 seconds), specific search query
    - Priority: high for abstract concepts, medium for examples, low for optional enhancement
 
-4. "insert_ai_image" - OVERLAY AI-generated image (original audio CONTINUES)
-   - Use when stock footage won't capture the SPECIFIC concept being discussed
-   - Ideal for: abstract concepts, unique visualizations, spiritual/metaphorical content
-   - AI generates custom imagery matched to exact transcript context
-   - Provide: start time, duration (3-5 seconds), detailed imagePrompt description
-   - imagePrompt should be highly descriptive: "ethereal golden light rays emerging from meditating figure in cosmic space"
-   - Use sparingly (max 2-3 per video) for truly unique visual needs
+4. NOTE: AI-generated images are AUTO-PLACED based on semantic transcript analysis.
+   - Do NOT emit "insert_ai_image" actions - the system handles this automatically
+   - AI images are placed at high-priority B-roll windows identified in semantic analysis
+   - This ensures deterministic, contextually-matched imagery placement
+   - Focus on "insert_stock" actions for additional B-roll needs beyond AI images
 
 5. "add_caption" - Add captions for key dialogue
    - Use for: important quotes, key takeaways, memorable lines
@@ -966,11 +969,9 @@ Respond with a JSON object only (no markdown):
   "actions": [
     {"type": "keep", "start": 0, "end": number, "reason": "string", "priority": "high/medium/low"},
     {"type": "cut", "start": number, "end": number, "reason": "string"},
-    {"type": "insert_stock", "start": number, "duration": number, "stockQuery": "specific descriptive query", "reason": "string", "priority": "high/medium/low"},
-    {"type": "insert_ai_image", "start": number, "duration": number, "imagePrompt": "detailed visual description for AI generation", "reason": "string", "priority": "high/medium/low"}
+    {"type": "insert_stock", "start": number, "duration": number, "stockQuery": "specific descriptive query", "reason": "string", "priority": "high/medium/low"}
   ],
   "stockQueries": ["list of unique stock media searches needed"],
-  "aiImagePrompts": ["list of unique AI image prompts needed"],
   "keyPoints": ["main topics and highlights from the video"],
   "estimatedDuration": number,
   "editingStrategy": {

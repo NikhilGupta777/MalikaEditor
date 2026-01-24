@@ -305,7 +305,7 @@ Please create an edit plan that follows these preferences.`;
             3 // Generate up to 3 AI images
           );
           
-          // Convert to StockMediaItem format and save to files
+          // Convert to StockMediaItem format and save to files with timing info
           for (let i = 0; i < generatedImages.length; i++) {
             const img = generatedImages[i];
             const ext = img.mimeType.includes("png") ? "png" : "jpg";
@@ -314,13 +314,19 @@ Please create an edit plan that follows these preferences.`;
             // Save base64 to file
             await fs.writeFile(imagePath, Buffer.from(img.base64Data, "base64"));
             
+            // Timing comes directly from the generated image (derived from filtered candidates)
             aiGeneratedImages.push({
               type: "ai_generated",
               query: img.prompt,
               url: imagePath, // Local path for processing
               aiPrompt: img.prompt,
               generatedAt: Date.now(),
+              startTime: img.startTime,
+              endTime: img.endTime,
+              duration: img.duration,
             });
+            
+            console.log(`AI image ${i}: "${img.prompt.substring(0, 40)}..." at ${img.startTime.toFixed(1)}s-${img.endTime.toFixed(1)}s`);
           }
           
           console.log(`Generated ${aiGeneratedImages.length} AI images`);

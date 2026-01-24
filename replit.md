@@ -56,7 +56,13 @@ The frontend follows a component-based architecture with:
   - Intelligent B-roll placement with timing rules (2-6 second duration, 3+ second spacing)
   - Validation to prevent overlapping B-roll actions
   - Context-appropriate stock media search queries derived from transcript semantics
-  - Support for AI image generation (insert_ai_image action type)
+  - Quality heuristics: pacing rules, genre-specific constraints, quality scoring
+- **AI Image Generation** (NEW): Fully functional custom image generation
+  - Uses Gemini 2.5-flash-image model for cost-effective image generation
+  - Images generated from semantic B-roll windows (high/medium priority)
+  - Auto-placed at deterministic timestamps from semantic analysis
+  - Context-aware prompts derived from transcript content and video context
+  - Separate media queue for type integrity (no stock/AI substitution)
 
 ### Video Processing Pipeline
 1. **Upload**: Video file stored in `/tmp/uploads`
@@ -64,7 +70,8 @@ The frontend follows a component-based architecture with:
 3. **Transcription**: Extract audio, transcribe with OpenAI
 4. **Planning**: AI generates edit plan based on user prompt
 5. **Stock Media**: Fetch relevant images/videos from Pexels API
-6. **Rendering**: Apply edits with FFmpeg, output to `/tmp/output`
+6. **AI Images** (NEW): Generate custom AI images from semantic B-roll windows
+7. **Rendering**: Apply edits with FFmpeg, output to `/tmp/output`
 
 ### B-Roll Implementation (Traditional Style)
 The B-roll system uses traditional TV/documentary style overlay:

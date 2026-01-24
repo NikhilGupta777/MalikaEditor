@@ -60,6 +60,8 @@ export default function Editor() {
     };
   }, []);
 
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+
   const handleUpload = useCallback(
     async (file: File) => {
       setIsUploading(true);
@@ -70,6 +72,7 @@ export default function Editor() {
         formData.append("video", file);
 
         const xhr = new XMLHttpRequest();
+        xhrRef.current = xhr;
 
         xhr.upload.addEventListener("progress", (e) => {
           if (e.lengthComputable) {
@@ -87,6 +90,7 @@ export default function Editor() {
             }
           };
           xhr.onerror = () => reject(new Error("Upload failed"));
+          xhr.onabort = () => reject(new Error("Upload cancelled"));
           xhr.open("POST", "/api/videos/upload");
           xhr.send(formData);
         });
@@ -116,10 +120,24 @@ export default function Editor() {
       } finally {
         setIsUploading(false);
         setUploadProgress(0);
+        xhrRef.current = null;
       }
     },
     [toast]
   );
+
+  const handleCancelUpload = useCallback(() => {
+    if (xhrRef.current) {
+      xhrRef.current.abort();
+      setIsUploading(false);
+      setUploadProgress(0);
+      xhrRef.current = null;
+      toast({
+        title: "Upload cancelled",
+        description: "Your video upload has been stopped.",
+      });
+    }
+  }, [toast]);
 
   const handleProcessVideo = useCallback(
     async (prompt: string) => {
@@ -329,6 +347,7 @@ export default function Editor() {
                   
                   <VideoUploader
                     onUpload={handleUpload}
+                    onCancel={handleCancelUpload}
                     isUploading={isUploading}
                     uploadProgress={uploadProgress}
                   />

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 interface VideoUploaderProps {
   onUpload: (file: File) => void;
+  onCancel?: () => void;
   isUploading: boolean;
   uploadProgress: number;
   maxSizeGB?: number;
@@ -14,6 +15,7 @@ interface VideoUploaderProps {
 
 export function VideoUploader({
   onUpload,
+  onCancel,
   isUploading,
   uploadProgress,
   maxSizeGB = 1,
@@ -113,7 +115,7 @@ export function VideoUploader({
               {selectedFile?.name}
             </p>
           </div>
-          <div className="w-full space-y-2">
+          <div className="w-full space-y-4">
             <Progress value={uploadProgress} className="h-3" />
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">
@@ -124,6 +126,18 @@ export function VideoUploader({
               </span>
             </div>
           </div>
+          {onCancel && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onCancel}
+              className="mt-2 text-muted-foreground hover:text-destructive"
+              data-testid="button-cancel-upload"
+            >
+              <X className="h-4 w-4 mr-2" />
+              Cancel Upload
+            </Button>
+          )}
         </div>
       </Card>
     );

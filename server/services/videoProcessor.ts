@@ -467,6 +467,168 @@ async function concatTwoWithTransition(
   return transitionDuration;
 }
 
+// Overlay info for B-roll on main video
+interface BrollOverlay {
+  localPath: string;
+  type: "image" | "video";
+  startTime: number; // When to show overlay (in output timeline)
+  duration: number;
+  text?: string;
+}
+
+// Prepare stock media as overlay video (full-frame for traditional B-roll)
+// The overlay fades in/out to smoothly blend with the base video
+// Audio continues uninterrupted during the overlay
+async function prepareOverlayMedia(
+  stock: DownloadedStock,
+  duration: number,
+  width: number,
+  height: number,
+  outputPath: string
+): Promise<void> {
+  if (stock.item.type === "video") {
+    // Scale video to match main video dimensions
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(stock.localPath)
+        .setDuration(duration)
+        .outputOptions([
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-an", // No audio for overlay - original audio continues
+          "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+          "-pix_fmt", "yuv420p",
+          "-threads", "2",
+        ])
+        .output(outputPath)
+        .on("end", () => resolve())
+        .on("error", (err) => reject(err))
+        .run();
+    });
+  } else {
+    // Convert image to video with Ken Burns effect
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg()
+        .input(stock.localPath)
+        .inputOptions(["-loop", "1"])
+        .outputOptions([
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-an",
+          "-t", String(duration),
+          "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.001,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 25)}:s=${width}x${height}:fps=25`,
+          "-pix_fmt", "yuv420p",
+          "-threads", "2",
+        ])
+        .output(outputPath)
+        .on("end", () => resolve())
+        .on("error", (err) => reject(err))
+        .run();
+    });
+  }
+}
+
+// Apply all overlays one at a time with fade effects
+async function applyAllBrollOverlays(
+  baseVideoPath: string,
+  overlays: BrollOverlay[],
+  outputPath: string,
+  width: number,
+  height: number,
+  tempFiles: string[]
+): Promise<void> {
+  if (overlays.length === 0) {
+    await fs.copyFile(baseVideoPath, outputPath);
+    return;
+  }
+
+  const outputId = uuidv4();
+  const fadeDuration = 0.3;
+  
+  // Prepare all overlay video files (scaled to match base video)
+  const preparedOverlays: { path: string; startTime: number; duration: number }[] = [];
+  
+  for (let i = 0; i < overlays.length; i++) {
+    const overlay = overlays[i];
+    const overlayVideoPath = path.join(OUTPUT_DIR, `overlay_${outputId}_${i}.mp4`);
+    
+    try {
+      await prepareOverlayMedia(
+        { item: { type: overlay.type, url: "", query: "", duration: overlay.duration }, localPath: overlay.localPath },
+        overlay.duration,
+        width,
+        height,
+        overlayVideoPath
+      );
+      
+      preparedOverlays.push({
+        path: overlayVideoPath,
+        startTime: overlay.startTime,
+        duration: overlay.duration,
+      });
+      tempFiles.push(overlayVideoPath);
+      console.log(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s`);
+    } catch (err) {
+      console.error(`Failed to prepare overlay ${i}:`, err);
+    }
+  }
+
+  if (preparedOverlays.length === 0) {
+    await fs.copyFile(baseVideoPath, outputPath);
+    return;
+  }
+
+  // Apply overlays one at a time for reliability
+  // Each overlay: shift timing with setpts, apply fade, then composite
+  let currentPath = baseVideoPath;
+  
+  for (let i = 0; i < preparedOverlays.length; i++) {
+    const overlay = preparedOverlays[i];
+    const intermediatePath = path.join(OUTPUT_DIR, `overlayed_${outputId}_${i}.mp4`);
+    
+    const overlayStart = overlay.startTime;
+    
+    // Complex filter using single timing strategy (setpts only):
+    // 1. Convert overlay to support alpha channel for fade effects
+    // 2. Apply fade in/out effects (fades the entire overlay including any padding)
+    // 3. Shift overlay timing using setpts to start at overlayStart in base timeline
+    // 4. Overlay composites at full frame - B-roll style visual while audio continues
+    // Note: eof_action=pass means base video shows through when overlay has no frames
+    const filterComplex = [
+      `[1:v]format=yuva420p,fade=t=in:st=0:d=${fadeDuration}:alpha=1,fade=t=out:st=${Math.max(0, overlay.duration - fadeDuration)}:d=${fadeDuration}:alpha=1,setpts=PTS-STARTPTS+${overlayStart}/TB[ov]`,
+      `[0:v][ov]overlay=0:0:eof_action=pass[outv]`
+    ].join(";");
+    
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg()
+        .input(currentPath)
+        .input(overlay.path)
+        .complexFilter(filterComplex)
+        .outputOptions([
+          "-map", "[outv]",
+          "-map", "0:a?",
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "28",
+          "-c:a", "copy", // Keep original audio untouched during overlay phase
+          "-threads", "2",
+          "-max_muxing_queue_size", "2048",
+        ])
+        .output(intermediatePath)
+        .on("end", () => resolve())
+        .on("error", (err) => reject(err))
+        .run();
+    });
+    
+    tempFiles.push(intermediatePath);
+    currentPath = intermediatePath;
+    console.log(`Applied overlay ${i} at ${overlayStart}s with fade`);
+  }
+  
+  await fs.copyFile(currentPath, outputPath);
+}
+
 export async function applyEdits(
   videoPath: string,
   editPlan: EditPlan,
@@ -477,7 +639,7 @@ export async function applyEdits(
 ): Promise<string> {
   await ensureDirs();
   
-  console.log("=== APPLY EDITS START ===");
+  console.log("=== APPLY EDITS START (OVERLAY MODE) ===");
   console.log("Options:", JSON.stringify(options));
   console.log("Transcript segments:", transcript.length);
   console.log("Stock media items:", stockMedia.length);
@@ -488,9 +650,13 @@ export async function applyEdits(
   const metadata = await getVideoMetadata(videoPath);
   const tempFiles: string[] = [];
 
-  // Extract different action types from edit plan
+  // Extract action types from edit plan
   const keepSegments = editPlan.actions
     .filter((a: EditAction) => a.type === "keep" && a.start !== undefined && a.end !== undefined)
+    .sort((a, b) => (a.start || 0) - (b.start || 0));
+
+  const cutSegments = editPlan.actions
+    .filter((a: EditAction) => a.type === "cut" && a.start !== undefined && a.end !== undefined)
     .sort((a, b) => (a.start || 0) - (b.start || 0));
 
   const insertStockActions = editPlan.actions
@@ -500,34 +666,21 @@ export async function applyEdits(
   const textOverlayActions = editPlan.actions
     .filter((a: EditAction) => a.type === "add_text_overlay" && a.text && a.start !== undefined);
 
-  const transitionActions = editPlan.actions
-    .filter((a: EditAction) => a.type === "transition");
-  
   const captionActions = editPlan.actions.filter((a: EditAction) => 
     a.type === "add_caption" && a.text
   );
 
   console.log(`Keep segments: ${keepSegments.length}`);
+  console.log(`Cut segments: ${cutSegments.length}`);
   console.log(`Insert stock actions: ${insertStockActions.length}`);
   console.log(`Text overlay actions: ${textOverlayActions.length}`);
-  console.log(`Transition actions: ${transitionActions.length}`);
   console.log(`Caption actions: ${captionActions.length}`);
 
-  // If no keep segments, keep entire video
-  if (keepSegments.length === 0) {
-    keepSegments.push({
-      type: "keep",
-      start: 0,
-      end: metadata.duration,
-      reason: "Keep entire video",
-    });
-  }
-
-  // Download stock media for B-roll
+  // Download stock media for B-roll overlays
   const downloadedStockMedia: DownloadedStock[] = [];
   
   if (options.addBroll && stockMedia.length > 0) {
-    console.log(`Downloading ${Math.min(stockMedia.length, 6)} stock media items...`);
+    console.log(`Downloading ${Math.min(stockMedia.length, 6)} stock media items for overlays...`);
     
     for (let i = 0; i < Math.min(stockMedia.length, 6); i++) {
       const item = stockMedia[i];
@@ -553,224 +706,63 @@ export async function applyEdits(
     }
   }
 
-  // Build timeline: track original source times AND output timeline times
-  interface TimelineEntry {
-    type: "video" | "broll";
-    sourceStart?: number;
-    sourceEnd?: number;
-    outputStart?: number;
-    outputDuration?: number;
-    stockMedia?: DownloadedStock;
-    brollDuration?: number;
-    textOverlays?: { text: string; startOffset: number; endOffset: number }[];
-    brollText?: string;
-  }
-
-  const timeline: TimelineEntry[] = [];
-  const usedInsertActions = new Set<number>();
-  let stockMediaIndex = 0;
-  let outputTime = 0;
-
-  // Process each keep segment and split at insert_stock points
-  for (let segIdx = 0; segIdx < keepSegments.length; segIdx++) {
-    const segment = keepSegments[segIdx];
-    const segStart = segment.start || 0;
-    const segEnd = segment.end || metadata.duration;
-
-    // Find insert_stock actions that fall within this segment
-    const insertsInSegment: { action: EditAction; index: number }[] = [];
-    for (let i = 0; i < insertStockActions.length; i++) {
-      if (usedInsertActions.has(i)) continue;
-      const insertTime = insertStockActions[i].start || 0;
-      if (insertTime >= segStart && insertTime < segEnd) {
-        insertsInSegment.push({ action: insertStockActions[i], index: i });
-      }
-    }
-    
-    insertsInSegment.sort((a, b) => (a.action.start || 0) - (b.action.start || 0));
-
-    let currentStart = segStart;
-    
-    for (const insert of insertsInSegment) {
-      const insertTime = insert.action.start || 0;
-      usedInsertActions.add(insert.index);
-      
-      // Add video segment before the insert point
-      if (insertTime > currentStart) {
-        const duration = insertTime - currentStart;
-        const overlays = textOverlayActions
-          .filter(a => {
-            const oStart = a.start || 0;
-            return oStart >= currentStart && oStart < insertTime;
-          })
-          .map(a => ({
-            text: a.text || "",
-            startOffset: (a.start || 0) - currentStart,
-            endOffset: Math.min((a.end || (a.start || 0) + 3), insertTime) - currentStart,
-          }));
-
-        timeline.push({
-          type: "video",
-          sourceStart: currentStart,
-          sourceEnd: insertTime,
-          outputStart: outputTime,
-          outputDuration: duration,
-          textOverlays: overlays.length > 0 ? overlays : undefined,
-        });
-        outputTime += duration;
-      }
-      
-      // Add B-roll at insert point
-      if (stockMediaIndex < downloadedStockMedia.length) {
-        const brollDuration = insert.action.end && insert.action.start 
-          ? insert.action.end - insert.action.start 
-          : 3;
-        const actualDuration = Math.min(brollDuration, downloadedStockMedia[stockMediaIndex].item.duration || 5);
-        
-        timeline.push({
-          type: "broll",
-          stockMedia: downloadedStockMedia[stockMediaIndex],
-          brollDuration: actualDuration,
-          brollText: insert.action.text,
-          outputStart: outputTime,
-          outputDuration: actualDuration,
-        });
-        outputTime += actualDuration;
-        stockMediaIndex++;
-      }
-      
-      currentStart = insertTime;
-    }
-    
-    // Add remaining video segment after last insert
-    if (currentStart < segEnd) {
-      const duration = segEnd - currentStart;
-      const overlays = textOverlayActions
-        .filter(a => {
-          const oStart = a.start || 0;
-          return oStart >= currentStart && oStart < segEnd;
-        })
-        .map(a => ({
-          text: a.text || "",
-          startOffset: (a.start || 0) - currentStart,
-          endOffset: Math.min((a.end || (a.start || 0) + 3), segEnd) - currentStart,
-        }));
-
-      timeline.push({
-        type: "video",
-        sourceStart: currentStart,
-        sourceEnd: segEnd,
-        outputStart: outputTime,
-        outputDuration: duration,
-        textOverlays: overlays.length > 0 ? overlays : undefined,
-      });
-      outputTime += duration;
-    }
-  }
-
-  // Distribute remaining stock media between video segments
-  if (options.addBroll && stockMediaIndex < downloadedStockMedia.length) {
-    const remainingStock = downloadedStockMedia.slice(stockMediaIndex);
-    const videoEntries = timeline.filter(e => e.type === "video");
-    
-    if (videoEntries.length > 1 && remainingStock.length > 0) {
-      const insertGap = Math.floor(videoEntries.length / (remainingStock.length + 1));
-      let insertCount = 0;
-      let outputOffset = 0;
-      
-      for (let i = 0; i < remainingStock.length && insertGap > 0; i++) {
-        const insertAfterIndex = (i + 1) * insertGap + insertCount;
-        if (insertAfterIndex < timeline.length) {
-          const brollDuration = Math.min(3, remainingStock[i].item.duration || 5);
-          timeline.splice(insertAfterIndex, 0, {
-            type: "broll",
-            stockMedia: remainingStock[i],
-            brollDuration,
-            outputStart: 0, // Will be recalculated
-            outputDuration: brollDuration,
-          });
-          insertCount++;
-          outputOffset += brollDuration;
-        }
-      }
-      
-      // Recalculate output times
-      let recalcTime = 0;
-      for (const entry of timeline) {
-        entry.outputStart = recalcTime;
-        recalcTime += entry.outputDuration || 0;
-      }
-    }
-  }
-
-  console.log(`Timeline built with ${timeline.length} entries, total output duration: ${outputTime.toFixed(2)}s`);
-  for (let i = 0; i < timeline.length; i++) {
-    const e = timeline[i];
-    if (e.type === "video") {
-      console.log(`  [${i}] VIDEO: src ${e.sourceStart?.toFixed(2)}s-${e.sourceEnd?.toFixed(2)}s -> out ${e.outputStart?.toFixed(2)}s`);
-    } else {
-      console.log(`  [${i}] BROLL: ${e.stockMedia?.item.type} ${e.brollDuration}s -> out ${e.outputStart?.toFixed(2)}s`);
-    }
-  }
-
-  // Build adjusted captions based on output timeline
-  // Map original captions to output timeline based on which video segments they fall into
-  const adjustedCaptions: { start: number; end: number; text: string }[] = [];
+  // STEP 1: Build base video from keep segments (or cuts)
+  // This handles silence removal by cutting out specified segments
+  // Audio and video remain continuous in kept portions
   
-  if (options.addCaptions) {
-    const allOriginalCaptions = [
-      ...transcript,
-      ...captionActions.map(a => ({
-        start: a.start || 0,
-        end: a.end || (a.start || 0) + 3,
-        text: a.text || ""
-      }))
-    ];
+  let baseVideoPath: string;
+  let outputTimeMapping: { sourceStart: number; sourceEnd: number; outputStart: number }[] = [];
+  
+  // Determine what to keep
+  let segmentsToKeep: { start: number; end: number }[] = [];
+  
+  if (keepSegments.length > 0) {
+    // Use explicit keep segments
+    segmentsToKeep = keepSegments.map(s => ({
+      start: s.start || 0,
+      end: s.end || metadata.duration
+    }));
+  } else if (cutSegments.length > 0 && options.removeSilence) {
+    // Derive keeps from cuts
+    const cuts = cutSegments.map(c => ({
+      start: c.start || 0,
+      end: c.end || 0
+    })).filter(c => c.end > c.start);
     
-    for (const cap of allOriginalCaptions) {
-      // Find which video segment(s) this caption falls into
-      for (const entry of timeline) {
-        if (entry.type !== "video" || entry.sourceStart === undefined || entry.sourceEnd === undefined) continue;
-        
-        // Check if caption overlaps with this video segment
-        const capStart = cap.start;
-        const capEnd = cap.end;
-        const segStart = entry.sourceStart;
-        const segEnd = entry.sourceEnd;
-        
-        if (capEnd <= segStart || capStart >= segEnd) continue;
-        
-        // Caption overlaps with this segment - adjust times
-        const overlapStart = Math.max(capStart, segStart);
-        const overlapEnd = Math.min(capEnd, segEnd);
-        
-        const offsetFromSegmentStart = overlapStart - segStart;
-        const adjustedStart = (entry.outputStart || 0) + offsetFromSegmentStart;
-        const adjustedEnd = adjustedStart + (overlapEnd - overlapStart);
-        
-        adjustedCaptions.push({
-          start: adjustedStart,
-          end: adjustedEnd,
-          text: cap.text
-        });
+    let currentTime = 0;
+    for (const cut of cuts) {
+      if (cut.start > currentTime) {
+        segmentsToKeep.push({ start: currentTime, end: cut.start });
       }
+      currentTime = cut.end;
     }
-    
-    console.log(`Adjusted ${adjustedCaptions.length} captions for output timeline`);
+    if (currentTime < metadata.duration) {
+      segmentsToKeep.push({ start: currentTime, end: metadata.duration });
+    }
+  } else {
+    // Keep entire video
+    segmentsToKeep = [{ start: 0, end: metadata.duration }];
   }
 
-  // Simple path: single video segment with no modifications
-  if (timeline.length === 1 && timeline[0].type === "video" && !timeline[0].textOverlays && adjustedCaptions.length === 0) {
-    const entry = timeline[0];
-    const segStart = entry.sourceStart || 0;
-    const segEnd = entry.sourceEnd || metadata.duration;
-    
-    console.log(`Simple path: single segment ${segStart}s to ${segEnd}s`);
+  console.log(`Segments to keep: ${segmentsToKeep.length}`);
+  segmentsToKeep.forEach((s, i) => console.log(`  [${i}] ${s.start.toFixed(2)}s - ${s.end.toFixed(2)}s`));
+
+  // Create base video from kept segments
+  if (segmentsToKeep.length === 1 && segmentsToKeep[0].start === 0 && 
+      Math.abs(segmentsToKeep[0].end - metadata.duration) < 0.1) {
+    // Keep entire video as-is
+    baseVideoPath = videoPath;
+    outputTimeMapping = [{ sourceStart: 0, sourceEnd: metadata.duration, outputStart: 0 }];
+    console.log("Using original video as base (no cuts)");
+  } else if (segmentsToKeep.length === 1) {
+    // Single segment, just trim
+    baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
+    const seg = segmentsToKeep[0];
     
     await new Promise<void>((resolve, reject) => {
       ffmpeg(videoPath)
-        .setStartTime(segStart)
-        .setDuration(segEnd - segStart)
+        .setStartTime(seg.start)
+        .setDuration(seg.end - seg.start)
         .outputOptions([
           "-c:v", "libx264",
           "-preset", "ultrafast",
@@ -780,161 +772,181 @@ export async function applyEdits(
           "-max_muxing_queue_size", "1024",
           "-threads", "2",
         ])
-        .output(outputPath)
+        .output(baseVideoPath)
         .on("end", () => resolve())
         .on("error", (err) => reject(err))
         .run();
     });
     
-    for (const tempPath of tempFiles) {
-      await fs.unlink(tempPath).catch(() => {});
-    }
-    
-    return outputPath;
-  }
-
-  // Render each timeline entry
-  const segmentPaths: string[] = [];
-  
-  for (let i = 0; i < timeline.length; i++) {
-    const entry = timeline[i];
-    const segmentPath = path.join(OUTPUT_DIR, `segment_${outputId}_${i}.mp4`);
-    
-    console.log(`Rendering timeline entry ${i}: ${entry.type}`);
-    
-    try {
-      if (entry.type === "video") {
-        const start = entry.sourceStart || 0;
-        const duration = (entry.sourceEnd || metadata.duration) - start;
-        
-        await createVideoSegment(
-          videoPath,
-          segmentPath,
-          start,
-          duration,
-          entry.textOverlays
-        );
-      } else if (entry.type === "broll" && entry.stockMedia) {
-        const brollDuration = entry.brollDuration || 3;
-        
-        if (entry.stockMedia.item.type === "video") {
-          await createVideoBroll(
-            entry.stockMedia.localPath,
-            segmentPath,
-            brollDuration,
-            metadata.width,
-            metadata.height,
-            entry.brollText
-          );
-        } else {
-          await createImageBroll(
-            entry.stockMedia.localPath,
-            segmentPath,
-            brollDuration,
-            metadata.width,
-            metadata.height,
-            entry.brollText
-          );
-        }
-      }
-      
-      segmentPaths.push(segmentPath);
-      tempFiles.push(segmentPath);
-      console.log(`Segment ${i} created`);
-    } catch (err) {
-      console.error(`Failed to create segment ${i}:`, err);
-    }
-  }
-
-  if (segmentPaths.length === 0) {
-    throw new Error("No segments were created");
-  }
-
-  // Concatenate segments and track transition overlaps
-  let concatenatedPath: string;
-  let totalTransitionOverlap = 0;
-  
-  if (transitionActions.length > 0 && segmentPaths.length >= 2) {
-    console.log(`Applying transitions between ${segmentPaths.length} segments`);
-    
-    try {
-      let currentPath = segmentPaths[0];
-      
-      for (let i = 1; i < segmentPaths.length; i++) {
-        const transitionAction = transitionActions[Math.min(i - 1, transitionActions.length - 1)];
-        const transitionType = transitionAction?.transitionType || "fade";
-        const transitionedPath = path.join(OUTPUT_DIR, `trans_${outputId}_${i}.mp4`);
-        const transitionDuration = 0.5;
-        
-        const actualDuration = await concatTwoWithTransition(
-          currentPath,
-          segmentPaths[i],
-          transitionedPath,
-          transitionType,
-          transitionDuration
-        );
-        
-        totalTransitionOverlap += actualDuration;
-        tempFiles.push(transitionedPath);
-        currentPath = transitionedPath;
-        console.log(`Transition ${i} applied: ${transitionType}, overlap: ${actualDuration}s`);
-      }
-      
-      concatenatedPath = currentPath;
-      console.log(`Total transition overlap: ${totalTransitionOverlap}s`);
-    } catch (err) {
-      console.error(`Transitions failed, falling back to simple concat:`, err);
-      concatenatedPath = path.join(OUTPUT_DIR, `concat_${outputId}.mp4`);
-      await concatSegmentsSimple(segmentPaths, concatenatedPath);
-      tempFiles.push(concatenatedPath);
-      totalTransitionOverlap = 0;
-    }
+    tempFiles.push(baseVideoPath);
+    outputTimeMapping = [{ sourceStart: seg.start, sourceEnd: seg.end, outputStart: 0 }];
+    console.log(`Created trimmed base video: ${seg.start}s - ${seg.end}s`);
   } else {
-    console.log(`Concatenating ${segmentPaths.length} segments`);
-    concatenatedPath = path.join(OUTPUT_DIR, `concat_${outputId}.mp4`);
-    await concatSegmentsSimple(segmentPaths, concatenatedPath);
-    tempFiles.push(concatenatedPath);
-  }
-
-  // Adjust captions for transition overlaps if any
-  // Each transition after segment N reduces the timeline for captions in segments N+1 and later
-  if (totalTransitionOverlap > 0 && adjustedCaptions.length > 0) {
-    console.log(`Adjusting ${adjustedCaptions.length} captions for ${totalTransitionOverlap}s of transition overlap`);
+    // Multiple segments - concatenate
+    const segmentPaths: string[] = [];
+    let outputTime = 0;
     
-    // Calculate cumulative segment durations to know which captions to adjust
-    let cumulativeDuration = 0;
-    const segmentBoundaries: number[] = [];
-    for (const entry of timeline) {
-      cumulativeDuration += entry.outputDuration || 0;
-      segmentBoundaries.push(cumulativeDuration);
+    for (let i = 0; i < segmentsToKeep.length; i++) {
+      const seg = segmentsToKeep[i];
+      const segPath = path.join(OUTPUT_DIR, `seg_${outputId}_${i}.mp4`);
+      
+      await createVideoSegment(videoPath, segPath, seg.start, seg.end - seg.start);
+      segmentPaths.push(segPath);
+      tempFiles.push(segPath);
+      
+      outputTimeMapping.push({
+        sourceStart: seg.start,
+        sourceEnd: seg.end,
+        outputStart: outputTime
+      });
+      outputTime += seg.end - seg.start;
     }
     
-    // For simplicity in prototype: distribute overlap evenly across all captions after first segment
-    // More accurate: track per-transition overlap and adjust per-segment
-    const numTransitions = segmentPaths.length - 1;
-    const overlapPerTransition = totalTransitionOverlap / numTransitions;
-    
-    for (const cap of adjustedCaptions) {
-      // Find which segment this caption starts in
-      let segmentIndex = 0;
-      for (let i = 0; i < segmentBoundaries.length; i++) {
-        if (cap.start < segmentBoundaries[i]) {
-          segmentIndex = i;
+    baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
+    await concatSegmentsSimple(segmentPaths, baseVideoPath);
+    tempFiles.push(baseVideoPath);
+    console.log(`Created concatenated base video from ${segmentsToKeep.length} segments`);
+  }
+
+  // Get base video duration
+  const baseMetadata = await getVideoMetadata(baseVideoPath);
+  console.log(`Base video duration: ${baseMetadata.duration.toFixed(2)}s`);
+
+  // STEP 2: Prepare B-roll overlays
+  // Map insert_stock times from source to output timeline
+  // Then distribute stock media evenly if no explicit timing
+  
+  const brollOverlays: BrollOverlay[] = [];
+  let stockIdx = 0;
+  
+  if (options.addBroll && downloadedStockMedia.length > 0) {
+    // Map insert_stock actions to output timeline
+    for (const action of insertStockActions) {
+      if (stockIdx >= downloadedStockMedia.length) break;
+      
+      const sourceTime = action.start || 0;
+      
+      // Find output time for this source time
+      let outputTime: number | null = null;
+      for (const mapping of outputTimeMapping) {
+        if (sourceTime >= mapping.sourceStart && sourceTime < mapping.sourceEnd) {
+          outputTime = mapping.outputStart + (sourceTime - mapping.sourceStart);
           break;
         }
-        segmentIndex = i + 1;
       }
       
-      // Subtract cumulative overlap for all transitions before this segment
-      const transitionsBefore = Math.min(segmentIndex, numTransitions);
-      const overlapToSubtract = transitionsBefore * overlapPerTransition;
-      
-      cap.start = Math.max(0, cap.start - overlapToSubtract);
-      cap.end = Math.max(cap.start + 0.5, cap.end - overlapToSubtract);
+      if (outputTime !== null) {
+        const duration = Math.min(
+          action.end && action.start ? action.end - action.start : 3,
+          downloadedStockMedia[stockIdx].item.duration || 5,
+          4 // Max 4 seconds per overlay
+        );
+        
+        brollOverlays.push({
+          localPath: downloadedStockMedia[stockIdx].localPath,
+          type: downloadedStockMedia[stockIdx].item.type,
+          startTime: outputTime,
+          duration,
+          text: action.text,
+        });
+        stockIdx++;
+      }
     }
+    
+    // Distribute remaining stock media evenly across the video
+    const remainingStock = downloadedStockMedia.slice(stockIdx);
+    if (remainingStock.length > 0) {
+      const interval = baseMetadata.duration / (remainingStock.length + 1);
+      
+      for (let i = 0; i < remainingStock.length; i++) {
+        const startTime = interval * (i + 1);
+        const duration = Math.min(remainingStock[i].item.duration || 5, 3);
+        
+        // Avoid overlapping with existing overlays
+        const overlapsExisting = brollOverlays.some(o => 
+          (startTime >= o.startTime && startTime < o.startTime + o.duration) ||
+          (startTime + duration > o.startTime && startTime + duration <= o.startTime + o.duration)
+        );
+        
+        if (!overlapsExisting) {
+          brollOverlays.push({
+            localPath: remainingStock[i].localPath,
+            type: remainingStock[i].item.type,
+            startTime,
+            duration,
+          });
+        }
+      }
+    }
+    
+    // Sort overlays by start time
+    brollOverlays.sort((a, b) => a.startTime - b.startTime);
+    
+    console.log(`Prepared ${brollOverlays.length} B-roll overlays:`);
+    brollOverlays.forEach((o, i) => console.log(`  [${i}] ${o.type} at ${o.startTime.toFixed(2)}s for ${o.duration.toFixed(2)}s`));
   }
 
-  // Apply captions to final video if we have any
+  // STEP 3: Apply B-roll overlays (visual only, audio continues)
+  let overlayedPath: string;
+  
+  if (brollOverlays.length > 0) {
+    overlayedPath = path.join(OUTPUT_DIR, `overlayed_${outputId}.mp4`);
+    
+    try {
+      await applyAllBrollOverlays(
+        baseVideoPath,
+        brollOverlays,
+        overlayedPath,
+        metadata.width,
+        metadata.height,
+        tempFiles
+      );
+      tempFiles.push(overlayedPath);
+      console.log(`Applied ${brollOverlays.length} B-roll overlays successfully`);
+    } catch (err) {
+      console.error("Failed to apply overlays, using base video:", err);
+      overlayedPath = baseVideoPath;
+    }
+  } else {
+    overlayedPath = baseVideoPath;
+  }
+
+  // STEP 4: Build and apply captions
+  const adjustedCaptions: { start: number; end: number; text: string }[] = [];
+  
+  if (options.addCaptions) {
+    const allCaptions = [
+      ...transcript,
+      ...captionActions.map(a => ({
+        start: a.start || 0,
+        end: a.end || (a.start || 0) + 3,
+        text: a.text || ""
+      }))
+    ];
+    
+    for (const cap of allCaptions) {
+      // Map source time to output time
+      for (const mapping of outputTimeMapping) {
+        if (cap.end <= mapping.sourceStart || cap.start >= mapping.sourceEnd) continue;
+        
+        const overlapStart = Math.max(cap.start, mapping.sourceStart);
+        const overlapEnd = Math.min(cap.end, mapping.sourceEnd);
+        
+        const adjustedStart = mapping.outputStart + (overlapStart - mapping.sourceStart);
+        const adjustedEnd = mapping.outputStart + (overlapEnd - mapping.sourceStart);
+        
+        adjustedCaptions.push({
+          start: adjustedStart,
+          end: adjustedEnd,
+          text: cap.text
+        });
+      }
+    }
+    
+    console.log(`Mapped ${adjustedCaptions.length} captions to output timeline`);
+  }
+
+  // Apply captions if any
   if (adjustedCaptions.length > 0) {
     console.log(`Burning ${adjustedCaptions.length} captions into final video`);
     
@@ -943,17 +955,22 @@ export async function applyEdits(
     await fs.writeFile(srtPath, srtContent);
     tempFiles.push(srtPath);
     
-    await burnSubtitles(concatenatedPath, outputPath, srtPath);
+    await burnSubtitles(overlayedPath, outputPath, srtPath);
   } else {
-    await fs.copyFile(concatenatedPath, outputPath);
+    // Just copy the result
+    if (overlayedPath !== outputPath) {
+      await fs.copyFile(overlayedPath, outputPath);
+    }
   }
 
   // Cleanup temp files
   for (const tempPath of tempFiles) {
-    await fs.unlink(tempPath).catch(() => {});
+    if (tempPath !== outputPath) {
+      await fs.unlink(tempPath).catch(() => {});
+    }
   }
 
-  console.log("=== APPLY EDITS COMPLETE ===");
+  console.log("=== APPLY EDITS COMPLETE (OVERLAY MODE) ===");
   return outputPath;
 }
 

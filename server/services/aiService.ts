@@ -248,24 +248,26 @@ export async function generateEditPlan(
   const systemPrompt = `You are an expert video editor AI. Based on the user's editing instructions, video analysis, and transcript, create a detailed edit plan.
 
 The edit plan should include actions like:
-- "cut": Remove boring or silent sections
+- "cut": Remove boring or silent sections (the audio and video in this range will be removed)
 - "keep": Keep important segments
-- "insert_stock": Suggest where to add stock footage/images
+- "insert_stock": Suggest where to OVERLAY stock footage/images visually. IMPORTANT: This does NOT cut the video - the stock media will fade in/out ON TOP of the original video while the original audio continues playing. Use this for B-roll to illustrate what the speaker is talking about.
 - "add_caption": Add captions at key moments
 - "add_text_overlay": Add text overlays for emphasis
-- "transition": Add transitions between segments
 
 Be cost-effective: minimize unnecessary edits while maximizing engagement based on the user's goals.
 
 For each action, provide:
 - type: the action type
-- start: start time in seconds (for cuts/keeps)
-- end: end time in seconds (for cuts/keeps)
+- start: start time in seconds
+- end: end time in seconds (for cuts/keeps, determines overlay duration for insert_stock)
 - text: caption or overlay text (if applicable)
 - stockQuery: search term for stock media (if applicable)
 - reason: brief explanation of why this edit is recommended
 
-Important: Ensure "keep" segments cover the parts of the video that should remain. The final video will be constructed from "keep" segments.`;
+Important notes:
+- "keep" segments define what parts of the original video to include
+- "insert_stock" actions are OVERLAYS - the original video and audio continue underneath while the stock media appears on top with fade effects
+- Stock media overlays should be 2-4 seconds long and placed at moments where visual illustration would enhance the content`;
 
   const userPrompt = `User's editing instructions: "${prompt}"
 

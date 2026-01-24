@@ -848,17 +848,25 @@ AVAILABLE EDIT ACTIONS:
    - Use for: key points, engaging moments, essential context
    - Always ensure complete coverage of valuable content
 
-3. "insert_stock" - OVERLAY B-roll footage (original audio CONTINUES)
+3. "insert_stock" - OVERLAY B-roll stock footage (original audio CONTINUES)
    - This is a VISUAL OVERLAY - the speaker's voice keeps playing
    - Use to illustrate concepts, add visual interest during explanatory speech
    - NEVER place during important visual moments (demonstrations, facial expressions)
    - Provide: start time, duration (2-6 seconds), specific search query
    - Priority: high for abstract concepts, medium for examples, low for optional enhancement
 
-4. "add_caption" - Add captions for key dialogue
+4. "insert_ai_image" - OVERLAY AI-generated image (original audio CONTINUES)
+   - Use when stock footage won't capture the SPECIFIC concept being discussed
+   - Ideal for: abstract concepts, unique visualizations, spiritual/metaphorical content
+   - AI generates custom imagery matched to exact transcript context
+   - Provide: start time, duration (3-5 seconds), detailed imagePrompt description
+   - imagePrompt should be highly descriptive: "ethereal golden light rays emerging from meditating figure in cosmic space"
+   - Use sparingly (max 2-3 per video) for truly unique visual needs
+
+5. "add_caption" - Add captions for key dialogue
    - Use for: important quotes, key takeaways, memorable lines
 
-5. "add_text_overlay" - Add emphasis text
+6. "add_text_overlay" - Add emphasis text
    - Use sparingly for major points or transitions
 
 TIMING RULES FOR B-ROLL:
@@ -942,20 +950,35 @@ CREATE YOUR EDIT PLAN - CRITICAL INSTRUCTIONS:
 5. Cut silent/boring sections while preserving narrative flow
 6. Add captions for key moments identified in semantic analysis
 
+QUALITY HEURISTICS:
+- Score each edit action for relevance (how well it matches content context)
+- Prioritize B-roll at semantic transition points (when topic changes)
+- Use AI images for abstract/spiritual/metaphorical concepts
+- Use stock footage for concrete/literal visual needs
+- Never place overlays during speaker's key emotional moments
+- Balance visual variety: don't use same overlay type consecutively
+
 Respond with a JSON object only (no markdown):
 {
   "actions": [
     {"type": "keep", "start": 0, "end": number, "reason": "string", "priority": "high/medium/low"},
     {"type": "cut", "start": number, "end": number, "reason": "string"},
-    {"type": "insert_stock", "start": number, "duration": number, "stockQuery": "specific descriptive query", "reason": "string", "priority": "high/medium/low"}
+    {"type": "insert_stock", "start": number, "duration": number, "stockQuery": "specific descriptive query", "reason": "string", "priority": "high/medium/low"},
+    {"type": "insert_ai_image", "start": number, "duration": number, "imagePrompt": "detailed visual description for AI generation", "reason": "string", "priority": "high/medium/low"}
   ],
   "stockQueries": ["list of unique stock media searches needed"],
+  "aiImagePrompts": ["list of unique AI image prompts needed"],
   "keyPoints": ["main topics and highlights from the video"],
   "estimatedDuration": number,
   "editingStrategy": {
     "approach": "description of overall editing approach",
     "focusAreas": ["areas of focus"],
     "avoidAreas": ["things to avoid based on content type"]
+  },
+  "qualityScore": {
+    "pacing": "slow/moderate/fast - matches content type",
+    "brollRelevance": "high/medium/low - how well visuals match speech",
+    "narrativeFlow": "high/medium/low - how well edits preserve story"
   }
 }`;
 

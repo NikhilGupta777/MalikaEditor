@@ -46,9 +46,11 @@ The frontend follows a component-based architecture with:
   - Topic segmentation with importance scoring
   - Pre-identified B-roll opportunities with timing and priority
 - **Audio Transcription**: Local whisper.cpp for speech-to-text with REAL timestamps
-  - Uses ggml-base.en model at `/tmp/whisper_models/ggml-base.en.bin`
+  - Uses multilingual ggml-base model at `/tmp/whisper_models/ggml-base.bin`
+  - Supports Hindi, Arabic, Chinese, Japanese, Korean, Russian, and more
   - Zero API cost, no external dependencies
   - Accurate segment timing critical for captions and B-roll placement
+  - **Multilingual Pipeline**: Non-English transcripts are automatically detected and translated to English for semantic analysis while preserving original timestamps
   - Fallback to OpenAI if whisper.cpp fails
 - **Semantic Transcript Analysis** (NEW): Deep semantic analysis of transcripts for context-aware B-roll
   - Extracts main topics, overall tone, key moments, and extractedKeywords
@@ -94,11 +96,16 @@ Technical implementation:
 ## Recent Changes
 
 ### January 2026
+- **Multilingual Video Support** (NEW): Full support for non-English videos
+  - Whisper.cpp now uses multilingual ggml-base model (supports 90+ languages)
+  - Language detection using Unicode script patterns (Hindi, Arabic, Chinese, Japanese, Korean, Russian)
+  - Automatic translation of non-English transcripts to English for semantic analysis via Gemini
+  - Original timestamps preserved - only text is translated
+  - Flow: Whisper (any language) → Detect language → Translate text → Gemini analysis → Overlay with original timestamps
 - **Local Whisper.cpp Transcription**: Replaced Gemini/OpenAI transcription with local whisper.cpp
   - Real, accurate timestamps from the whisper model (not estimated)
   - Zero API cost, works offline, no Replit proxy issues
   - Single source of truth for captions, B-roll timing, and AI image placement
-  - Uses ggml-base.en model (141MB) for fast English transcription
 - **AI Image Generation**: Fully functional using Gemini 2.5-flash-image model
   - Context-aware image generation from semantic transcript analysis
   - Deterministic placement based on B-roll windows (not edit plan actions)

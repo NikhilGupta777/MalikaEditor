@@ -500,8 +500,8 @@ Respond in JSON format only (no markdown):
   };
 }
 
-// Whisper.cpp model path
-const WHISPER_MODEL_PATH = "/tmp/whisper_models/ggml-base.en.bin";
+// Whisper.cpp model path - using multilingual base model for non-English support
+const WHISPER_MODEL_PATH = "/tmp/whisper_models/ggml-base.bin";
 
 /**
  * Transcribe audio using local whisper.cpp for accurate timestamps
@@ -522,10 +522,10 @@ export async function transcribeAudio(
     await fs.access(WHISPER_MODEL_PATH);
   } catch {
     console.error(`Whisper model not found at ${WHISPER_MODEL_PATH}`);
-    console.log("Downloading whisper model...");
+    console.log("Downloading multilingual whisper model...");
     await fs.mkdir("/tmp/whisper_models", { recursive: true });
     await execPromise(
-      `curl -L -o "${WHISPER_MODEL_PATH}" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"`,
+      `curl -L -o "${WHISPER_MODEL_PATH}" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"`,
       { timeout: 120000 }
     );
   }

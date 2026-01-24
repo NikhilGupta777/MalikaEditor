@@ -257,11 +257,22 @@ export async function registerRoutes(
           // Detect transcript language
           const detectedLanguage = detectTranscriptLanguage(transcript);
           
+          // Persist detected language in video context
+          if (analysis.context) {
+            analysis.context.languageDetected = detectedLanguage;
+          }
+          
           // Translate to English if non-English (for Gemini semantic analysis)
           let transcriptForAnalysis = transcript;
           if (detectedLanguage !== "en") {
             console.log(`Transcript is in ${detectedLanguage}, translating to English for semantic analysis...`);
             transcriptForAnalysis = await translateTranscriptToEnglish(transcript, detectedLanguage);
+            
+            // Verify translation produced English text
+            const translatedLanguage = detectTranscriptLanguage(transcriptForAnalysis);
+            if (translatedLanguage !== "en") {
+              console.warn(`Translation may have failed: detected ${translatedLanguage} instead of English`);
+            }
           }
           
           console.log("Performing semantic transcript analysis...");

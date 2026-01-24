@@ -54,7 +54,11 @@ export async function registerRoutes(
   await ensureDirs();
 
   app.use("/uploads", async (req, res, next) => {
-    const filePath = path.join(UPLOADS_DIR, req.path);
+    const requestedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
+    const filePath = path.join(UPLOADS_DIR, requestedPath);
+    if (!filePath.startsWith(UPLOADS_DIR)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     try {
       await fs.access(filePath);
       res.sendFile(filePath);
@@ -64,7 +68,11 @@ export async function registerRoutes(
   });
 
   app.use("/output", async (req, res, next) => {
-    const filePath = path.join(OUTPUT_DIR, req.path);
+    const requestedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
+    const filePath = path.join(OUTPUT_DIR, requestedPath);
+    if (!filePath.startsWith(OUTPUT_DIR)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     try {
       await fs.access(filePath);
       res.setHeader("Content-Type", "video/mp4");
@@ -110,6 +118,9 @@ export async function registerRoutes(
   app.get("/api/videos/:id", async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id as string);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid project ID" });
+      }
       const project = await storage.getVideoProject(id);
 
       if (!project) {
@@ -126,6 +137,9 @@ export async function registerRoutes(
 
   app.get("/api/videos/:id/process", async (req: Request, res: Response) => {
     const id = parseInt(req.params.id as string);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid project ID" });
+    }
     const prompt = req.query.prompt as string;
     
     const editOptions: EditOptions = {

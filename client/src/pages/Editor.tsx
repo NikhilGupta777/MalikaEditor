@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Film, Sparkles, Upload, CheckCircle2, RotateCcw } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
@@ -50,6 +50,15 @@ export default function Editor() {
     addBroll: true,
     removeSilence: true,
   });
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
 
   const handleUpload = useCallback(
     async (file: File) => {
@@ -126,9 +135,14 @@ export default function Editor() {
           removeSilence: String(editOptions.removeSilence),
         });
 
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+        }
+
         const eventSource = new EventSource(
           `/api/videos/${project.id}/process?${params.toString()}`
         );
+        eventSourceRef.current = eventSource;
 
         eventSource.onmessage = (event) => {
           const data = JSON.parse(event.data);
@@ -159,6 +173,7 @@ export default function Editor() {
             setPreviewUrl(data.outputPath);
             setIsProcessing(false);
             eventSource.close();
+            eventSourceRef.current = null;
 
             toast({
               title: "Your video is ready!",
@@ -172,6 +187,7 @@ export default function Editor() {
             );
             setIsProcessing(false);
             eventSource.close();
+            eventSourceRef.current = null;
 
             toast({
               title: "Processing failed",
@@ -183,6 +199,7 @@ export default function Editor() {
 
         eventSource.onerror = (error) => {
           eventSource.close();
+          eventSourceRef.current = null;
           setIsProcessing(false);
           setProject((prev) =>
             prev

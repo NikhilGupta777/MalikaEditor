@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Scissors, Image, Type, Sparkles } from "lucide-react";
+import { Scissors, Image, Type, Sparkles, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { EditAction } from "@shared/schema";
 
@@ -10,17 +10,27 @@ interface TimelineProps {
   onSeek?: (time: number) => void;
 }
 
-const ACTION_COLORS = {
-  cut: "bg-destructive/60",
-  keep: "bg-secondary/60",
-  insert_stock: "bg-accent/60",
-  add_caption: "bg-primary/60",
-  add_text_overlay: "bg-chart-4/60",
-  transition: "bg-chart-5/60",
-  speed_change: "bg-chart-3/60",
+const ACTION_COLORS: Record<string, string> = {
+  cut: "bg-red-500/70",
+  keep: "bg-emerald-500/70",
+  insert_stock: "bg-blue-500/70",
+  add_caption: "bg-purple-500/70",
+  add_text_overlay: "bg-amber-500/70",
+  transition: "bg-pink-500/70",
+  speed_change: "bg-cyan-500/70",
 };
 
-const ACTION_ICONS = {
+const ACTION_LABELS: Record<string, string> = {
+  cut: "Cut",
+  keep: "Keep",
+  insert_stock: "Stock",
+  add_caption: "Caption",
+  add_text_overlay: "Text",
+  transition: "Transition",
+  speed_change: "Speed",
+};
+
+const ACTION_ICONS: Record<string, typeof Scissors | null> = {
   cut: Scissors,
   keep: null,
   insert_stock: Image,
@@ -39,9 +49,12 @@ export function Timeline({
   const timeMarkers = useMemo(() => {
     if (!duration) return [];
     const markers = [];
-    const interval = duration > 60 ? 30 : duration > 30 ? 10 : 5;
+    const interval = duration > 120 ? 30 : duration > 60 ? 15 : duration > 30 ? 10 : 5;
     for (let i = 0; i <= duration; i += interval) {
       markers.push(i);
+    }
+    if (markers[markers.length - 1] !== Math.floor(duration)) {
+      markers.push(Math.floor(duration));
     }
     return markers;
   }, [duration]);
@@ -57,7 +70,7 @@ export function Timeline({
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const percentage = x / rect.width;
-    onSeek(percentage * duration);
+    onSeek(Math.max(0, Math.min(duration, percentage * duration)));
   };
 
   const playheadPosition = duration ? (currentTime / duration) * 100 : 0;
@@ -69,22 +82,22 @@ export function Timeline({
       if (action.start === undefined || action.end === undefined) return null;
 
       const left = (action.start / duration) * 100;
-      const width = ((action.end - action.start) / duration) * 100;
+      const width = Math.max(0.5, ((action.end - action.start) / duration) * 100);
       const Icon = ACTION_ICONS[action.type];
 
       return (
         <div
           key={index}
           className={cn(
-            "absolute top-0 h-full timeline-segment flex items-center justify-center",
-            ACTION_COLORS[action.type]
+            "absolute top-0 h-full flex items-center justify-center transition-all",
+            ACTION_COLORS[action.type] || "bg-gray-500/70"
           )}
           style={{ left: `${left}%`, width: `${width}%` }}
-          title={`${action.type}: ${action.reason || ""}`}
+          title={`${ACTION_LABELS[action.type] || action.type}: ${formatTime(action.start)} - ${formatTime(action.end)}`}
           data-testid={`timeline-segment-${index}`}
         >
-          {Icon && width > 3 && (
-            <Icon className="h-3 w-3 text-white/80" />
+          {Icon && width > 4 && (
+            <Icon className="h-4 w-4 text-white drop-shadow" />
           )}
         </div>
       );
@@ -94,45 +107,74 @@ export function Timeline({
   if (!duration) {
     return (
       <div
-        className="h-16 bg-card rounded-lg border border-card-border flex items-center justify-center text-muted-foreground text-sm"
+        className="h-20 bg-card rounded-xl border-2 border-dashed border-muted-foreground/20 flex flex-col items-center justify-center text-muted-foreground gap-2"
         data-testid="timeline-empty"
       >
-        Upload a video to see the timeline
+        <Play className="h-6 w-6 opacity-50" />
+        <span className="text-sm">Upload a video to see the timeline</span>
       </div>
     );
   }
 
   return (
-    <div className="space-y-2" data-testid="timeline">
+    <div className="space-y-3 bg-card/50 p-4 rounded-xl" data-testid="timeline">
+      {/* Current time display */}
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-mono font-medium text-primary">
+          {formatTime(currentTime)}
+        </span>
+        <span className="text-muted-foreground">
+          Duration: {formatTime(duration)}
+        </span>
+      </div>
+
       {/* Timeline track */}
       <div
-        className="relative h-12 bg-muted rounded-md overflow-hidden cursor-pointer"
+        className="relative h-14 bg-muted rounded-lg overflow-hidden cursor-pointer group"
         onClick={handleClick}
       >
+        {/* Background grid */}
+        <div className="absolute inset-0 opacity-20">
+          {timeMarkers.slice(0, -1).map((time) => (
+            <div
+              key={time}
+              className="absolute top-0 bottom-0 w-px bg-foreground/30"
+              style={{ left: `${(time / duration) * 100}%` }}
+            />
+          ))}
+        </div>
+
         {/* Segments */}
         {renderSegments()}
 
         {/* Default track if no edit plan */}
         {!editPlan?.actions && (
-          <div className="absolute inset-0 bg-secondary/30" />
+          <div className="absolute inset-0 bg-gradient-to-r from-primary/20 via-primary/30 to-primary/20" />
         )}
+
+        {/* Hover effect */}
+        <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity" />
 
         {/* Playhead */}
         <div
-          className="absolute top-0 bottom-0 w-0.5 bg-white shadow-lg z-10"
-          style={{ left: `${playheadPosition}%` }}
+          className="absolute top-0 bottom-0 w-1 bg-white shadow-lg z-20 transition-all"
+          style={{ left: `calc(${playheadPosition}% - 2px)` }}
         >
-          <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-white rounded-full shadow" />
+          <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full shadow-md border-2 border-primary" />
+          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full shadow-md border-2 border-primary" />
         </div>
       </div>
 
       {/* Time markers */}
-      <div className="relative h-4">
-        {timeMarkers.map((time) => (
+      <div className="relative h-5">
+        {timeMarkers.map((time, index) => (
           <div
             key={time}
-            className="absolute text-xs text-muted-foreground"
-            style={{ left: `${(time / duration) * 100}%`, transform: "translateX(-50%)" }}
+            className="absolute text-xs text-muted-foreground font-mono"
+            style={{
+              left: `${(time / duration) * 100}%`,
+              transform: index === 0 ? "none" : index === timeMarkers.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+            }}
           >
             {formatTime(time)}
           </div>
@@ -141,16 +183,16 @@ export function Timeline({
 
       {/* Legend */}
       {editPlan?.actions && editPlan.actions.length > 0 && (
-        <div className="flex flex-wrap gap-3 pt-2">
+        <div className="flex flex-wrap gap-4 pt-2 border-t border-muted">
           {Object.entries(ACTION_COLORS).map(([type, color]) => {
             const hasAction = editPlan.actions.some((a) => a.type === type);
             if (!hasAction) return null;
 
             return (
-              <div key={type} className="flex items-center gap-1.5 text-xs">
-                <div className={cn("w-3 h-3 rounded", color)} />
-                <span className="text-muted-foreground capitalize">
-                  {type.replace("_", " ")}
+              <div key={type} className="flex items-center gap-2 text-xs">
+                <div className={cn("w-4 h-4 rounded", color)} />
+                <span className="text-muted-foreground">
+                  {ACTION_LABELS[type] || type}
                 </span>
               </div>
             );

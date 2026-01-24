@@ -234,24 +234,27 @@ function getBrollStyleHint(genre?: string): string {
 }
 
 function validateAndFixBrollActions(actions: EditAction[], duration: number): EditAction[] {
-  const brollActions = actions.filter(a => a.type === "insert_stock");
-  const otherActions = actions.filter(a => a.type !== "insert_stock");
+  // Include both insert_stock and insert_ai_image actions in B-roll validation
+  const brollActions = actions.filter(a => a.type === "insert_stock" || a.type === "insert_ai_image");
+  const otherActions = actions.filter(a => a.type !== "insert_stock" && a.type !== "insert_ai_image");
   
   const brollWithTiming = brollActions.map((a, index) => ({
     ...a,
     start: a.start ?? (index * 10),
   }));
   
+  // Sort all B-roll actions by start time for proper spacing validation
   brollWithTiming.sort((a, b) => (a.start || 0) - (b.start || 0));
   
   const validatedBroll: EditAction[] = [];
-  let lastEnd = -2;
+  let lastEnd = -3; // Minimum 3 second spacing between B-roll
   
   for (const action of brollWithTiming) {
     const start = Math.max(0, action.start || 0);
-    const actionDuration = action.duration || 3;
+    const actionDuration = action.duration || 4;
     
-    if (start >= lastEnd + 2 && start < duration - 1) {
+    // Ensure 3 second spacing between B-roll overlays
+    if (start >= lastEnd + 3 && start < duration - 1) {
       validatedBroll.push({
         ...action,
         start,
@@ -259,7 +262,7 @@ function validateAndFixBrollActions(actions: EditAction[], duration: number): Ed
       });
       lastEnd = start + actionDuration;
     } else {
-      console.log(`Skipping overlapping B-roll at ${start}s (previous ended at ${lastEnd}s)`);
+      console.log(`Skipping overlapping B-roll (${action.type}) at ${start}s (previous ended at ${lastEnd}s)`);
     }
   }
   

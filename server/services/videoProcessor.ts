@@ -665,6 +665,15 @@ export async function applyEdits(
     .filter((a: EditAction) => a.type === "insert_stock" && a.start !== undefined)
     .sort((a, b) => (a.start || 0) - (b.start || 0));
 
+  // Handle AI-generated image actions - treat similarly to stock insertions
+  const insertAiImageActions = editPlan.actions
+    .filter((a: EditAction) => a.type === "insert_ai_image" && a.start !== undefined)
+    .sort((a, b) => (a.start || 0) - (b.start || 0));
+
+  // Combine both insert types for B-roll overlay processing
+  const allBrollActions = [...insertStockActions, ...insertAiImageActions]
+    .sort((a, b) => (a.start || 0) - (b.start || 0));
+
   const textOverlayActions = editPlan.actions
     .filter((a: EditAction) => a.type === "add_text_overlay" && a.text && a.start !== undefined);
 
@@ -675,11 +684,14 @@ export async function applyEdits(
   console.log(`Keep segments: ${keepSegments.length}`);
   console.log(`Cut segments: ${cutSegments.length}`);
   console.log(`Insert stock actions: ${insertStockActions.length}`);
+  console.log(`Insert AI image actions: ${insertAiImageActions.length}`);
+  console.log(`Total B-roll actions: ${allBrollActions.length}`);
   console.log(`Text overlay actions: ${textOverlayActions.length}`);
   console.log(`Caption actions: ${captionActions.length}`);
 
-  // Download stock media for B-roll overlays (including AI-generated images)
+  // Download stock media for B-roll overlays (separating stock and AI-generated)
   const downloadedStockMedia: DownloadedStock[] = [];
+  const downloadedAiMedia: DownloadedStock[] = [];
   
   if (options.addBroll && stockMedia.length > 0) {
     console.log(`Processing ${Math.min(stockMedia.length, 8)} media items for overlays...`);
@@ -697,7 +709,7 @@ export async function applyEdits(
           // Verify file exists
           try {
             await fs.access(localPath);
-            downloadedStockMedia.push({ 
+            downloadedAiMedia.push({ 
               item: { ...item, type: "image" as const }, // Treat as image for overlay
               localPath 
             });
@@ -725,6 +737,8 @@ export async function applyEdits(
         console.error(`Failed to process media ${i}:`, e);
       }
     }
+    
+    console.log(`Stock media: ${downloadedStockMedia.length}, AI media: ${downloadedAiMedia.length}`);
   }
 
   // STEP 1: Build base video from keep segments (or cuts)
@@ -839,13 +853,39 @@ export async function applyEdits(
   
   const brollOverlays: BrollOverlay[] = [];
   let stockIdx = 0;
+  let aiIdx = 0;
   
-  if (options.addBroll && downloadedStockMedia.length > 0) {
-    // Map insert_stock actions to output timeline
-    for (const action of insertStockActions) {
-      if (stockIdx >= downloadedStockMedia.length) break;
-      
+  // Keep media queues separate - no cross-type substitution for integrity
+  const allDownloadedMedia = [...downloadedStockMedia, ...downloadedAiMedia];
+  
+  if (options.addBroll && allDownloadedMedia.length > 0) {
+    // Map insert_stock and insert_ai_image actions to output timeline
+    // Strict type matching: stock actions use stock media, AI actions use AI media
+    for (const action of allBrollActions) {
       const sourceTime = action.start || 0;
+      const isAiImage = action.type === "insert_ai_image";
+      
+      // Strict type matching - no fallback substitution
+      let mediaItem: DownloadedStock | null = null;
+      if (isAiImage) {
+        if (aiIdx < downloadedAiMedia.length) {
+          mediaItem = downloadedAiMedia[aiIdx];
+          aiIdx++;
+        } else {
+          console.warn(`No AI image available for insert_ai_image action at ${sourceTime}s - skipping`);
+          continue;
+        }
+      } else {
+        if (stockIdx < downloadedStockMedia.length) {
+          mediaItem = downloadedStockMedia[stockIdx];
+          stockIdx++;
+        } else {
+          console.warn(`No stock media available for insert_stock action at ${sourceTime}s - skipping`);
+          continue;
+        }
+      }
+      
+      if (!mediaItem) continue;
       
       // Find output time for this source time
       let outputTime: number | null = null;
@@ -857,20 +897,24 @@ export async function applyEdits(
       }
       
       if (outputTime !== null) {
+        // For AI images, use duration from action; for stock, use item duration
         const duration = Math.min(
-          action.end && action.start ? action.end - action.start : 3,
-          downloadedStockMedia[stockIdx].item.duration || 5,
-          4 // Max 4 seconds per overlay
+          action.duration || (action.end && action.start ? action.end - action.start : 4),
+          isAiImage ? 5 : (mediaItem.item.duration || 5),
+          5 // Max 5 seconds per overlay
         );
         
         brollOverlays.push({
-          localPath: downloadedStockMedia[stockIdx].localPath,
-          type: downloadedStockMedia[stockIdx].item.type,
+          localPath: mediaItem.localPath,
+          type: mediaItem.item.type,
           startTime: outputTime,
           duration,
           text: action.text,
         });
-        stockIdx++;
+        
+        if (isAiImage) {
+          console.log(`Applied AI image at ${outputTime.toFixed(2)}s for ${duration.toFixed(2)}s`);
+        }
       }
     }
     

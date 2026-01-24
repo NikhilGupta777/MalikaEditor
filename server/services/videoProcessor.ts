@@ -157,17 +157,11 @@ async function downloadFile(url: string, outputPath: string): Promise<void> {
   const response = await axios({
     method: "GET",
     url,
-    responseType: "stream",
+    responseType: "arraybuffer",
     timeout: 30000,
   });
   
-  const writer = require("fs").createWriteStream(outputPath);
-  response.data.pipe(writer);
-  
-  return new Promise((resolve, reject) => {
-    writer.on("finish", resolve);
-    writer.on("error", reject);
-  });
+  await fs.writeFile(outputPath, Buffer.from(response.data));
 }
 
 function escapeText(text: string): string {

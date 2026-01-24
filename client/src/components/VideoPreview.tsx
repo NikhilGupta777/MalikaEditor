@@ -179,14 +179,14 @@ export function VideoPreview({
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
-    if (!video || !isLoaded) return;
+    if (!video) return;
 
-    if (isPlaying) {
-      video.pause();
-    } else {
+    if (video.paused) {
       video.play().catch(console.error);
+    } else {
+      video.pause();
     }
-  }, [isLoaded, isPlaying]);
+  }, []);
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
@@ -199,7 +199,7 @@ export function VideoPreview({
   const handleSeek = useCallback(
     (value: number[]) => {
       const video = videoRef.current;
-      if (!video || !isLoaded) return;
+      if (!video) return;
 
       const newTime = value[0];
       setIsSeeking(true);
@@ -207,7 +207,7 @@ export function VideoPreview({
       setInternalTime(newTime);
       onTimeUpdate?.(newTime);
     },
-    [isLoaded, onTimeUpdate]
+    [onTimeUpdate]
   );
 
   const handleVolumeChange = useCallback((value: number[]) => {
@@ -221,25 +221,25 @@ export function VideoPreview({
 
   const skipBackward = useCallback(() => {
     const video = videoRef.current;
-    if (!video || !isLoaded) return;
+    if (!video) return;
 
     const newTime = Math.max(0, video.currentTime - 10);
     setIsSeeking(true);
     video.currentTime = newTime;
     setInternalTime(newTime);
     onTimeUpdate?.(newTime);
-  }, [isLoaded, onTimeUpdate]);
+  }, [onTimeUpdate]);
 
   const skipForward = useCallback(() => {
     const video = videoRef.current;
-    if (!video || !isLoaded) return;
+    if (!video) return;
 
     const newTime = Math.min(duration, video.currentTime + 10);
     setIsSeeking(true);
     video.currentTime = newTime;
     setInternalTime(newTime);
     onTimeUpdate?.(newTime);
-  }, [duration, isLoaded, onTimeUpdate]);
+  }, [duration, onTimeUpdate]);
 
   const toggleFullscreen = useCallback(async () => {
     const container = containerRef.current;
@@ -347,7 +347,6 @@ export function VideoPreview({
             step={0.1}
             onValueChange={handleSeek}
             className="cursor-pointer"
-            disabled={!isLoaded}
             data-testid="slider-video-progress"
           />
         </div>
@@ -359,7 +358,6 @@ export function VideoPreview({
               size="icon"
               onClick={skipBackward}
               className="text-white hover:bg-white/20"
-              disabled={!isLoaded}
               data-testid="button-skip-back"
             >
               <SkipBack className="h-4 w-4" />
@@ -369,7 +367,6 @@ export function VideoPreview({
               size="icon"
               onClick={togglePlay}
               className="text-white hover:bg-white/20"
-              disabled={!isLoaded}
               data-testid="button-play-pause"
             >
               {isPlaying ? (
@@ -383,7 +380,6 @@ export function VideoPreview({
               size="icon"
               onClick={skipForward}
               className="text-white hover:bg-white/20"
-              disabled={!isLoaded}
               data-testid="button-skip-forward"
             >
               <SkipForward className="h-4 w-4" />

@@ -939,11 +939,14 @@ CRITICAL B-ROLL QUERY GUIDELINES:
 - Match the genre and tone: ${videoContext?.genre || "general"} content should have ${videoContext?.tone || "appropriate"} imagery
 
 B-ROLL TIMING RULES:
-- Duration: 2-6 seconds per B-roll
-- Spacing: minimum 3 seconds between B-roll clips
+- Duration: 3-5 seconds per B-roll (optimal for visual impact)
+- Spacing: minimum 3-5 seconds between B-roll clips
 - Never place B-roll during important visual moments or climactic points
 - Place B-roll at the START of concepts, not during key revelations
-- Maximum 5-8 B-roll windows for a ${duration.toFixed(0)}s video
+- DISTRIBUTE B-ROLL EVENLY across the ENTIRE video timeline
+- For a ${duration.toFixed(0)}s video, create ${Math.min(15, Math.max(6, Math.ceil(duration / 6)))} B-roll windows
+- Ensure B-roll windows cover ALL parts of the video, not just the beginning
+- Each third of the video (0-33%, 34-66%, 67-100%) should have at least 2 B-roll windows
 
 Respond in JSON format only (no markdown):
 {
@@ -993,7 +996,7 @@ Respond in JSON format only (no markdown):
         priority: b.priority || "medium",
         reason: b.reason || "Enhance visual interest",
       }))
-      .slice(0, 8); // Maximum 8 B-roll windows
+      .slice(0, 15); // Maximum 15 B-roll windows (1 per ~5-6 seconds of video)
 
     return {
       mainTopics: parsed.mainTopics || [],
@@ -1107,15 +1110,15 @@ export interface GeneratedAiImage {
 export async function generateAiImagesForVideo(
   semanticAnalysis: SemanticAnalysis,
   videoContext?: VideoContext,
-  maxImages: number = 3
+  maxImages: number = 3,
+  videoDuration?: number
 ): Promise<GeneratedAiImage[]> {
   const generatedImages: GeneratedAiImage[] = [];
   
-  // Get B-roll windows that are good candidates for AI images (high/medium priority)
-  // STRICT VALIDATION: Only accept candidates with valid timing data
-  const aiImageCandidates = semanticAnalysis.brollWindows
+  // Get B-roll windows with valid timing data
+  // RELAXED PRIORITY: Include all priorities (high/medium/low) to ensure coverage
+  const validCandidates = semanticAnalysis.brollWindows
     .filter(w => {
-      if (w.priority !== "high" && w.priority !== "medium") return false;
       // Strict timing validation - require start, end, and positive duration
       if (typeof w.start !== "number" || typeof w.end !== "number") {
         console.warn(`Rejecting AI image candidate: missing start/end time - ${w.suggestedQuery}`);
@@ -1127,9 +1130,61 @@ export async function generateAiImagesForVideo(
       }
       return true;
     })
-    .slice(0, maxImages);
+    .sort((a, b) => a.start - b.start);  // Sort by time for even distribution
+  
+  console.log(`Valid B-roll candidates: ${validCandidates.length}/${semanticAnalysis.brollWindows.length}`);
+  
+  // If we have fewer candidates than maxImages, use all of them
+  // Otherwise, select evenly distributed candidates across the video timeline
+  let aiImageCandidates: typeof validCandidates;
+  
+  if (validCandidates.length <= maxImages) {
+    aiImageCandidates = validCandidates;
+  } else if (videoDuration && videoDuration > 0) {
+    // Distribute evenly across the video timeline
+    // Divide video into segments and pick best candidate from each segment
+    const segmentDuration = videoDuration / maxImages;
+    aiImageCandidates = [];
+    
+    for (let i = 0; i < maxImages; i++) {
+      const segmentStart = i * segmentDuration;
+      const segmentEnd = (i + 1) * segmentDuration;
+      
+      // Find candidates that fall within this segment
+      const segmentCandidates = validCandidates.filter(c => 
+        c.start >= segmentStart && c.start < segmentEnd
+      );
+      
+      if (segmentCandidates.length > 0) {
+        // Prefer high priority, then medium, then low
+        const priorityOrder = { high: 0, medium: 1, low: 2 };
+        const best = segmentCandidates.sort((a, b) => 
+          priorityOrder[a.priority] - priorityOrder[b.priority]
+        )[0];
+        aiImageCandidates.push(best);
+      } else {
+        // No candidate in this segment, find nearest unused candidate
+        const unusedCandidates = validCandidates.filter(c => 
+          !aiImageCandidates.includes(c) && 
+          Math.abs(c.start - (segmentStart + segmentDuration / 2)) < segmentDuration
+        );
+        if (unusedCandidates.length > 0) {
+          aiImageCandidates.push(unusedCandidates[0]);
+        }
+      }
+    }
+    
+    // Sort by time again after selection
+    aiImageCandidates.sort((a, b) => a.start - b.start);
+  } else {
+    // Fallback: just take first maxImages sorted by priority
+    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    aiImageCandidates = validCandidates
+      .sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority])
+      .slice(0, maxImages);
+  }
 
-  console.log(`AI Image candidates after validation: ${aiImageCandidates.length}/${semanticAnalysis.brollWindows.length}`);
+  console.log(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${maxImages})`);
 
   for (const candidate of aiImageCandidates) {
     try {

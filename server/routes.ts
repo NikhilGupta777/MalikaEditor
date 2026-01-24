@@ -348,10 +348,17 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         console.log("Generating AI images based on video content...");
         
         try {
+          // Calculate optimal number of AI images based on video duration
+          // Target: ~1 AI image per 8-10 seconds of video, minimum 3, maximum 12
+          const videoDuration = metadata.duration;
+          const optimalImages = Math.min(12, Math.max(3, Math.ceil(videoDuration / 8)));
+          console.log(`Video is ${videoDuration.toFixed(1)}s, targeting ${optimalImages} AI images`);
+          
           const generatedImages = await generateAiImagesForVideo(
             semanticAnalysis,
             analysis.context,
-            3 // Generate up to 3 AI images
+            optimalImages,
+            videoDuration  // Pass video duration for distribution logic
           );
           
           // Convert to StockMediaItem format and save to files with timing info

@@ -58,7 +58,7 @@ The frontend follows a component-based architecture with:
   - ASS (Advanced SubStation Alpha) subtitle format for precise styling control
   - Words grouped into 4-word chunks for readability
   - Progressive word highlighting using {\kf} karaoke fill effect (white → cyan highlight)
-  - Positioned between center and bottom (~68% from top via 32% MarginV from bottom)
+  - Positioned near bottom of video (~85% from top via 15% MarginV from bottom)
   - Font size scales with video height for consistent readability
   - Cyan highlight color with white base, black outline for visibility on any background
 - **Semantic Transcript Analysis** (NEW): Deep semantic analysis of transcripts for context-aware B-roll
@@ -156,6 +156,12 @@ Technical implementation:
 2. **Worker Processes**: Separate worker processes for CPU-intensive FFmpeg operations
 3. **Object Storage**: Move from local `/tmp` storage to cloud object storage for scalability
 4. **Caching**: Cache AI analysis results and edit plans for re-processing workflows
+5. **Chapters Feature** (PLANNED): Chapter-based video navigation with visual markers
+   - When a chapter starts, show the chapter/topic title with elegant dark background overlay
+   - Video continues playing in background while title fades in/out
+   - Smooth transitions between chapters (darken → title → brighten → continue)
+   - AI-detected topic segments become chapter markers
+   - Chapter titles derived from semantic analysis topic segmentation
 
 ### Error Handling Strategy
 - **AI Services**: Return fallback values (empty arrays, default semantic analysis) on failure

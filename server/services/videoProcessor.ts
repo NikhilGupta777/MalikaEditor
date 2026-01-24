@@ -203,10 +203,10 @@ function generateAssContent(
   videoWidth: number,
   videoHeight: number
 ): string {
-  // Position captions at ~65-70% from top (between center and bottom)
+  // Position captions near the bottom of the video
   // MarginV controls vertical positioning from bottom
-  // 32% from bottom = 68% from top (target range 65-70%)
-  const marginBottom = Math.round(videoHeight * 0.32);
+  // 15% from bottom = 85% from top (near the very bottom, above player controls)
+  const marginBottom = Math.round(videoHeight * 0.15);
   
   // Font size scales with video height for readability
   const fontSize = Math.max(Math.round(videoHeight / 18), 28);
@@ -809,8 +809,13 @@ export async function applyEdits(
   // Note: insert_ai_image actions are no longer used in edit plans
   // AI images are auto-placed from semantic analysis with embedded timing
 
-  const textOverlayActions = editPlan.actions
-    .filter((a: EditAction) => a.type === "add_text_overlay" && a.text && a.start !== undefined);
+  // Text overlays disabled for now - reserved for future "Chapters" feature
+  // where chapter titles will appear with nice dark background transitions
+  // TODO: Implement chapters feature with topic titles at chapter start points
+  const textOverlayActions: EditAction[] = [];
+  // Original code (disabled):
+  // const textOverlayActions = editPlan.actions
+  //   .filter((a: EditAction) => a.type === "add_text_overlay" && a.text && a.start !== undefined);
 
   const captionActions = editPlan.actions.filter((a: EditAction) => 
     a.type === "add_caption" && a.text

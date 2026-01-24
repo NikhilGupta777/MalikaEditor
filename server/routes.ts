@@ -300,9 +300,8 @@ User has selected these options:
 - Add B-Roll Stock Footage: ${editOptions.addBroll ? "Yes" : "No"}  
 - Remove Silent Parts: ${editOptions.removeSilence ? "Yes" : "No"}
 - Generate AI Images: ${editOptions.generateAiImages ? "Yes" : "No"}
-- Add Transitions: ${editOptions.addTransitions ? "Yes" : "No"}
 
-Please create an edit plan that follows these preferences.`;
+Please create an edit plan that follows these preferences. Do NOT include any transition effects - transitions are not supported.`;
 
       const editPlan = await generateEditPlan(enhancedPrompt, analysis, transcript, semanticAnalysis);
 

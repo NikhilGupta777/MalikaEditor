@@ -693,31 +693,48 @@ export async function applyEdits(
   const downloadedStockMedia: DownloadedStock[] = [];
   const downloadedAiMedia: DownloadedStock[] = [];
   
-  if (options.addBroll && stockMedia.length > 0) {
-    console.log(`Processing ${Math.min(stockMedia.length, 8)} media items for overlays...`);
+  // First: Always process AI-generated images if present (independent of addBroll option)
+  const aiGeneratedItems = stockMedia.filter(item => item.type === "ai_generated");
+  if (aiGeneratedItems.length > 0) {
+    console.log(`Processing ${aiGeneratedItems.length} AI-generated images...`);
     
-    for (let i = 0; i < Math.min(stockMedia.length, 8); i++) {
-      const item = stockMedia[i];
+    for (let i = 0; i < aiGeneratedItems.length; i++) {
+      const item = aiGeneratedItems[i];
+      try {
+        // AI-generated images are already saved locally, use path directly
+        const localPath = item.url; // URL is the local file path for AI images
+        console.log(`Using AI-generated image ${i}: ${item.query}`);
+        
+        // Verify file exists
+        try {
+          await fs.access(localPath);
+          downloadedAiMedia.push({ 
+            item: { ...item, type: "image" as const }, // Treat as image for overlay
+            localPath 
+          });
+          console.log(`AI image ready: ${localPath}`);
+        } catch {
+          console.error(`AI image file not found: ${localPath}`);
+        }
+      } catch (e) {
+        console.error(`Failed to process AI image ${i}:`, e);
+      }
+    }
+    
+    console.log(`AI media processed: ${downloadedAiMedia.length}`);
+  }
+  
+  // Second: Process stock media only if addBroll is enabled
+  const stockItems = stockMedia.filter(item => item.type !== "ai_generated");
+  if (options.addBroll && stockItems.length > 0) {
+    console.log(`Processing ${Math.min(stockItems.length, 8)} stock media items for overlays...`);
+    
+    for (let i = 0; i < Math.min(stockItems.length, 8); i++) {
+      const item = stockItems[i];
       try {
         let localPath: string;
         
-        if (item.type === "ai_generated") {
-          // AI-generated images are already saved locally, use path directly
-          localPath = item.url; // URL is the local file path for AI images
-          console.log(`Using AI-generated image ${i}: ${item.query}`);
-          
-          // Verify file exists
-          try {
-            await fs.access(localPath);
-            downloadedAiMedia.push({ 
-              item: { ...item, type: "image" as const }, // Treat as image for overlay
-              localPath 
-            });
-            console.log(`AI image ready: ${localPath}`);
-          } catch {
-            console.error(`AI image file not found: ${localPath}`);
-          }
-        } else if (item.type === "video") {
+        if (item.type === "video") {
           localPath = path.join(STOCK_DIR, `${outputId}_stock_${i}.mp4`);
           console.log(`Downloading stock video ${i}: ${item.query}`);
           await downloadFile(item.url, localPath);
@@ -734,12 +751,14 @@ export async function applyEdits(
           console.log(`Downloaded: ${localPath}`);
         }
       } catch (e) {
-        console.error(`Failed to process media ${i}:`, e);
+        console.error(`Failed to process stock media ${i}:`, e);
       }
     }
     
-    console.log(`Stock media: ${downloadedStockMedia.length}, AI media: ${downloadedAiMedia.length}`);
+    console.log(`Stock media downloaded: ${downloadedStockMedia.length}`);
   }
+  
+  console.log(`Total media ready: Stock=${downloadedStockMedia.length}, AI=${downloadedAiMedia.length}`);
 
   // STEP 1: Build base video from keep segments (or cuts)
   // This handles silence removal by cutting out specified segments

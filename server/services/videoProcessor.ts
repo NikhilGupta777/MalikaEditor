@@ -201,6 +201,12 @@ export async function applyEdits(
   outputFileName?: string
 ): Promise<string> {
   await ensureDirs();
+  
+  console.log("=== APPLY EDITS START ===");
+  console.log("Options:", JSON.stringify(options));
+  console.log("Transcript segments:", transcript.length);
+  console.log("Stock media items:", stockMedia.length);
+  console.log("Edit plan actions:", editPlan.actions?.length || 0);
 
   const outputId = outputFileName || uuidv4();
   const outputPath = path.join(OUTPUT_DIR, `${outputId}.mp4`);
@@ -255,12 +261,21 @@ export async function applyEdits(
     }
   }
 
+  // Simple path: single segment, no captions, no B-roll - just trim
   if (keepSegments.length === 1 && allCaptions.length === 0 && downloadedStock.length === 0) {
     const seg = keepSegments[0];
+    const segStart = seg.start || 0;
+    const segEnd = seg.end || metadata.duration;
+    
+    // Only apply simple copy if we're keeping the entire video
+    const isFullVideo = segStart === 0 && Math.abs(segEnd - metadata.duration) < 1;
+    
+    console.log(`Simple path: segStart=${segStart}, segEnd=${segEnd}, duration=${metadata.duration}, isFullVideo=${isFullVideo}`);
+    
     await new Promise<void>((resolve, reject) => {
       ffmpeg(videoPath)
-        .setStartTime(seg.start || 0)
-        .setDuration((seg.end || metadata.duration) - (seg.start || 0))
+        .setStartTime(segStart)
+        .setDuration(segEnd - segStart)
         .outputOptions([
           "-c:v", "libx264",
           "-preset", "ultrafast",
@@ -268,12 +283,15 @@ export async function applyEdits(
           "-c:a", "aac",
           "-b:a", "96k",
           "-max_muxing_queue_size", "1024",
-          "-threads", "1",
+          "-threads", "2",
         ])
         .output(outputPath)
-        .on("end", () => resolve())
+        .on("end", () => {
+          console.log("Simple path FFmpeg completed successfully");
+          resolve();
+        })
         .on("error", (err) => {
-          console.error("FFmpeg error:", err);
+          console.error("FFmpeg simple path error:", err);
           reject(err);
         })
         .run();
@@ -281,6 +299,8 @@ export async function applyEdits(
     return outputPath;
   }
 
+  console.log(`Complex path: ${keepSegments.length} segments, ${allCaptions.length} captions, ${downloadedStock.length} stock media`);
+  
   const tempSegmentPaths: string[] = [];
   
   for (let i = 0; i < keepSegments.length; i++) {
@@ -289,15 +309,10 @@ export async function applyEdits(
     const segEnd = seg.end || metadata.duration;
     const segDuration = segEnd - segStart;
     
-    const segmentPath = path.join(OUTPUT_DIR, `segment_${outputId}_${i}.ts`);
+    console.log(`Processing segment ${i}: ${segStart}s to ${segEnd}s (${segDuration}s)`);
+    
+    const segmentPath = path.join(OUTPUT_DIR, `segment_${outputId}_${i}.mp4`);
     tempSegmentPaths.push(segmentPath);
-
-    const filterParts: string[] = [];
-
-    if (srtPath && allCaptions.length > 0) {
-      const escapedPath = srtPath.replace(/'/g, "\\'").replace(/:/g, "\\:");
-      filterParts.push(`subtitles='${escapedPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,Alignment=2,MarginV=30'`);
-    }
 
     await new Promise<void>((resolve, reject) => {
       let cmd = ffmpeg(videoPath)
@@ -311,18 +326,24 @@ export async function applyEdits(
         "-c:a", "aac",
         "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
-        "-threads", "1",
-        "-f", "mpegts",
+        "-threads", "2",
       ];
 
-      if (filterParts.length > 0) {
-        cmd = cmd.videoFilters(filterParts);
+      // Add subtitles if we have them
+      if (srtPath && allCaptions.length > 0) {
+        // For subtitles filter, we need to escape the path properly
+        const escapedPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
+        cmd = cmd.videoFilters([`subtitles='${escapedPath}':force_style='FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1'`]);
+        console.log(`Adding subtitles from: ${srtPath}`);
       }
 
       cmd
         .outputOptions(outputOptions)
         .output(segmentPath)
-        .on("end", () => resolve())
+        .on("end", () => {
+          console.log(`Segment ${i} completed`);
+          resolve();
+        })
         .on("error", (err) => {
           console.error(`FFmpeg segment ${i} error:`, err);
           reject(err);
@@ -331,86 +352,81 @@ export async function applyEdits(
     });
   }
 
+  // Add B-roll segments if we have downloaded stock images
   if (options.addBroll && downloadedStock.length > 0) {
-    const brollInsertPoints = editPlan.actions
-      .filter((a: EditAction) => a.type === "insert_stock" && a.start !== undefined)
-      .slice(0, downloadedStock.length);
-
-    for (let i = 0; i < Math.min(brollInsertPoints.length, downloadedStock.length); i++) {
-      const insertAction = brollInsertPoints[i];
+    console.log(`Adding ${downloadedStock.length} B-roll segments`);
+    
+    for (let i = 0; i < downloadedStock.length; i++) {
       const imagePath = downloadedStock[i];
       
       try {
-        const brollPath = path.join(OUTPUT_DIR, `broll_${outputId}_${i}.ts`);
+        const brollPath = path.join(OUTPUT_DIR, `broll_${outputId}_${i}.mp4`);
         
+        console.log(`Creating B-roll ${i} from: ${imagePath}`);
+        
+        // Create video from image with silent audio
         await new Promise<void>((resolve, reject) => {
-          ffmpeg(imagePath)
-            .loop(1)
-            .inputOptions(["-t", "3"])
+          ffmpeg()
+            .input(imagePath)
+            .inputOptions(["-loop", "1"])
+            .input("anullsrc=channel_layout=stereo:sample_rate=44100")
+            .inputOptions(["-f", "lavfi"])
             .outputOptions([
               "-c:v", "libx264",
               "-preset", "ultrafast",
               "-crf", "28",
               "-pix_fmt", "yuv420p",
-              "-vf", `scale=${metadata.width}:${metadata.height}:force_original_aspect_ratio=decrease,pad=${metadata.width}:${metadata.height}:(ow-iw)/2:(oh-ih)/2`,
-              "-t", "3",
-              "-f", "mpegts",
-              "-threads", "1",
-            ])
-            .noAudio()
-            .output(brollPath)
-            .on("end", () => resolve())
-            .on("error", (err) => {
-              console.error("B-roll creation error:", err);
-              reject(err);
-            })
-            .run();
-        });
-
-        const silentBrollPath = path.join(OUTPUT_DIR, `broll_audio_${outputId}_${i}.ts`);
-        await new Promise<void>((resolve, reject) => {
-          ffmpeg(brollPath)
-            .inputOptions([
-              "-f", "lavfi",
-              "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            ])
-            .outputOptions([
-              "-c:v", "copy",
               "-c:a", "aac",
+              "-t", "3",
+              "-vf", `scale=${metadata.width}:${metadata.height}:force_original_aspect_ratio=decrease,pad=${metadata.width}:${metadata.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
               "-shortest",
-              "-f", "mpegts",
+              "-threads", "2",
             ])
-            .output(silentBrollPath)
-            .on("end", () => resolve())
+            .output(brollPath)
+            .on("end", () => {
+              console.log(`B-roll ${i} created successfully`);
+              resolve();
+            })
             .on("error", (err) => {
-              console.error("Silent B-roll error:", err);
+              console.error(`B-roll ${i} creation error:`, err);
               reject(err);
             })
             .run();
         });
 
-        tempSegmentPaths.push(silentBrollPath);
-        await fs.unlink(brollPath).catch(() => {});
+        tempSegmentPaths.push(brollPath);
       } catch (e) {
         console.error("Failed to create B-roll segment:", e);
       }
     }
   }
 
+  console.log(`Concatenating ${tempSegmentPaths.length} segments`);
+  
   const concatListPath = path.join(OUTPUT_DIR, `concat_${outputId}.txt`);
   const concatContent = tempSegmentPaths.map(p => `file '${p}'`).join("\n");
   await fs.writeFile(concatListPath, concatContent);
+  
+  console.log(`Concat list:\n${concatContent}`);
 
   await new Promise<void>((resolve, reject) => {
     ffmpeg()
       .input(concatListPath)
       .inputOptions(["-f", "concat", "-safe", "0"])
       .outputOptions([
-        "-c", "copy",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-c:a", "aac",
+        "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
+        "-threads", "2",
       ])
       .output(outputPath)
-      .on("end", () => resolve())
+      .on("end", () => {
+        console.log("Concatenation completed successfully");
+        resolve();
+      })
       .on("error", (err) => {
         console.error("FFmpeg concat error:", err);
         reject(err);

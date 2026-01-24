@@ -717,35 +717,98 @@ function getDefaultSemanticAnalysis(transcript: TranscriptSegment[], duration: n
 }
 
 /**
- * Generate AI image using Gemini Imagen
- * Used for creating contextual images based on video content
+ * Generate AI image using Gemini Imagen (gemini-2.5-flash-image)
+ * Creates contextual images based on video content for B-roll
+ * Returns base64 data URL of the generated image
  */
-export async function generateAiImage(prompt: string): Promise<string | null> {
+export async function generateAiImage(
+  prompt: string,
+  videoContext?: VideoContext
+): Promise<{ base64Data: string; mimeType: string } | null> {
   try {
+    // Enhance the prompt with video context for better relevance
+    const contextualPrompt = videoContext 
+      ? `Create a professional, high-quality image suitable for ${videoContext.genre} video content with a ${videoContext.tone} tone. 
+         The image should be: ${prompt}
+         Style: Clean, professional, suitable as B-roll footage. No text or watermarks.`
+      : `Create a professional, high-quality image: ${prompt}
+         Style: Clean, professional, suitable as B-roll footage. No text or watermarks.`;
+
+    console.log(`Generating AI image with prompt: ${contextualPrompt.substring(0, 100)}...`);
+    
     const response = await geminiClient.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-flash-image",
       contents: [
         {
           role: "user",
-          parts: [
-            {
-              text: `Generate a simple, clean visual description for this concept that would work well as B-roll footage: "${prompt}". 
-              Describe a single, clear image that could be created to illustrate this concept.
-              Keep it simple and professional. Just describe the image, nothing else.`,
-            },
-          ],
+          parts: [{ text: contextualPrompt }],
         },
       ],
+      config: {
+        responseModalities: ["TEXT", "IMAGE"],
+      },
     });
+
+    const candidate = response.candidates?.[0];
+    const imagePart = candidate?.content?.parts?.find(
+      (part: any) => part.inlineData
+    );
+
+    if (!imagePart?.inlineData?.data) {
+      console.warn("No image data in AI generation response");
+      return null;
+    }
+
+    const mimeType = imagePart.inlineData.mimeType || "image/png";
+    console.log(`AI image generated successfully: ${mimeType}`);
     
-    // For now, return null as we'll use stock footage
-    // In future, this would call an image generation API
-    console.log("AI Image prompt generated:", response.text);
-    return null;
+    return {
+      base64Data: imagePart.inlineData.data,
+      mimeType,
+    };
   } catch (error) {
     console.error("AI image generation error:", error);
     return null;
   }
+}
+
+/**
+ * Generate multiple AI images for B-roll based on semantic analysis
+ * Returns array of generated images with their prompts
+ */
+export async function generateAiImagesForVideo(
+  semanticAnalysis: SemanticAnalysis,
+  videoContext?: VideoContext,
+  maxImages: number = 3
+): Promise<Array<{ prompt: string; base64Data: string; mimeType: string; timestamp: number }>> {
+  const generatedImages: Array<{ prompt: string; base64Data: string; mimeType: string; timestamp: number }> = [];
+  
+  // Get B-roll windows that are good candidates for AI images
+  const aiImageCandidates = semanticAnalysis.brollWindows
+    .filter(w => w.priority === "high" || w.priority === "medium")
+    .slice(0, maxImages);
+
+  for (const candidate of aiImageCandidates) {
+    try {
+      // Create a specific, contextual prompt from the semantic analysis
+      const imagePrompt = `${candidate.suggestedQuery}. Context: ${candidate.context}`;
+      const result = await generateAiImage(imagePrompt, videoContext);
+      
+      if (result) {
+        generatedImages.push({
+          prompt: candidate.suggestedQuery,
+          base64Data: result.base64Data,
+          mimeType: result.mimeType,
+          timestamp: candidate.start,
+        });
+      }
+    } catch (error) {
+      console.error(`Failed to generate AI image for: ${candidate.suggestedQuery}`, error);
+    }
+  }
+
+  console.log(`Generated ${generatedImages.length} AI images for video`);
+  return generatedImages;
 }
 
 export async function generateEditPlan(

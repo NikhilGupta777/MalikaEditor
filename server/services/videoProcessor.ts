@@ -472,7 +472,7 @@ async function concatTwoWithTransition(
 // Overlay info for B-roll on main video
 interface BrollOverlay {
   localPath: string;
-  type: "image" | "video";
+  type: "image" | "video" | "ai_generated";
   startTime: number; // When to show overlay (in output timeline)
   duration: number;
   text?: string;

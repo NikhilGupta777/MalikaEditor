@@ -22,8 +22,9 @@ import {
   transcribeAudio,
   generateEditPlan,
   analyzeTranscriptSemantics,
+  generateAiImagesForVideo,
 } from "./services/aiService";
-import type { SemanticAnalysis } from "@shared/schema";
+import type { SemanticAnalysis, StockMediaItem } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 
 const upload = multer({
@@ -282,13 +283,56 @@ Please create an edit plan that follows these preferences.`;
       await storage.updateVideoProject(id, { editPlan });
       sendEvent("editPlan", { editPlan });
 
-      let stockMedia: any[] = [];
+      let stockMedia: StockMediaItem[] = [];
       if (editOptions.addBroll) {
         await updateStatus("fetching_stock");
         const stockQueries = editPlan.stockQueries || [];
         stockMedia = await fetchStockMedia(stockQueries);
         await storage.updateVideoProject(id, { stockMedia });
         sendEvent("stockMedia", { stockMedia });
+      }
+      
+      // Generate AI images if option is enabled and semantic analysis is available
+      let aiGeneratedImages: StockMediaItem[] = [];
+      if (editOptions.generateAiImages && semanticAnalysis && semanticAnalysis.brollWindows.length > 0) {
+        await updateStatus("generating_ai_images");
+        console.log("Generating AI images based on video content...");
+        
+        try {
+          const generatedImages = await generateAiImagesForVideo(
+            semanticAnalysis,
+            analysis.context,
+            3 // Generate up to 3 AI images
+          );
+          
+          // Convert to StockMediaItem format and save to files
+          for (let i = 0; i < generatedImages.length; i++) {
+            const img = generatedImages[i];
+            const ext = img.mimeType.includes("png") ? "png" : "jpg";
+            const imagePath = path.join(OUTPUT_DIR, `ai_image_${id}_${i}.${ext}`);
+            
+            // Save base64 to file
+            await fs.writeFile(imagePath, Buffer.from(img.base64Data, "base64"));
+            
+            aiGeneratedImages.push({
+              type: "ai_generated",
+              query: img.prompt,
+              url: imagePath, // Local path for processing
+              aiPrompt: img.prompt,
+              generatedAt: Date.now(),
+            });
+          }
+          
+          console.log(`Generated ${aiGeneratedImages.length} AI images`);
+          sendEvent("aiImages", { count: aiGeneratedImages.length });
+          
+          // Add AI images to stock media for B-roll overlay
+          stockMedia = [...stockMedia, ...aiGeneratedImages];
+          await storage.updateVideoProject(id, { stockMedia });
+        } catch (aiError) {
+          console.error("AI image generation failed, continuing with stock media:", aiError);
+          sendEvent("aiImagesError", { error: "AI image generation failed, using stock media only" });
+        }
       }
 
       await updateStatus("editing");

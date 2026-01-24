@@ -137,12 +137,12 @@ export function PromptInput({
             </Label>
           </div>
           
-          <div className="flex items-center space-x-3 opacity-70">
+          <div className="flex items-center space-x-3">
             <Checkbox
               id="generateAiImages"
               checked={editOptions.generateAiImages}
               onCheckedChange={() => handleOptionChange("generateAiImages")}
-              disabled={isProcessing || true}
+              disabled={isProcessing}
               data-testid="checkbox-ai-images"
             />
             <Label 
@@ -150,7 +150,8 @@ export function PromptInput({
               className="flex items-center gap-2 cursor-pointer"
             >
               <ImagePlus className="h-4 w-4 text-pink-500" />
-              <span>AI Generated Images (Coming Soon)</span>
+              <span>AI Generated Images</span>
+              <span className="text-xs text-muted-foreground ml-1">(context-aware visuals)</span>
             </Label>
           </div>
         </CardContent>

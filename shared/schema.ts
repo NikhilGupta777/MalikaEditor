@@ -71,9 +71,41 @@ export const frameAnalysisSchema = z.object({
   description: z.string(),
   keyMoment: z.boolean().optional(),
   suggestedStockQuery: z.string().optional(),
+  energyLevel: z.enum(["low", "medium", "high"]).optional(),
+  speakingPace: z.enum(["slow", "normal", "fast"]).optional(),
 });
 
 export type FrameAnalysis = z.infer<typeof frameAnalysisSchema>;
+
+export const topicSegmentSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  topic: z.string(),
+  importance: z.enum(["low", "medium", "high"]).optional(),
+  suggestedBrollWindow: z.boolean().optional(),
+});
+
+export type TopicSegment = z.infer<typeof topicSegmentSchema>;
+
+export const videoContextSchema = z.object({
+  genre: z.enum([
+    "tutorial", "vlog", "interview", "presentation", "documentary",
+    "spiritual", "educational", "entertainment", "tech", "lifestyle",
+    "gaming", "music", "news", "review", "motivational", "other"
+  ]),
+  subGenre: z.string().optional(),
+  targetAudience: z.string().optional(),
+  tone: z.enum(["serious", "casual", "professional", "humorous", "inspirational", "dramatic", "calm"]),
+  pacing: z.enum(["slow", "moderate", "fast", "dynamic"]),
+  visualStyle: z.string().optional(),
+  suggestedEditStyle: z.enum([
+    "minimal", "moderate", "dynamic", "cinematic", "fast-paced"
+  ]),
+  regionalContext: z.string().optional(),
+  languageDetected: z.string().optional(),
+});
+
+export type VideoContext = z.infer<typeof videoContextSchema>;
 
 export const videoAnalysisSchema = z.object({
   duration: z.number(),
@@ -86,6 +118,25 @@ export const videoAnalysisSchema = z.object({
     end: z.number(),
   })).optional(),
   summary: z.string().optional(),
+  context: videoContextSchema.optional(),
+  topicSegments: z.array(topicSegmentSchema).optional(),
+  narrativeStructure: z.object({
+    hasIntro: z.boolean().optional(),
+    introEnd: z.number().optional(),
+    hasOutro: z.boolean().optional(),
+    outroStart: z.number().optional(),
+    mainContentStart: z.number().optional(),
+    mainContentEnd: z.number().optional(),
+    peakMoments: z.array(z.number()).optional(),
+  }).optional(),
+  brollOpportunities: z.array(z.object({
+    start: z.number(),
+    end: z.number(),
+    suggestedDuration: z.number(),
+    query: z.string(),
+    priority: z.enum(["low", "medium", "high"]),
+    reason: z.string(),
+  })).optional(),
 });
 
 export type VideoAnalysis = z.infer<typeof videoAnalysisSchema>;
@@ -94,12 +145,15 @@ export const editActionSchema = z.object({
   type: z.enum(["cut", "keep", "insert_stock", "add_caption", "add_text_overlay", "transition", "speed_change"]),
   start: z.number().optional(),
   end: z.number().optional(),
+  duration: z.number().optional(),
   text: z.string().optional(),
   stockQuery: z.string().optional(),
   stockUrl: z.string().optional(),
   transitionType: z.string().optional(),
   speed: z.number().optional(),
   reason: z.string().optional(),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+  confidence: z.number().optional(),
 });
 
 export type EditAction = z.infer<typeof editActionSchema>;
@@ -109,6 +163,12 @@ export const editPlanSchema = z.object({
   stockQueries: z.array(z.string()).optional(),
   keyPoints: z.array(z.string()).optional(),
   estimatedDuration: z.number().optional(),
+  editingStrategy: z.object({
+    approach: z.string().optional(),
+    focusAreas: z.array(z.string()).optional(),
+    avoidAreas: z.array(z.string()).optional(),
+  }).optional(),
+  qualityScore: z.number().optional(),
 });
 
 export type EditPlan = z.infer<typeof editPlanSchema>;

@@ -38,9 +38,19 @@ The frontend follows a component-based architecture with:
 - **Database Migrations**: Managed via `drizzle-kit push`
 
 ### AI Services (`server/services/aiService.ts`)
-- **Video Analysis**: Gemini API (via OpenAI-compatible client) for analyzing extracted video frames
-- **Audio Transcription**: OpenAI Whisper for speech-to-text
-- **Edit Plan Generation**: AI generates structured editing instructions from natural language prompts
+- **Video Analysis**: Gemini API with comprehensive context classification
+  - Genre detection (tutorial, vlog, interview, spiritual, tech, documentary, etc.)
+  - Tone analysis (serious, casual, professional, inspirational, etc.)
+  - Pacing assessment (slow, moderate, fast, dynamic)
+  - Narrative structure identification (intro, main content, outro, peak moments)
+  - Topic segmentation with importance scoring
+  - Pre-identified B-roll opportunities with timing and priority
+- **Audio Transcription**: OpenAI Whisper for speech-to-text with timestamps
+- **Edit Plan Generation**: Context-aware AI editing with:
+  - Genre-specific editing guidelines (spiritual = calm/minimal, tech = fast-paced, etc.)
+  - Intelligent B-roll placement with timing rules (2-6 second duration, 2+ second spacing)
+  - Validation to prevent overlapping B-roll actions
+  - Context-appropriate stock media search queries
 
 ### Video Processing Pipeline
 1. **Upload**: Video file stored in `/tmp/uploads`
@@ -67,11 +77,17 @@ Technical implementation:
 ## Recent Changes
 
 ### January 2026
+- **Enhanced AI Analysis**: Comprehensive video context understanding with genre, tone, pacing, and narrative structure detection
+- **Smart B-Roll Placement**: AI now understands video context (spiritual, tech, tutorial, etc.) and places B-roll intelligently based on content type
+- **Topic Segmentation**: Videos are analyzed for distinct topic segments with importance scoring
+- **Genre-Specific Editing**: Different editing styles for spiritual content (calm, minimal) vs tech (fast-paced) vs tutorials (instructional focus)
+- **B-Roll Validation**: Automatic prevention of overlapping B-roll with proper timing constraints (2-6 second duration, 2+ second spacing)
 - Implemented traditional B-roll overlay system with fade effects
-- Added path traversal protection for static file serving
-- Added ID parameter validation for API routes
-- Added EventSource cleanup on component unmount
-- Comprehensive security and reliability hardening
+- Added upload cancel functionality
+- Added real-time video preview during processing
+- Path traversal protection for static file serving
+- ID parameter validation for API routes
+- EventSource cleanup on component unmount
 
 ### Replit Integrations (`server/replit_integrations/`)
 Pre-built modules for common AI patterns:

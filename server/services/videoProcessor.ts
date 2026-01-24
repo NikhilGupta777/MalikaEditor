@@ -2,18 +2,21 @@ import ffmpeg from "fluent-ffmpeg";
 import { promises as fs } from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
-import type { VideoAnalysis, FrameAnalysis } from "@shared/schema";
+import axios from "axios";
+import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment } from "@shared/schema";
 
 const UPLOADS_DIR = "/tmp/uploads";
 const FRAMES_DIR = "/tmp/frames";
 const OUTPUT_DIR = "/tmp/output";
 const AUDIO_DIR = "/tmp/audio";
+const STOCK_DIR = "/tmp/stock";
 
 async function ensureDirs() {
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
   await fs.mkdir(FRAMES_DIR, { recursive: true });
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
   await fs.mkdir(AUDIO_DIR, { recursive: true });
+  await fs.mkdir(STOCK_DIR, { recursive: true });
 }
 
 export async function getVideoMetadata(
@@ -150,31 +153,120 @@ export async function detectSilence(
   });
 }
 
+async function downloadFile(url: string, outputPath: string): Promise<void> {
+  const response = await axios({
+    method: "GET",
+    url,
+    responseType: "stream",
+    timeout: 30000,
+  });
+  
+  const writer = require("fs").createWriteStream(outputPath);
+  response.data.pipe(writer);
+  
+  return new Promise((resolve, reject) => {
+    writer.on("finish", resolve);
+    writer.on("error", reject);
+  });
+}
+
+function escapeText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/:/g, "\\:")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+function generateSrtContent(captions: { start: number; end: number; text: string }[]): string {
+  return captions.map((cap, i) => {
+    const formatTime = (seconds: number) => {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      const ms = Math.floor((seconds % 1) * 1000);
+      return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+    };
+    return `${i + 1}\n${formatTime(cap.start)} --> ${formatTime(cap.end)}\n${cap.text}\n`;
+  }).join("\n");
+}
+
+export interface EditOptions {
+  addCaptions: boolean;
+  addBroll: boolean;
+  removeSilence: boolean;
+}
+
 export async function applyEdits(
   videoPath: string,
-  editPlan: any,
+  editPlan: EditPlan,
+  transcript: TranscriptSegment[],
+  stockMedia: { type: string; url: string; localPath?: string }[],
+  options: EditOptions,
   outputFileName?: string
 ): Promise<string> {
   await ensureDirs();
 
   const outputId = outputFileName || uuidv4();
   const outputPath = path.join(OUTPUT_DIR, `${outputId}.mp4`);
+  const metadata = await getVideoMetadata(videoPath);
 
   const keepSegments = editPlan.actions
-    .filter((a: any) => a.type === "keep" && a.start !== undefined && a.end !== undefined)
-    .sort((a: any, b: any) => a.start - b.start);
+    .filter((a: EditAction) => a.type === "keep" && a.start !== undefined && a.end !== undefined)
+    .sort((a, b) => (a.start || 0) - (b.start || 0));
 
   if (keepSegments.length === 0) {
-    await fs.copyFile(videoPath, outputPath);
-    return outputPath;
+    keepSegments.push({
+      type: "keep",
+      start: 0,
+      end: metadata.duration,
+      reason: "Keep entire video",
+    });
   }
 
-  if (keepSegments.length === 1) {
+  const captionActions = editPlan.actions.filter((a: EditAction) => 
+    a.type === "add_caption" && a.text
+  );
+
+  const allCaptions = options.addCaptions 
+    ? [...transcript, ...captionActions.map(a => ({
+        start: a.start || 0,
+        end: a.end || (a.start || 0) + 3,
+        text: a.text || ""
+      }))]
+    : [];
+
+  let srtPath: string | undefined;
+  if (allCaptions.length > 0) {
+    srtPath = path.join(OUTPUT_DIR, `${outputId}.srt`);
+    const srtContent = generateSrtContent(allCaptions);
+    await fs.writeFile(srtPath, srtContent);
+  }
+
+  const downloadedStock: string[] = [];
+  if (options.addBroll && stockMedia.length > 0) {
+    for (let i = 0; i < Math.min(stockMedia.length, 3); i++) {
+      const item = stockMedia[i];
+      if (item.type === "image") {
+        try {
+          const ext = item.url.includes(".png") ? "png" : "jpg";
+          const localPath = path.join(STOCK_DIR, `${outputId}_stock_${i}.${ext}`);
+          await downloadFile(item.url, localPath);
+          downloadedStock.push(localPath);
+        } catch (e) {
+          console.error("Failed to download stock image:", e);
+        }
+      }
+    }
+  }
+
+  if (keepSegments.length === 1 && allCaptions.length === 0 && downloadedStock.length === 0) {
     const seg = keepSegments[0];
     await new Promise<void>((resolve, reject) => {
       ffmpeg(videoPath)
-        .setStartTime(seg.start)
-        .setDuration(seg.end - seg.start)
+        .setStartTime(seg.start || 0)
+        .setDuration((seg.end || metadata.duration) - (seg.start || 0))
         .outputOptions([
           "-c:v", "libx264",
           "-preset", "ultrafast",
@@ -199,23 +291,42 @@ export async function applyEdits(
   
   for (let i = 0; i < keepSegments.length; i++) {
     const seg = keepSegments[i];
+    const segStart = seg.start || 0;
+    const segEnd = seg.end || metadata.duration;
+    const segDuration = segEnd - segStart;
+    
     const segmentPath = path.join(OUTPUT_DIR, `segment_${outputId}_${i}.ts`);
     tempSegmentPaths.push(segmentPath);
 
+    const filterParts: string[] = [];
+
+    if (srtPath && allCaptions.length > 0) {
+      const escapedPath = srtPath.replace(/'/g, "\\'").replace(/:/g, "\\:");
+      filterParts.push(`subtitles='${escapedPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1,Alignment=2,MarginV=30'`);
+    }
+
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(videoPath)
-        .setStartTime(seg.start)
-        .setDuration(seg.end - seg.start)
-        .outputOptions([
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "28",
-          "-c:a", "aac",
-          "-b:a", "96k",
-          "-max_muxing_queue_size", "1024",
-          "-threads", "1",
-          "-f", "mpegts",
-        ])
+      let cmd = ffmpeg(videoPath)
+        .setStartTime(segStart)
+        .setDuration(segDuration);
+
+      const outputOptions = [
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-max_muxing_queue_size", "1024",
+        "-threads", "1",
+        "-f", "mpegts",
+      ];
+
+      if (filterParts.length > 0) {
+        cmd = cmd.videoFilters(filterParts);
+      }
+
+      cmd
+        .outputOptions(outputOptions)
         .output(segmentPath)
         .on("end", () => resolve())
         .on("error", (err) => {
@@ -224,6 +335,72 @@ export async function applyEdits(
         })
         .run();
     });
+  }
+
+  if (options.addBroll && downloadedStock.length > 0) {
+    const brollInsertPoints = editPlan.actions
+      .filter((a: EditAction) => a.type === "insert_stock" && a.start !== undefined)
+      .slice(0, downloadedStock.length);
+
+    for (let i = 0; i < Math.min(brollInsertPoints.length, downloadedStock.length); i++) {
+      const insertAction = brollInsertPoints[i];
+      const imagePath = downloadedStock[i];
+      
+      try {
+        const brollPath = path.join(OUTPUT_DIR, `broll_${outputId}_${i}.ts`);
+        
+        await new Promise<void>((resolve, reject) => {
+          ffmpeg(imagePath)
+            .loop(1)
+            .inputOptions(["-t", "3"])
+            .outputOptions([
+              "-c:v", "libx264",
+              "-preset", "ultrafast",
+              "-crf", "28",
+              "-pix_fmt", "yuv420p",
+              "-vf", `scale=${metadata.width}:${metadata.height}:force_original_aspect_ratio=decrease,pad=${metadata.width}:${metadata.height}:(ow-iw)/2:(oh-ih)/2`,
+              "-t", "3",
+              "-f", "mpegts",
+              "-threads", "1",
+            ])
+            .noAudio()
+            .output(brollPath)
+            .on("end", () => resolve())
+            .on("error", (err) => {
+              console.error("B-roll creation error:", err);
+              reject(err);
+            })
+            .run();
+        });
+
+        const silentBrollPath = path.join(OUTPUT_DIR, `broll_audio_${outputId}_${i}.ts`);
+        await new Promise<void>((resolve, reject) => {
+          ffmpeg(brollPath)
+            .inputOptions([
+              "-f", "lavfi",
+              "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ])
+            .outputOptions([
+              "-c:v", "copy",
+              "-c:a", "aac",
+              "-shortest",
+              "-f", "mpegts",
+            ])
+            .output(silentBrollPath)
+            .on("end", () => resolve())
+            .on("error", (err) => {
+              console.error("Silent B-roll error:", err);
+              reject(err);
+            })
+            .run();
+        });
+
+        tempSegmentPaths.push(silentBrollPath);
+        await fs.unlink(brollPath).catch(() => {});
+      } catch (e) {
+        console.error("Failed to create B-roll segment:", e);
+      }
+    }
   }
 
   const concatListPath = path.join(OUTPUT_DIR, `concat_${outputId}.txt`);
@@ -251,6 +428,12 @@ export async function applyEdits(
   for (const segPath of tempSegmentPaths) {
     await fs.unlink(segPath).catch(() => {});
   }
+  if (srtPath) {
+    await fs.unlink(srtPath).catch(() => {});
+  }
+  for (const stockPath of downloadedStock) {
+    await fs.unlink(stockPath).catch(() => {});
+  }
 
   return outputPath;
 }
@@ -269,4 +452,4 @@ export async function cleanupTempFiles(paths: string[]): Promise<void> {
   }
 }
 
-export { UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, ensureDirs };
+export { UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR, ensureDirs };

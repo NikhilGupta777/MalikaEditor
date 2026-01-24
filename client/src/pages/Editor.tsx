@@ -1,17 +1,15 @@
 import { useState, useCallback } from "react";
-import { Film, Sparkles, Upload, CheckCircle2, ArrowRight } from "lucide-react";
+import { Film, Sparkles, Upload, CheckCircle2, RotateCcw } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
 import { VideoPreview } from "@/components/VideoPreview";
-import { Timeline } from "@/components/Timeline";
 import { EditPlanPreview } from "@/components/EditPlanPreview";
 import { StockMediaPreview } from "@/components/StockMediaPreview";
 import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -33,12 +31,11 @@ interface VideoProject {
   errorMessage?: string;
 }
 
-const WORKFLOW_STEPS = [
-  { id: 1, label: "Upload", status: "pending" },
-  { id: 2, label: "Describe", status: "pending" },
-  { id: 3, label: "Process", status: "pending" },
-  { id: 4, label: "Download", status: "pending" },
-];
+export interface EditOptions {
+  addCaptions: boolean;
+  addBroll: boolean;
+  removeSilence: boolean;
+}
 
 export default function Editor() {
   const { toast } = useToast();
@@ -48,13 +45,11 @@ export default function Editor() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-
-  const getCurrentStep = () => {
-    if (!project) return 1;
-    if (project.status === "pending") return 2;
-    if (project.status === "completed") return 4;
-    return 3;
-  };
+  const [editOptions, setEditOptions] = useState<EditOptions>({
+    addCaptions: true,
+    addBroll: true,
+    removeSilence: true,
+  });
 
   const handleUpload = useCallback(
     async (file: File) => {
@@ -101,7 +96,7 @@ export default function Editor() {
 
         toast({
           title: "Video uploaded!",
-          description: "Now tell the AI how you want it edited",
+          description: "Now describe how you want it edited",
         });
       } catch (error) {
         toast({
@@ -124,8 +119,15 @@ export default function Editor() {
       setIsProcessing(true);
 
       try {
+        const params = new URLSearchParams({
+          prompt,
+          addCaptions: String(editOptions.addCaptions),
+          addBroll: String(editOptions.addBroll),
+          removeSilence: String(editOptions.removeSilence),
+        });
+
         const eventSource = new EventSource(
-          `/api/videos/${project.id}/process?prompt=${encodeURIComponent(prompt)}`
+          `/api/videos/${project.id}/process?${params.toString()}`
         );
 
         eventSource.onmessage = (event) => {
@@ -160,7 +162,7 @@ export default function Editor() {
 
             toast({
               title: "Your video is ready!",
-              description: "Download your professionally edited video",
+              description: "Download your edited video below",
             });
           } else if (data.type === "error") {
             setProject((prev) =>
@@ -198,7 +200,7 @@ export default function Editor() {
         });
       }
     },
-    [project, toast]
+    [project, editOptions, toast]
   );
 
   const handleNewProject = () => {
@@ -211,76 +213,37 @@ export default function Editor() {
     setCurrentTime(time);
   }, []);
 
-  const handleSeek = useCallback((time: number) => {
-    setCurrentTime(time);
-  }, []);
-
   const handleDurationChange = useCallback((duration: number) => {
     setProject((prev) =>
       prev ? { ...prev, duration: Math.round(duration) } : null
     );
   }, []);
 
-  const currentStep = getCurrentStep();
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = String(Math.floor(seconds % 60)).padStart(2, "0");
+    return `${mins}:${secs}`;
+  };
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex items-center justify-between h-16 px-6 gap-4">
-          <div className="flex items-center gap-4">
-            <div className="p-2.5 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 border border-primary/20">
-              <Film className="h-6 w-6 text-primary" />
-            </div>
-            <div>
-              <h1 className="font-bold text-xl tracking-tight">AI Video Editor</h1>
-              <p className="text-xs text-muted-foreground">
-                Transform videos with AI magic
-              </p>
-            </div>
-          </div>
-
-          {/* Workflow Steps Indicator */}
-          <div className="hidden md:flex items-center gap-2">
-            {WORKFLOW_STEPS.map((step, index) => (
-              <div key={step.id} className="flex items-center">
-                <div
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all",
-                    currentStep === step.id
-                      ? "bg-primary text-primary-foreground"
-                      : currentStep > step.id
-                      ? "bg-secondary text-secondary-foreground"
-                      : "bg-muted text-muted-foreground"
-                  )}
-                >
-                  {currentStep > step.id ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : (
-                    <span className="w-5 h-5 rounded-full bg-background/20 flex items-center justify-center text-xs">
-                      {step.id}
-                    </span>
-                  )}
-                  <span className="hidden lg:inline">{step.label}</span>
-                </div>
-                {index < WORKFLOW_STEPS.length - 1 && (
-                  <ArrowRight className="h-4 w-4 mx-2 text-muted-foreground/50" />
-                )}
-              </div>
-            ))}
-          </div>
-
+      {/* Simple Header */}
+      <header className="border-b bg-card">
+        <div className="flex items-center justify-between h-14 px-4">
           <div className="flex items-center gap-3">
+            <Film className="h-6 w-6 text-primary" />
+            <span className="font-bold text-lg">AI Video Editor</span>
+          </div>
+          <div className="flex items-center gap-2">
             {project && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleNewProject}
-                className="gap-2"
                 data-testid="button-new-project"
               >
-                <Upload className="h-4 w-4" />
-                <span className="hidden sm:inline">New Video</span>
+                <RotateCcw className="h-4 w-4 mr-2" />
+                Start Over
               </Button>
             )}
             <ThemeToggle />
@@ -288,12 +251,11 @@ export default function Editor() {
         </div>
       </header>
 
-      {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Video preview area - main content */}
-        <div className="flex-1 flex flex-col p-6 gap-4 overflow-hidden">
-          {/* Video preview */}
-          <div className="flex-1 min-h-0 rounded-xl overflow-hidden bg-black/5 dark:bg-white/5">
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col lg:flex-row">
+        {/* Video Preview - Left/Top */}
+        <div className="flex-1 p-4 flex flex-col min-h-[300px] lg:min-h-0">
+          <div className="flex-1 rounded-lg overflow-hidden bg-black">
             <VideoPreview
               src={previewUrl || undefined}
               className="h-full"
@@ -302,170 +264,102 @@ export default function Editor() {
               onDurationChange={handleDurationChange}
             />
           </div>
-
-          {/* Timeline */}
-          <Timeline
-            duration={project?.duration || 0}
-            editPlan={project?.editPlan}
-            currentTime={currentTime}
-            onSeek={handleSeek}
-          />
+          
+          {/* Video info bar */}
+          {project && (
+            <div className="flex items-center justify-between mt-3 px-1">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline">{project.fileName}</Badge>
+                {project.duration && (
+                  <Badge variant="secondary">{formatDuration(project.duration)}</Badge>
+                )}
+              </div>
+              <Badge 
+                variant={project.status === "completed" ? "default" : "outline"}
+                className="capitalize"
+              >
+                {project.status === "pending" ? "Ready" : project.status.replace("_", " ")}
+              </Badge>
+            </div>
+          )}
         </div>
 
-        {/* Side panel */}
-        <aside className="w-96 lg:w-[420px] border-l bg-card/30 flex flex-col overflow-hidden">
-          <ScrollArea className="flex-1">
-            <div className="p-6 space-y-6">
-              {!project ? (
-                <>
-                  {/* Welcome state */}
-                  <div className="text-center py-6">
-                    <div className="relative inline-block mb-6">
-                      <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full" />
-                      <div className="relative p-5 rounded-2xl bg-gradient-to-br from-primary/10 to-accent/10 border border-primary/20">
-                        <Sparkles className="h-10 w-10 text-primary" />
-                      </div>
-                    </div>
-                    <h2 className="text-2xl font-bold mb-3">
-                      AI-Powered Editing
-                    </h2>
-                    <p className="text-muted-foreground leading-relaxed">
-                      Upload your video and describe how you want it edited.
-                      Our AI will handle the rest automatically.
+        {/* Control Panel - Right/Bottom */}
+        <div className="w-full lg:w-[380px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto h-[50vh] lg:h-[calc(100vh-56px)]">
+            <div className="p-4 space-y-4">
+              
+              {/* Step 1: Upload */}
+              {!project && (
+                <div className="space-y-4">
+                  <div className="text-center py-4">
+                    <Sparkles className="h-10 w-10 text-primary mx-auto mb-3" />
+                    <h2 className="text-xl font-bold mb-1">AI Video Editing</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Upload your video and let AI do the editing
                     </p>
                   </div>
-
-                  {/* Feature highlights */}
-                  <div className="grid grid-cols-2 gap-3 mb-6">
-                    {[
-                      { icon: "✂️", label: "Smart Cuts" },
-                      { icon: "📝", label: "Auto Captions" },
-                      { icon: "🎬", label: "Stock B-Roll" },
-                      { icon: "✨", label: "Transitions" },
-                    ].map((feature) => (
-                      <div
-                        key={feature.label}
-                        className="flex items-center gap-2 p-3 rounded-lg bg-muted/50 text-sm"
-                      >
-                        <span className="text-lg">{feature.icon}</span>
-                        <span className="text-muted-foreground">{feature.label}</span>
-                      </div>
-                    ))}
-                  </div>
-
+                  
                   <VideoUploader
                     onUpload={handleUpload}
                     isUploading={isUploading}
                     uploadProgress={uploadProgress}
                   />
-                </>
-              ) : (
-                <>
-                  {/* File info card */}
-                  <Card className="overflow-hidden">
-                    <div className="h-1 bg-gradient-to-r from-primary to-accent" />
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-4">
-                        <div className="p-3 rounded-xl bg-primary/10">
-                          <Film className="h-6 w-6 text-primary" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold truncate">
-                            {project.fileName}
-                          </p>
-                          <div className="flex items-center gap-3 mt-1">
-                            {project.duration && (
-                              <Badge variant="secondary" className="text-xs">
-                                {Math.floor(project.duration / 60)}:
-                                {String(Math.floor(project.duration % 60)).padStart(2, "0")}
-                              </Badge>
-                            )}
-                            <Badge
-                              variant={
-                                project.status === "completed"
-                                  ? "default"
-                                  : project.status === "failed"
-                                  ? "destructive"
-                                  : "outline"
-                              }
-                              className="text-xs capitalize"
-                            >
-                              {project.status === "pending"
-                                ? "Ready"
-                                : project.status.replace("_", " ")}
-                            </Badge>
-                          </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                </div>
+              )}
 
-                  {/* Success state */}
-                  {project.status === "completed" && (
-                    <Card className="border-secondary/50 bg-secondary/5">
-                      <CardContent className="p-6 text-center">
-                        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-secondary/20 mb-4">
-                          <CheckCircle2 className="h-8 w-8 text-secondary" />
-                        </div>
-                        <h3 className="text-xl font-bold mb-2">Video Ready!</h3>
-                        <p className="text-muted-foreground text-sm mb-4">
-                          Your edited video has been processed successfully
-                        </p>
-                        <DownloadButton
-                          outputPath={project.outputPath}
-                          isProcessing={isProcessing}
-                          isComplete={project.status === "completed"}
-                        />
-                      </CardContent>
-                    </Card>
-                  )}
+              {/* Step 2: Configure & Process */}
+              {project && project.status === "pending" && (
+                <PromptInput
+                  onSubmit={handleProcessVideo}
+                  isProcessing={isProcessing}
+                  editOptions={editOptions}
+                  onEditOptionsChange={setEditOptions}
+                />
+              )}
 
-                  {/* Prompt input - only show when pending */}
-                  {project.status === "pending" && (
-                    <PromptInput
-                      onSubmit={handleProcessVideo}
-                      isProcessing={isProcessing}
-                    />
-                  )}
+              {/* Processing Status */}
+              {project && project.status !== "pending" && project.status !== "completed" && (
+                <ProcessingStatus
+                  status={project.status}
+                  error={project.errorMessage}
+                />
+              )}
 
-                  {/* Processing status */}
-                  {project.status !== "pending" &&
-                    project.status !== "completed" && (
-                      <ProcessingStatus
-                        status={project.status}
-                        error={project.errorMessage}
-                      />
-                    )}
-
-                  {/* Edit plan preview */}
-                  {project.editPlan && (
-                    <EditPlanPreview
-                      editPlan={project.editPlan}
-                      isLoading={project.status === "planning"}
-                    />
-                  )}
-
-                  {/* Stock media preview */}
-                  {project.stockMedia && project.stockMedia.length > 0 && (
-                    <StockMediaPreview
-                      stockMedia={project.stockMedia}
-                      isLoading={project.status === "fetching_stock"}
-                    />
-                  )}
-
-                  {/* Download button at bottom when not completed */}
-                  {project.status !== "completed" && project.status !== "pending" && (
+              {/* Completed */}
+              {project?.status === "completed" && (
+                <Card className="border-secondary bg-secondary/5">
+                  <CardContent className="p-4 text-center">
+                    <CheckCircle2 className="h-12 w-12 text-secondary mx-auto mb-3" />
+                    <h3 className="text-lg font-bold mb-1">Video Ready!</h3>
+                    <p className="text-sm text-muted-foreground mb-4">
+                      Your edited video is ready to download
+                    </p>
                     <DownloadButton
                       outputPath={project.outputPath}
-                      isProcessing={isProcessing}
-                      isComplete={false}
+                      isProcessing={false}
+                      isComplete={true}
                     />
-                  )}
-                </>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Edit Plan Summary */}
+              {project?.editPlan && (
+                <EditPlanPreview
+                  editPlan={project.editPlan}
+                  isLoading={project.status === "planning"}
+                />
+              )}
+
+              {/* Stock Media */}
+              {project?.stockMedia && project.stockMedia.length > 0 && (
+                <StockMediaPreview
+                  stockMedia={project.stockMedia}
+                  isLoading={project.status === "fetching_stock"}
+                />
               )}
             </div>
-          </ScrollArea>
-        </aside>
+        </div>
       </div>
     </div>
   );

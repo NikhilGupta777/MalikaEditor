@@ -15,6 +15,7 @@ import {
   UPLOADS_DIR,
   OUTPUT_DIR,
   ensureDirs,
+  type EditOptions,
 } from "./services/videoProcessor";
 import {
   analyzeVideoFrames,
@@ -66,6 +67,7 @@ export async function registerRoutes(
     const filePath = path.join(OUTPUT_DIR, req.path);
     try {
       await fs.access(filePath);
+      res.setHeader("Content-Type", "video/mp4");
       res.sendFile(filePath);
     } catch {
       next();
@@ -107,7 +109,7 @@ export async function registerRoutes(
 
   app.get("/api/videos/:id", async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = parseInt(req.params.id as string);
       const project = await storage.getVideoProject(id);
 
       if (!project) {
@@ -123,8 +125,14 @@ export async function registerRoutes(
   });
 
   app.get("/api/videos/:id/process", async (req: Request, res: Response) => {
-    const id = parseInt(req.params.id);
+    const id = parseInt(req.params.id as string);
     const prompt = req.query.prompt as string;
+    
+    const editOptions: EditOptions = {
+      addCaptions: req.query.addCaptions !== "false",
+      addBroll: req.query.addBroll !== "false",
+      removeSilence: req.query.removeSilence !== "false",
+    };
 
     if (!prompt) {
       return res.status(400).json({ error: "Prompt is required" });
@@ -149,6 +157,7 @@ export async function registerRoutes(
     };
 
     let tempFiles: string[] = [];
+    let transcript: { start: number; end: number; text: string }[] = [];
 
     try {
       await storage.updateVideoProject(id, { prompt });
@@ -164,13 +173,16 @@ export async function registerRoutes(
       const framePaths = await extractFrames(videoPath, numFrames);
       tempFiles.push(path.dirname(framePaths[0]));
 
-      const silentSegments = await detectSilence(videoPath);
+      let silentSegments: { start: number; end: number }[] = [];
+      if (editOptions.removeSilence) {
+        silentSegments = await detectSilence(videoPath);
+      }
 
       await updateStatus("transcribing");
       const audioPath = await extractAudio(videoPath);
       tempFiles.push(audioPath);
 
-      const transcript = await transcribeAudio(audioPath);
+      transcript = await transcribeAudio(audioPath);
 
       const analysis = await analyzeVideoFrames(
         framePaths,
@@ -185,22 +197,40 @@ export async function registerRoutes(
       });
 
       await updateStatus("planning");
-      const editPlan = await generateEditPlan(prompt, analysis, transcript);
+      
+      const enhancedPrompt = `${prompt}
+      
+User has selected these options:
+- Add Captions: ${editOptions.addCaptions ? "Yes" : "No"}
+- Add B-Roll Stock Footage: ${editOptions.addBroll ? "Yes" : "No"}  
+- Remove Silent Parts: ${editOptions.removeSilence ? "Yes" : "No"}
+
+Please create an edit plan that follows these preferences.`;
+
+      const editPlan = await generateEditPlan(enhancedPrompt, analysis, transcript);
 
       await storage.updateVideoProject(id, { editPlan });
       sendEvent("editPlan", { editPlan });
 
-      await updateStatus("fetching_stock");
-      const stockQueries = editPlan.stockQueries || [];
-      const stockMedia = await fetchStockMedia(stockQueries);
-
-      await storage.updateVideoProject(id, { stockMedia });
-      sendEvent("stockMedia", { stockMedia });
+      let stockMedia: any[] = [];
+      if (editOptions.addBroll) {
+        await updateStatus("fetching_stock");
+        const stockQueries = editPlan.stockQueries || [];
+        stockMedia = await fetchStockMedia(stockQueries);
+        await storage.updateVideoProject(id, { stockMedia });
+        sendEvent("stockMedia", { stockMedia });
+      }
 
       await updateStatus("editing");
       await updateStatus("rendering");
 
-      const outputPath = await applyEdits(videoPath, editPlan);
+      const outputPath = await applyEdits(
+        videoPath, 
+        editPlan, 
+        transcript,
+        stockMedia,
+        editOptions
+      );
       const outputMetadata = await getVideoMetadata(outputPath);
 
       const publicOutputPath = `/output/${path.basename(outputPath)}`;

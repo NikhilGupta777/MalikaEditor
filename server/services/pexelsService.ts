@@ -114,7 +114,7 @@ export async function searchVideos(
 export async function fetchStockMedia(
   queries: string[]
 ): Promise<StockMediaItem[]> {
-  const uniqueQueries = [...new Set(queries)].slice(0, 5);
+  const uniqueQueries = Array.from(new Set(queries)).slice(0, 5);
 
   const results = await Promise.all(
     uniqueQueries.flatMap((query) => [

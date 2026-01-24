@@ -246,19 +246,45 @@ export async function registerRoutes(
 
       await updateStatus("planning");
       
-      // Perform semantic transcript analysis for context-aware B-roll
+      // Perform semantic transcript analysis for context-aware B-roll and AI images
       let semanticAnalysis: SemanticAnalysis | undefined;
-      if (editOptions.addBroll && transcript.length > 0) {
-        console.log("Performing semantic transcript analysis...");
-        semanticAnalysis = await analyzeTranscriptSemantics(
-          transcript,
-          analysis.context,
-          metadata.duration
-        );
+      const needsSemanticAnalysis = editOptions.addBroll || editOptions.generateAiImages;
+      
+      if (needsSemanticAnalysis) {
+        if (transcript.length > 0) {
+          console.log("Performing semantic transcript analysis...");
+          semanticAnalysis = await analyzeTranscriptSemantics(
+            transcript,
+            analysis.context,
+            metadata.duration
+          );
+        } else {
+          // Fallback: Generate B-roll windows from video analysis when no transcript available
+          console.log("No transcript available, creating fallback semantic analysis from video context...");
+          const videoContext = analysis.context;
+          const toneMap: { [key: string]: "serious" | "inspirational" | "educational" | "casual" | "professional" | "entertaining" } = {
+            "serious": "serious", "calm": "casual", "inspirational": "inspirational",
+            "casual": "casual", "professional": "professional", "humorous": "entertaining", "dramatic": "serious"
+          };
+          semanticAnalysis = {
+            mainTopics: ["video content"],
+            overallTone: toneMap[videoContext?.tone || "casual"] || "casual",
+            keyMoments: [],
+            brollWindows: [
+              // Create evenly-spaced B-roll opportunities based on video duration
+              { start: Math.min(5, metadata.duration * 0.1), end: Math.min(10, metadata.duration * 0.15), priority: "high" as const, suggestedQuery: videoContext?.genre || "professional footage", context: "Opening visual", reason: "Visual enhancement" },
+              { start: metadata.duration * 0.3, end: metadata.duration * 0.35, priority: "medium" as const, suggestedQuery: videoContext?.suggestedEditStyle || "dynamic scene", context: "Mid-video visual", reason: "Content support" },
+              { start: metadata.duration * 0.6, end: metadata.duration * 0.65, priority: "medium" as const, suggestedQuery: videoContext?.tone || "engaging content", context: "Later section visual", reason: "Engagement boost" },
+            ],
+            extractedKeywords: [],
+            contentSummary: analysis.summary || "Video content analysis",
+          };
+        }
+        
         console.log("Semantic analysis complete:", {
-          topics: semanticAnalysis.mainTopics,
-          brollWindows: semanticAnalysis.brollWindows.length,
-          keywords: semanticAnalysis.extractedKeywords.length,
+          topics: semanticAnalysis!.mainTopics,
+          brollWindows: semanticAnalysis!.brollWindows.length,
+          keywords: semanticAnalysis!.extractedKeywords.length,
         });
         
         // Store semantic analysis in the video analysis

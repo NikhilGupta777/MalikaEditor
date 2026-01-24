@@ -863,7 +863,10 @@ export async function applyEdits(
   // Keep media queues separate - no cross-type substitution for integrity
   const allDownloadedMedia = [...downloadedStockMedia, ...downloadedAiMedia];
   
-  if (options.addBroll && allDownloadedMedia.length > 0) {
+  // Process overlays if B-roll is enabled OR if there are AI-generated images
+  const shouldProcessOverlays = (options.addBroll || downloadedAiMedia.length > 0) && allDownloadedMedia.length > 0;
+  
+  if (shouldProcessOverlays) {
     // FIRST: Process AI-generated images with their embedded timing (deterministic)
     // AI images have startTime/endTime from semantic analysis - use directly
     

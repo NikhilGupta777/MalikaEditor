@@ -1,4 +1,5 @@
-import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
+import OpenAI, { toFile } from "openai";
 import { promises as fs } from "fs";
 import type {
   VideoAnalysis,
@@ -8,9 +9,12 @@ import type {
   TranscriptSegment,
 } from "@shared/schema";
 
-const geminiClient = new OpenAI({
+const geminiClient = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+  httpOptions: {
+    apiVersion: "",
+    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+  },
 });
 
 const openaiClient = new OpenAI({
@@ -18,7 +22,7 @@ const openaiClient = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
-function encodeImageToBase64(imagePath: string): Promise<string> {
+async function encodeImageToBase64(imagePath: string): Promise<string> {
   return fs.readFile(imagePath, { encoding: "base64" });
 }
 
@@ -38,13 +42,6 @@ export async function analyzeVideoFrames(
       };
     })
   );
-
-  const imageContent = frameContents.map((frame) => ({
-    type: "image_url" as const,
-    image_url: {
-      url: `data:image/jpeg;base64,${frame.base64}`,
-    },
-  }));
 
   const prompt = `Analyze these ${framePaths.length} frames from a video that is ${duration.toFixed(1)} seconds long.
   
@@ -71,21 +68,27 @@ Respond in JSON format only (no markdown):
   "contentType": "string (e.g., 'tutorial', 'vlog', 'interview', 'presentation')"
 }`;
 
-  const response = await geminiClient.chat.completions.create({
+  const imageParts = frameContents.map((frame) => ({
+    inlineData: {
+      mimeType: "image/jpeg",
+      data: frame.base64,
+    },
+  }));
+
+  const response = await geminiClient.models.generateContent({
     model: "gemini-2.5-flash",
-    messages: [
+    contents: [
       {
         role: "user",
-        content: [
-          { type: "text", text: prompt },
-          ...imageContent,
+        parts: [
+          { text: prompt },
+          ...imageParts,
         ],
       },
     ],
-    max_completion_tokens: 4096,
   });
 
-  const text = response.choices[0]?.message?.content || "";
+  const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     throw new Error("Failed to parse AI response");
@@ -113,14 +116,11 @@ export async function transcribeAudio(
 ): Promise<TranscriptSegment[]> {
   try {
     const audioBuffer = await fs.readFile(audioPath);
-    const audioFile = new File([audioBuffer], "audio.mp3", {
-      type: "audio/mpeg",
-    });
+    const file = await toFile(audioBuffer, "audio.mp3");
 
     const response = await openaiClient.audio.transcriptions.create({
-      file: audioFile,
+      file,
       model: "gpt-4o-mini-transcribe",
-      response_format: "json",
     });
 
     const text = response.text || "";
@@ -193,22 +193,17 @@ Respond with a JSON object only (no markdown code blocks):
   "estimatedDuration": number
 }`;
 
-  const response = await geminiClient.chat.completions.create({
+  const response = await geminiClient.models.generateContent({
     model: "gemini-2.5-flash",
-    messages: [
-      {
-        role: "system",
-        content: systemPrompt,
-      },
+    contents: [
       {
         role: "user",
-        content: userPrompt,
+        parts: [{ text: systemPrompt + "\n\n" + userPrompt }],
       },
     ],
-    max_completion_tokens: 4096,
   });
 
-  const text = response.choices[0]?.message?.content || "";
+  const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     const keepAction: EditAction = {

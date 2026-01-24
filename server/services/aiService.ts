@@ -500,247 +500,124 @@ Respond in JSON format only (no markdown):
   };
 }
 
-// Helper to transcribe a single audio chunk with Gemini
-async function transcribeChunkWithGemini(
-  audioBase64: string,
-  chunkIndex: number,
-  timeOffset: number
-): Promise<TranscriptSegment[]> {
-  const response = await geminiClient.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType: "audio/mpeg",
-              data: audioBase64,
-            },
-          },
-          {
-            text: `Transcribe this audio file completely and accurately with precise timestamps.
+// Whisper.cpp model path
+const WHISPER_MODEL_PATH = "/tmp/whisper_models/ggml-base.en.bin";
 
-CRITICAL: You must provide accurate start and end times for each spoken segment based on when words are actually spoken in the audio.
-
-Return ONLY a JSON array of transcript segments, each with:
-- "start": start time in seconds (float) - relative to this audio chunk
-- "end": end time in seconds (float) - relative to this audio chunk
-- "text": the spoken text for that segment
-
-Format:
-[
-  {"start": 0.0, "end": 3.5, "text": "First sentence spoken"},
-  {"start": 3.8, "end": 7.2, "text": "Second sentence spoken"}
-]
-
-Requirements:
-1. Listen to the actual timing of speech in the audio
-2. Break into natural sentence/phrase segments (3-8 seconds each)
-3. Account for pauses between segments
-4. Include ALL spoken content
-5. Return valid JSON only`,
-          },
-        ],
-      },
-    ],
-    config: {
-      temperature: 0.1,
-      maxOutputTokens: 8192,
-    },
-  });
-  
-  const responseText = response.text || "";
-  const jsonMatch = responseText.match(/\[[\s\S]*?\]/);
-  
-  if (jsonMatch) {
-    const segments = JSON.parse(jsonMatch[0]);
-    if (Array.isArray(segments) && segments.length > 0) {
-      // Apply time offset for this chunk
-      return segments.map((seg: any) => ({
-        start: (seg.start || 0) + timeOffset,
-        end: (seg.end || (seg.start || 0) + 3) + timeOffset,
-        text: (seg.text || "").trim(),
-      })).filter((s: TranscriptSegment) => s.text.length > 0);
-    }
-  }
-  
-  return [];
-}
-
-// Helper to split audio into chunks using ffmpeg and return base64 encoded chunks with time offsets
-async function splitAudioIntoChunks(
-  audioPath: string,
-  maxChunkSizeMB: number = 6
-): Promise<{ base64: string; timeOffset: number; duration: number }[]> {
-  const { exec } = await import("child_process");
-  const { promisify } = await import("util");
-  const execPromise = promisify(exec);
-  const path = await import("path");
-  const { v4: uuidv4 } = await import("uuid");
-  
-  // Get audio duration using ffprobe
-  const { stdout: probeOutput } = await execPromise(
-    `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`
-  );
-  const totalDuration = parseFloat(probeOutput.trim());
-  
-  if (isNaN(totalDuration) || totalDuration <= 0) {
-    throw new Error("Could not determine audio duration");
-  }
-  
-  // Estimate bitrate and chunk duration with safety bounds
-  const stat = await fs.stat(audioPath);
-  const fileSizeMB = stat.size / (1024 * 1024);
-  const avgBitrate = (stat.size * 8) / totalDuration; // bits per second
-  
-  // Calculate chunk duration with min/max bounds: 30s minimum, 120s maximum
-  let chunkDuration = Math.floor((maxChunkSizeMB * 1024 * 1024 * 8) / avgBitrate);
-  chunkDuration = Math.max(30, Math.min(120, chunkDuration)); // Bound between 30-120 seconds
-  
-  // Add small overlap (2s) to avoid cutting mid-word
-  const overlapDuration = 2;
-  
-  const numChunks = Math.ceil(totalDuration / (chunkDuration - overlapDuration));
-  console.log(`Splitting ${fileSizeMB.toFixed(1)}MB audio (${totalDuration.toFixed(1)}s) into ${numChunks} chunks of ~${chunkDuration}s each (with ${overlapDuration}s overlap)`);
-  
-  const chunks: { base64: string; timeOffset: number; duration: number }[] = [];
-  const tempDir = "/tmp/audio_chunks";
-  await fs.mkdir(tempDir, { recursive: true });
-  
-  for (let i = 0; i < numChunks; i++) {
-    const startTime = Math.max(0, i * (chunkDuration - overlapDuration));
-    const actualDuration = Math.min(chunkDuration, totalDuration - startTime);
-    
-    if (actualDuration <= 0) break;
-    
-    const chunkPath = path.join(tempDir, `chunk_${uuidv4()}.mp3`);
-    
-    try {
-      // Extract chunk with ffmpeg (low bitrate to ensure under limit)
-      await execPromise(
-        `ffmpeg -y -i "${audioPath}" -ss ${startTime} -t ${actualDuration} -c:a libmp3lame -b:a 48k "${chunkPath}" 2>/dev/null`
-      );
-      
-      const chunkBuffer = await fs.readFile(chunkPath);
-      const chunkSizeMB = chunkBuffer.length / (1024 * 1024);
-      
-      // Verify chunk is under limit
-      if (chunkSizeMB > 0 && chunkSizeMB <= 7) {
-        chunks.push({
-          base64: chunkBuffer.toString("base64"),
-          timeOffset: startTime,
-          duration: actualDuration,
-        });
-        console.log(`  Chunk ${i + 1}/${numChunks}: ${chunkSizeMB.toFixed(1)}MB at ${startTime}s-${(startTime + actualDuration).toFixed(1)}s`);
-      } else if (chunkSizeMB > 7) {
-        console.warn(`  Chunk ${i + 1} too large (${chunkSizeMB.toFixed(1)}MB > 7MB), skipping`);
-      }
-      
-      // Cleanup
-      await fs.unlink(chunkPath).catch(() => {});
-    } catch (err) {
-      console.warn(`Failed to create chunk ${i + 1}:`, err);
-    }
-  }
-  
-  return chunks;
-}
-
-// Helper to merge segments from chunks with overlap handling
-function mergeChunkSegments(
-  allSegments: TranscriptSegment[],
-  overlapDuration: number = 2
-): TranscriptSegment[] {
-  if (allSegments.length === 0) return [];
-  
-  // Sort by start time
-  allSegments.sort((a, b) => a.start - b.start);
-  
-  // Remove duplicates and handle overlaps
-  const merged: TranscriptSegment[] = [];
-  let lastEnd = -1;
-  
-  for (const seg of allSegments) {
-    // Skip if this segment overlaps significantly with the previous one
-    if (seg.start < lastEnd - 0.5) {
-      // This segment is likely a duplicate from chunk overlap
-      // Only keep if it has substantially different text
-      const prevSeg = merged[merged.length - 1];
-      if (prevSeg && seg.text.toLowerCase().trim() === prevSeg.text.toLowerCase().trim()) {
-        continue; // Skip duplicate
-      }
-    }
-    
-    merged.push(seg);
-    lastEnd = seg.end;
-  }
-  
-  return merged;
-}
-
+/**
+ * Transcribe audio using local whisper.cpp for accurate timestamps
+ * This is the single source of truth for transcription timing
+ */
 export async function transcribeAudio(
   audioPath: string
 ): Promise<TranscriptSegment[]> {
-  const audioBuffer = await fs.readFile(audioPath);
-  const fileSizeBytes = audioBuffer.length;
-  const fileSizeMB = fileSizeBytes / (1024 * 1024);
+  const { exec } = await import("child_process");
+  const { promisify } = await import("util");
+  const execPromise = promisify(exec);
+  const { v4: uuidv4 } = await import("uuid");
   
-  console.log(`Transcription starting (file size: ${fileSizeMB.toFixed(1)}MB)...`);
+  console.log(`Transcription starting with local whisper.cpp...`);
   
-  // Primary: Use Gemini for transcription (can provide real timestamps)
+  // Check if model exists
   try {
-    if (fileSizeMB <= 7) {
-      // Small files: direct transcription
-      console.log("Using Gemini for transcription with timestamps...");
-      const audioBase64 = audioBuffer.toString("base64");
-      const segments = await transcribeChunkWithGemini(audioBase64, 0, 0);
-      if (segments.length > 0) {
-        console.log(`Gemini transcription successful: ${segments.length} segments with real timestamps`);
-        return segments;
-      }
-      console.warn("Gemini returned no segments");
-    } else {
-      // Large files: chunk and transcribe
-      console.log(`Audio file ${fileSizeMB.toFixed(1)}MB exceeds 7MB limit. Using chunked transcription...`);
-      
-      const chunks = await splitAudioIntoChunks(audioPath, 6);
-      if (chunks.length > 0) {
-        const allSegments: TranscriptSegment[] = [];
+    await fs.access(WHISPER_MODEL_PATH);
+  } catch {
+    console.error(`Whisper model not found at ${WHISPER_MODEL_PATH}`);
+    console.log("Downloading whisper model...");
+    await fs.mkdir("/tmp/whisper_models", { recursive: true });
+    await execPromise(
+      `curl -L -o "${WHISPER_MODEL_PATH}" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"`,
+      { timeout: 120000 }
+    );
+  }
+  
+  // Convert audio to 16kHz mono WAV (whisper.cpp requirement)
+  const wavPath = `/tmp/whisper_${uuidv4()}.wav`;
+  const jsonOutputBase = `/tmp/whisper_${uuidv4()}`;
+  const jsonPath = `${jsonOutputBase}.json`;
+  
+  // Helper function for cleanup - defined before use for clarity
+  const cleanupTempFiles = async () => {
+    await fs.unlink(wavPath).catch(() => {});
+    await fs.unlink(jsonPath).catch(() => {});
+  };
+  
+  try {
+    console.log("Converting audio to WAV format for whisper.cpp...");
+    await execPromise(
+      `ffmpeg -y -i "${audioPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavPath}" 2>/dev/null`
+    );
+    
+    // Run whisper.cpp with JSON output
+    console.log("Running whisper.cpp transcription...");
+    const whisperCmd = `whisper-cpp -m "${WHISPER_MODEL_PATH}" -oj -of "${jsonOutputBase}" -f "${wavPath}" 2>/dev/null`;
+    
+    await execPromise(whisperCmd, { timeout: 300000 }); // 5 minute timeout
+    
+    // Read the JSON output file
+    const jsonContent = await fs.readFile(jsonPath, "utf-8");
+    const whisperOutput = JSON.parse(jsonContent);
+    
+    // Parse whisper.cpp JSON format into TranscriptSegment[]
+    const segments: TranscriptSegment[] = [];
+    const rawSegmentCount = whisperOutput.transcription?.length || 0;
+    
+    if (whisperOutput.transcription && Array.isArray(whisperOutput.transcription)) {
+      for (const seg of whisperOutput.transcription) {
+        // Primary: use timestamp strings "00:00:00,000" format
+        // Fallback: use offsets.from/to (milliseconds) if timestamp parsing fails
+        let startMs = parseWhisperTimestamp(seg.timestamps?.from);
+        let endMs = parseWhisperTimestamp(seg.timestamps?.to);
         
-        for (let i = 0; i < chunks.length; i++) {
-          const chunk = chunks[i];
-          console.log(`Transcribing chunk ${i + 1}/${chunks.length} (offset: ${chunk.timeOffset}s)...`);
-          
-          try {
-            const chunkSegments = await transcribeChunkWithGemini(chunk.base64, i, chunk.timeOffset);
-            allSegments.push(...chunkSegments);
-            console.log(`  Chunk ${i + 1}: ${chunkSegments.length} segments`);
-          } catch (err: any) {
-            console.warn(`  Chunk ${i + 1} failed:`, err?.message || err);
-          }
-          
-          // Rate limiting: small delay between chunks
-          if (i < chunks.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
+        // Fallback to offsets if timestamp parsing failed
+        if (startMs === null && typeof seg.offsets?.from === "number") {
+          startMs = seg.offsets.from;
+        }
+        if (endMs === null && typeof seg.offsets?.to === "number") {
+          endMs = seg.offsets.to;
         }
         
-        if (allSegments.length > 0) {
-          // Sort segments by start time and remove duplicates
-          allSegments.sort((a, b) => a.start - b.start);
-          console.log(`Chunked Gemini transcription complete: ${allSegments.length} segments with real timestamps`);
-          return allSegments;
+        const text = (seg.text || "").trim();
+        
+        if (text.length > 0 && startMs !== null && endMs !== null && endMs > startMs) {
+          segments.push({
+            start: startMs / 1000,
+            end: endMs / 1000,
+            text,
+          });
+        } else if (text.length > 0) {
+          console.warn(`Skipping segment with invalid timestamps: "${text.substring(0, 30)}..." (from=${startMs}, to=${endMs})`);
         }
       }
     }
+    
+    if (segments.length > 0) {
+      console.log(`Whisper.cpp transcription complete: ${segments.length} segments with REAL timestamps`);
+      return segments;
+    }
+    
+    // If whisper produced segments but we couldn't parse any, this is a format error
+    // Return empty array to surface the issue - do NOT fallback to estimated timestamps
+    if (rawSegmentCount > 0 && segments.length === 0) {
+      console.error(`CRITICAL: Whisper.cpp returned ${rawSegmentCount} segments but all failed timestamp parsing. Format may have changed.`);
+      console.error("Refusing to fallback to estimated timestamps - returning empty transcript");
+      return [];
+    }
+    
+    console.warn("Whisper.cpp returned no segments, trying fallback...");
   } catch (error: any) {
-    console.error("Gemini transcription failed:", error?.message || error);
+    console.error("Whisper.cpp transcription failed:", error?.message || error);
+    // Only fallback if whisper completely failed (not if parsing failed)
+    // The parsing failure case returns early above
+  } finally {
+    // Always cleanup temp files
+    await cleanupTempFiles();
   }
   
   // Fallback: Use OpenAI gpt-4o-mini-transcribe (text only, estimate timestamps)
+  // This only runs if whisper.cpp completely failed or returned zero segments
   try {
-    console.log("Fallback: OpenAI gpt-4o-mini-transcribe (NOTE: timestamps will be estimated based on speech pacing)...");
+    console.log("Fallback: OpenAI gpt-4o-mini-transcribe (NOTE: timestamps will be estimated)...");
+    const audioBuffer = await fs.readFile(audioPath);
     const file = await toFile(audioBuffer, "audio.mp3");
 
     const response = await openaiClient.audio.transcriptions.create({
@@ -752,11 +629,8 @@ export async function transcribeAudio(
     const text = response.text || "";
     if (text.trim()) {
       console.log("OpenAI transcription successful. Estimating timestamps based on speech pacing...");
-      // Split into sentences and estimate timing based on character count
       const sentences = text.split(/(?<=[.!?])\s+/).filter((s: string) => s.trim());
-      const totalChars = sentences.reduce((sum: number, s: string) => sum + s.length, 0);
       
-      // Estimate duration: ~150 words per minute, ~5 chars per word = ~12.5 chars/sec
       const charsPerSecond = 12.5;
       let currentTime = 0;
       
@@ -767,7 +641,7 @@ export async function transcribeAudio(
           end: currentTime + duration,
           text: sentence.trim(),
         };
-        currentTime += duration + 0.3; // Small gap between sentences
+        currentTime += duration + 0.3;
         return segment;
       }).filter((s: TranscriptSegment) => s.text.length > 0);
       
@@ -780,6 +654,31 @@ export async function transcribeAudio(
   
   console.error("All transcription methods failed - no transcript available");
   return [];
+}
+
+/**
+ * Parse whisper.cpp timestamp format "HH:MM:SS,mmm" to milliseconds
+ * Handles variations: 1-3 digit ms, comma or dot separator, optional ms
+ */
+function parseWhisperTimestamp(timestamp: string): number | null {
+  if (!timestamp) return null;
+  
+  // Format: "00:00:05,230" or "00:00:05.23" or "00:00:05" (1-3 digit ms, optional)
+  const match = timestamp.match(/(\d{1,2}):(\d{2}):(\d{2})(?:[,.](\d{1,3}))?/);
+  if (!match) return null;
+  
+  const hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const seconds = parseInt(match[3], 10);
+  
+  // Handle 1-3 digit milliseconds, pad to 3 digits
+  let ms = 0;
+  if (match[4]) {
+    const msStr = match[4].padEnd(3, "0");
+    ms = parseInt(msStr, 10);
+  }
+  
+  return (hours * 3600 + minutes * 60 + seconds) * 1000 + ms;
 }
 
 /**

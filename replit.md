@@ -45,7 +45,11 @@ The frontend follows a component-based architecture with:
   - Narrative structure identification (intro, main content, outro, peak moments)
   - Topic segmentation with importance scoring
   - Pre-identified B-roll opportunities with timing and priority
-- **Audio Transcription**: OpenAI Whisper for speech-to-text with timestamps
+- **Audio Transcription**: Local whisper.cpp for speech-to-text with REAL timestamps
+  - Uses ggml-base.en model at `/tmp/whisper_models/ggml-base.en.bin`
+  - Zero API cost, no external dependencies
+  - Accurate segment timing critical for captions and B-roll placement
+  - Fallback to OpenAI if whisper.cpp fails
 - **Semantic Transcript Analysis** (NEW): Deep semantic analysis of transcripts for context-aware B-roll
   - Extracts main topics, overall tone, key moments, and extractedKeywords
   - Identifies B-roll windows with specific timestamps and contextual search queries
@@ -90,6 +94,11 @@ Technical implementation:
 ## Recent Changes
 
 ### January 2026
+- **Local Whisper.cpp Transcription**: Replaced Gemini/OpenAI transcription with local whisper.cpp
+  - Real, accurate timestamps from the whisper model (not estimated)
+  - Zero API cost, works offline, no Replit proxy issues
+  - Single source of truth for captions, B-roll timing, and AI image placement
+  - Uses ggml-base.en model (141MB) for fast English transcription
 - **AI Image Generation**: Fully functional using Gemini 2.5-flash-image model
   - Context-aware image generation from semantic transcript analysis
   - Deterministic placement based on B-roll windows (not edit plan actions)

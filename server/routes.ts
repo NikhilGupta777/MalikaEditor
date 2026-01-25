@@ -508,9 +508,42 @@ export async function registerRoutes(
       tempFiles.push(audioPath);
       checkAborted();
 
+      // Pre-check for silent audio to provide early feedback
+      sendActivity("Checking audio levels...");
+      const silenceCheck = await detectSilence(videoPath, -40, 0.5);
+      const totalSilentTime = silenceCheck.reduce((sum, s) => sum + (s.end - s.start), 0);
+      const silenceRatio = metadata.duration > 0 ? totalSilentTime / metadata.duration : 0;
+      
+      if (silenceRatio > 0.95) {
+        // Audio is almost entirely silent
+        sendActivity("Audio appears to be mostly silent - transcription may produce limited results");
+        routesLogger.warn(`Video audio is ${(silenceRatio * 100).toFixed(0)}% silent`);
+        
+        // If captions were requested, warn user
+        if (editOptions.addCaptions) {
+          sendActivity("Note: Captions may be limited due to low audio content");
+        }
+      }
+
       sendActivity("Running speech-to-text AI (this may take a moment)...");
       transcript = await transcribeAudio(audioPath, metadata.duration);
-      sendActivity(`Transcribed ${transcript.length} speech segments with timestamps`, { segments: transcript.length });
+      
+      // Handle empty transcription result
+      if (transcript.length === 0) {
+        const silentMessage = silenceRatio > 0.8 
+          ? "No speech detected - audio appears to be silent or background noise only"
+          : "No speech detected - transcription returned empty";
+        sendActivity(silentMessage);
+        routesLogger.warn(`Transcription returned empty for project ${id}`);
+        
+        // If captions were requested but we have no transcript, adjust options
+        if (editOptions.addCaptions) {
+          sendActivity("Captions cannot be added without detectable speech - continuing without captions");
+          editOptions.addCaptions = false;
+        }
+      } else {
+        sendActivity(`Transcribed ${transcript.length} speech segments with timestamps`, { segments: transcript.length });
+      }
       checkAborted();
 
       // Use deep video analysis for comprehensive AI-powered insights

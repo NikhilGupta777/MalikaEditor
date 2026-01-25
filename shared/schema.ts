@@ -44,6 +44,7 @@ export const videoProjects = pgTable("video_projects", {
   transcript: jsonb("transcript"),
   stockMedia: jsonb("stock_media"),
   errorMessage: text("error_message"),
+  version: integer("version").notNull().default(1),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (table) => ({
@@ -53,6 +54,7 @@ export const videoProjects = pgTable("video_projects", {
 
 export const insertVideoProjectSchema = createInsertSchema(videoProjects).omit({
   id: true,
+  version: true,
   createdAt: true,
   updatedAt: true,
 });

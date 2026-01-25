@@ -7,8 +7,28 @@ import {
   type EditPlan,
   type StockMediaItem,
   type VideoAnalysis,
+  type TranscriptSegment,
+  videoAnalysisSchema,
+  editPlanSchema,
+  transcriptSegmentSchema,
+  stockMediaItemSchema,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { z } from "zod";
+
+export class OptimisticLockError extends Error {
+  constructor(message: string = "Version mismatch: resource was modified by another request") {
+    super(message);
+    this.name = "OptimisticLockError";
+  }
+}
+
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -17,7 +37,7 @@ export interface IStorage {
 
   createVideoProject(project: InsertVideoProject): Promise<VideoProject>;
   getVideoProject(id: number): Promise<VideoProject | undefined>;
-  updateVideoProject(id: number, updates: Partial<VideoProject>): Promise<VideoProject | undefined>;
+  updateVideoProject(id: number, updates: Partial<VideoProject>, expectedVersion?: number): Promise<VideoProject | undefined>;
   getAllVideoProjects(): Promise<VideoProject[]>;
 }
 
@@ -76,8 +96,37 @@ export class MemStorage implements IStorage {
     return user;
   }
 
+  private validateJsonbFields(data: Partial<VideoProject>): void {
+    if (data.analysis !== undefined && data.analysis !== null) {
+      const result = videoAnalysisSchema.safeParse(data.analysis);
+      if (!result.success) {
+        throw new ValidationError(`Invalid analysis data: ${result.error.message}`);
+      }
+    }
+    if (data.editPlan !== undefined && data.editPlan !== null) {
+      const result = editPlanSchema.safeParse(data.editPlan);
+      if (!result.success) {
+        throw new ValidationError(`Invalid editPlan data: ${result.error.message}`);
+      }
+    }
+    if (data.transcript !== undefined && data.transcript !== null) {
+      const result = z.array(transcriptSegmentSchema).safeParse(data.transcript);
+      if (!result.success) {
+        throw new ValidationError(`Invalid transcript data: ${result.error.message}`);
+      }
+    }
+    if (data.stockMedia !== undefined && data.stockMedia !== null) {
+      const result = z.array(stockMediaItemSchema).safeParse(data.stockMedia);
+      if (!result.success) {
+        throw new ValidationError(`Invalid stockMedia data: ${result.error.message}`);
+      }
+    }
+  }
+
   async createVideoProject(project: InsertVideoProject): Promise<VideoProject> {
     this.evictLeastRecentlyAccessed();
+    
+    this.validateJsonbFields(project as Partial<VideoProject>);
     
     const id = this.nextProjectId++;
     const now = new Date();
@@ -94,6 +143,7 @@ export class MemStorage implements IStorage {
       transcript: project.transcript || null,
       stockMedia: project.stockMedia || null,
       errorMessage: project.errorMessage || null,
+      version: 1,
       createdAt: now,
       updatedAt: now,
     };
@@ -112,14 +162,24 @@ export class MemStorage implements IStorage {
 
   async updateVideoProject(
     id: number,
-    updates: Partial<VideoProject>
+    updates: Partial<VideoProject>,
+    expectedVersion?: number
   ): Promise<VideoProject | undefined> {
     const project = this.videoProjects.get(id);
     if (!project) return undefined;
 
+    if (expectedVersion !== undefined && project.version !== expectedVersion) {
+      throw new OptimisticLockError(
+        `Version mismatch for project ${id}: expected ${expectedVersion}, found ${project.version}`
+      );
+    }
+
+    this.validateJsonbFields(updates);
+
     const updatedProject: VideoProject = {
       ...project,
       ...updates,
+      version: project.version + 1,
       updatedAt: new Date(),
     };
     this.videoProjects.set(id, updatedProject);

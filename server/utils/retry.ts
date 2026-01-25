@@ -18,10 +18,16 @@ const DEFAULT_OPTIONS: Required<RetryOptions> = {
   retryableErrors: isRetryableError,
 };
 
+interface ErrorWithStatus extends Error {
+  status?: number;
+  statusCode?: number;
+  code?: number | string;
+}
+
 function isRetryableError(error: unknown): boolean {
   if (error instanceof Error) {
-    const errAny = error as any;
-    const status = errAny.status || errAny.statusCode || errAny.code;
+    const errWithStatus = error as ErrorWithStatus;
+    const status = errWithStatus.status || errWithStatus.statusCode || errWithStatus.code;
     
     if (typeof status === "number" && (status === 429 || status === 503 || status === 502 || status === 500)) {
       return true;

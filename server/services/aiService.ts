@@ -129,6 +129,28 @@ const VideoAnalysisResponseSchema = z.object({
   brollOpportunities: z.array(BrollOpportunitySchema).optional(),
 });
 
+// Inferred types from Zod schemas for type-safe parsing
+type RawFrameAnalysis = z.infer<typeof FrameAnalysisSchema>;
+type RawTopicSegment = z.infer<typeof TopicSegmentSchema>;
+type RawBrollOpportunity = z.infer<typeof BrollOpportunitySchema>;
+type VideoAnalysisResponse = z.infer<typeof VideoAnalysisResponseSchema>;
+
+// Raw JSON types for semantic analysis parsing
+interface RawBrollWindow {
+  start?: number;
+  end?: number;
+  context?: string;
+  suggestedQuery?: string;
+  priority?: "low" | "medium" | "high";
+  reason?: string;
+}
+
+interface RawKeyMoment {
+  timestamp?: number;
+  description?: string;
+  importance?: "low" | "medium" | "high";
+}
+
 const geminiClient = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
   httpOptions: {
@@ -436,9 +458,9 @@ Respond in JSON format only (no markdown):
     };
   }
 
-  let parsed: any;
+  let parsed: Partial<VideoAnalysisResponse>;
   try {
-    parsed = JSON.parse(jsonMatch[0]);
+    parsed = JSON.parse(jsonMatch[0]) as Partial<VideoAnalysisResponse>;
     const validated = VideoAnalysisResponseSchema.safeParse(parsed);
     if (!validated.success) {
       aiLogger.warn("AI response validation failed:", validated.error);
@@ -458,7 +480,7 @@ Respond in JSON format only (no markdown):
     };
   }
 
-  const frames: FrameAnalysis[] = (parsed.frames || []).map((f: any, i: number) => ({
+  const frames: FrameAnalysis[] = (parsed.frames || []).map((f: RawFrameAnalysis, i: number) => ({
     timestamp: f.timestamp || frameInterval * (i + 1),
     description: f.description || "",
     keyMoment: f.keyMoment || false,
@@ -475,11 +497,11 @@ Respond in JSON format only (no markdown):
     pacing: parsed.context.pacing || "moderate",
     visualStyle: parsed.context.visualStyle,
     suggestedEditStyle: parsed.context.suggestedEditStyle || "moderate",
-    regionalContext: parsed.context.regionalContext,
-    languageDetected: parsed.context.languageDetected,
+    regionalContext: parsed.context.regionalContext ?? undefined,
+    languageDetected: parsed.context.languageDetected ?? undefined,
   } : undefined;
 
-  const topicSegments: TopicSegment[] | undefined = parsed.topicSegments?.map((t: any) => ({
+  const topicSegments: TopicSegment[] | undefined = parsed.topicSegments?.map((t: RawTopicSegment) => ({
     start: t.start || 0,
     end: t.end || duration,
     topic: t.topic || "Unknown topic",
@@ -487,7 +509,7 @@ Respond in JSON format only (no markdown):
     suggestedBrollWindow: t.suggestedBrollWindow,
   }));
 
-  const brollOpportunities = parsed.brollOpportunities?.map((b: any) => ({
+  const brollOpportunities = parsed.brollOpportunities?.map((b: RawBrollOpportunity) => ({
     start: Math.max(0, b.start || 0),
     end: Math.min(duration, b.end || b.start + 3),
     suggestedDuration: Math.min(6, Math.max(2, b.suggestedDuration || 3)),
@@ -496,6 +518,17 @@ Respond in JSON format only (no markdown):
     reason: b.reason || "Enhance visual interest",
   }));
 
+  // Convert null to undefined for narrativeStructure fields
+  const narrativeStructure = parsed.narrativeStructure ? {
+    hasIntro: parsed.narrativeStructure.hasIntro ?? undefined,
+    introEnd: parsed.narrativeStructure.introEnd ?? undefined,
+    hasOutro: parsed.narrativeStructure.hasOutro ?? undefined,
+    outroStart: parsed.narrativeStructure.outroStart ?? undefined,
+    mainContentStart: parsed.narrativeStructure.mainContentStart ?? undefined,
+    mainContentEnd: parsed.narrativeStructure.mainContentEnd ?? undefined,
+    peakMoments: parsed.narrativeStructure.peakMoments ?? undefined,
+  } : undefined;
+
   return {
     duration,
     frames,
@@ -503,7 +536,7 @@ Respond in JSON format only (no markdown):
     summary: parsed.summary || "",
     context,
     topicSegments,
-    narrativeStructure: parsed.narrativeStructure,
+    narrativeStructure,
     brollOpportunities,
   };
 }
@@ -552,18 +585,22 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
       aiLogger.info(`Estimated ${segments.length} transcript segments (timing is approximate)`);
       return segments;
     }
-  } catch (error: any) {
-    aiLogger.error("OpenAI transcription failed:", error?.message || error);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    aiLogger.error("OpenAI transcription failed:", errorMessage);
   }
   
   return [];
 }
 
+// Type for promisified exec function
+type ExecPromise = (cmd: string, options?: { timeout?: number }) => Promise<{ stdout: string; stderr: string }>;
+
 /**
  * Ensure whisper model is available, downloading if necessary
  * Returns true if model is ready, false if unavailable (triggers OpenAI fallback)
  */
-async function ensureWhisperModel(execPromise: (cmd: string, options?: any) => Promise<any>): Promise<boolean> {
+async function ensureWhisperModel(execPromise: ExecPromise): Promise<boolean> {
   try {
     await fs.access(WHISPER_MODEL_PATH);
     aiLogger.debug(`Whisper model found at ${WHISPER_MODEL_PATH}`);
@@ -585,8 +622,9 @@ async function ensureWhisperModel(execPromise: (cmd: string, options?: any) => P
       await fs.access(WHISPER_MODEL_PATH);
       aiLogger.info("Whisper model downloaded successfully");
       return true;
-    } catch (downloadError: any) {
-      aiLogger.error(`Failed to download whisper model: ${downloadError?.message || downloadError}`);
+    } catch (downloadError: unknown) {
+      const errorMessage = downloadError instanceof Error ? downloadError.message : String(downloadError);
+      aiLogger.error(`Failed to download whisper model: ${errorMessage}`);
       aiLogger.info("Will use OpenAI API fallback for transcription");
       return false;
     }
@@ -737,8 +775,9 @@ export async function transcribeAudio(
     }
     
     aiLogger.warn("Whisper.cpp returned no segments, trying OpenAI fallback...");
-  } catch (error: any) {
-    aiLogger.error("Whisper.cpp transcription failed:", error?.message || error);
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    aiLogger.error("Whisper.cpp transcription failed:", errorMessage);
     // Only fallback if whisper completely failed (not if parsing failed)
     // The parsing failure case returns early above
   } finally {
@@ -1046,16 +1085,23 @@ Respond in JSON format only (no markdown):
       return getDefaultSemanticAnalysis(transcript, duration);
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      brollWindows?: RawBrollWindow[];
+      mainTopics?: string[];
+      overallTone?: "educational" | "entertaining" | "inspirational" | "professional" | "casual" | "serious";
+      keyMoments?: RawKeyMoment[];
+      extractedKeywords?: string[];
+      contentSummary?: string;
+    };
     
     // Validate and clamp B-roll windows
     const validatedBrollWindows = (parsed.brollWindows || [])
-      .filter((b: any) => b.start !== undefined && b.suggestedQuery)
-      .map((b: any) => ({
-        start: Math.max(0, b.start),
-        end: Math.min(duration, b.end || b.start + 4),
+      .filter((b: RawBrollWindow) => b.start !== undefined && b.suggestedQuery)
+      .map((b: RawBrollWindow) => ({
+        start: Math.max(0, b.start || 0),
+        end: Math.min(duration, b.end || (b.start || 0) + 4),
         context: b.context || "",
-        suggestedQuery: b.suggestedQuery,
+        suggestedQuery: b.suggestedQuery || "",
         priority: b.priority || "medium",
         reason: b.reason || "Enhance visual interest",
       }))
@@ -1064,7 +1110,7 @@ Respond in JSON format only (no markdown):
     return {
       mainTopics: parsed.mainTopics || [],
       overallTone: parsed.overallTone || "casual",
-      keyMoments: (parsed.keyMoments || []).map((k: any) => ({
+      keyMoments: (parsed.keyMoments || []).map((k: RawKeyMoment) => ({
         timestamp: k.timestamp || 0,
         description: k.description || "",
         importance: k.importance || "medium",
@@ -1139,7 +1185,7 @@ export async function generateAiImage(
 
     const candidate = response.candidates?.[0];
     const imagePart = candidate?.content?.parts?.find(
-      (part: any) => part.inlineData
+      (part: { inlineData?: { data?: string; mimeType?: string } }) => part.inlineData
     );
 
     if (!imagePart?.inlineData?.data) {
@@ -1501,9 +1547,9 @@ Respond with a JSON object only (no markdown):
     return fallbackPlan();
   }
 
-  let parsed: any;
+  let parsed: z.infer<typeof EditPlanResponseSchema>;
   try {
-    parsed = JSON.parse(jsonMatch[0]);
+    parsed = JSON.parse(jsonMatch[0]) as z.infer<typeof EditPlanResponseSchema>;
     const validated = EditPlanResponseSchema.safeParse(parsed);
     if (!validated.success) {
       aiLogger.warn("Edit plan validation warning:", validated.error);
@@ -1522,12 +1568,12 @@ Respond with a JSON object only (no markdown):
   for (const a of parsed.actions) {
     const actionValidation = EditActionSchema.safeParse(a);
     if (actionValidation.success) {
-      const validAction = actionValidation.data as any;
+      const validAction = actionValidation.data;
       if ('start' in validAction && validAction.start !== undefined && validAction.start < 0) {
-        validAction.start = 0;
+        (validAction as { start: number }).start = 0;
       }
       if ('end' in validAction && validAction.end !== undefined && validAction.end > analysis.duration) {
-        validAction.end = analysis.duration;
+        (validAction as { end: number }).end = analysis.duration;
       }
       actions.push(validAction as EditAction);
     } else {

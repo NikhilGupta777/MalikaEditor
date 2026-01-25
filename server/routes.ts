@@ -181,6 +181,19 @@ export async function registerRoutes(
         const filePath = req.file.path;
         const metadata = await getVideoMetadata(filePath);
 
+        // Check video duration limit (default: 30 minutes = 1800 seconds)
+        const maxDurationSeconds = parseInt(process.env.MAX_VIDEO_DURATION_SECONDS || "1800", 10);
+        if (metadata.duration > maxDurationSeconds) {
+          // Clean up the uploaded file since it exceeds the limit
+          await fs.unlink(filePath).catch(() => {});
+          const maxMinutes = Math.floor(maxDurationSeconds / 60);
+          const videoMinutes = Math.floor(metadata.duration / 60);
+          const videoSeconds = Math.round(metadata.duration % 60);
+          return res.status(400).json({
+            error: `Video duration (${videoMinutes}m ${videoSeconds}s) exceeds the maximum allowed duration of ${maxMinutes} minutes. Please upload a shorter video.`,
+          });
+        }
+
         const project = await storage.createVideoProject({
           fileName: req.file.originalname,
           originalPath: `/uploads/${path.basename(filePath)}`,
@@ -287,7 +300,7 @@ export async function registerRoutes(
       }
     };
 
-    const sendEvent = (type: string, data: any) => {
+    const sendEvent = (type: string, data: Record<string, unknown>) => {
       if (!connectionClosed) {
         res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
       }

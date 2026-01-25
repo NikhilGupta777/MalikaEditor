@@ -511,8 +511,8 @@ async function createImageBroll(
     .inputOptions(["-f", "lavfi"])
     .outputOptions([
       "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "28",
+      "-preset", "fast",
+      "-crf", "23",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       "-t", String(duration),
@@ -547,8 +547,8 @@ async function createVideoBroll(
     .setDuration(duration)
     .outputOptions([
       "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "28",
+      "-preset", "fast",
+      "-crf", "23",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       "-b:a", "96k",
@@ -584,8 +584,8 @@ async function createVideoSegment(
 
   const outputOptions = [
     "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-crf", "28",
+    "-preset", "fast",
+    "-crf", "23",
     "-c:a", "aac",
     "-b:a", "96k",
     "-max_muxing_queue_size", "1024",
@@ -620,8 +620,8 @@ async function concatSegmentsSimple(
       .inputOptions(["-f", "concat", "-safe", "0"])
       .outputOptions([
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
+        "-preset", "fast",
+        "-crf", "23",
         "-c:a", "aac",
         "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
@@ -655,8 +655,8 @@ async function burnSubtitles(
   
   cmd.outputOptions([
       "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "28",
+      "-preset", "fast",
+      "-crf", "23",
       "-c:a", "copy",
       "-threads", "2",
     ])
@@ -700,8 +700,8 @@ async function concatTwoWithTransition(
   const outputOptions: string[] = [
     "-map", "[v]",
     "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-crf", "28",
+    "-preset", "fast",
+    "-crf", "23",
     "-threads", "2",
   ];
 
@@ -756,8 +756,8 @@ async function prepareOverlayMedia(
       .setDuration(duration)
       .outputOptions([
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
+        "-preset", "fast",
+        "-crf", "23",
         "-an",
         "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
         "-pix_fmt", "yuv420p",
@@ -772,8 +772,8 @@ async function prepareOverlayMedia(
       .inputOptions(["-loop", "1"])
       .outputOptions([
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
+        "-preset", "fast",
+        "-crf", "23",
         "-an",
         "-t", String(duration),
         "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.001,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 25)}:s=${width}x${height}:fps=25`,
@@ -865,8 +865,8 @@ async function applyAllBrollOverlays(
         "-map", "[outv]",
         "-map", "0:a?",
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
+        "-preset", "fast",
+        "-crf", "23",
         "-c:a", "copy",
         "-threads", "2",
         "-max_muxing_queue_size", "2048",
@@ -1117,8 +1117,8 @@ async function applyEditsInternal(
       .setDuration(seg.end - seg.start)
       .outputOptions([
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
+        "-preset", "fast",
+        "-crf", "23",
         "-c:a", "aac",
         "-b:a", "96k",
         "-max_muxing_queue_size", "1024",

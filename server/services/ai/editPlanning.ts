@@ -431,26 +431,48 @@ export async function generateSmartEditPlan(
   aiLogger.debug(`Pass 3 complete: ${brollPlan.brollPlacements.length} B-roll placements, ${brollPlan.fillerActions.length} filler actions`);
 
   aiLogger.info("Pass 4: Quality review and refinement...");
-  const reviewedPlan = await executePass4QualityReview(
-    analysis, structuredPlan, qualityMap, brollPlan, prompt
-  );
-  aiLogger.debug(`Pass 4 complete: ${reviewedPlan.actions.length} final actions, overall score: ${reviewedPlan.qualityMetrics.overallScore}`);
+  let reviewedPlan;
+  try {
+    reviewedPlan = await executePass4QualityReview(
+      analysis, structuredPlan, qualityMap, brollPlan, prompt
+    );
+    aiLogger.debug(`Pass 4 complete: ${reviewedPlan.actions.length} final actions, overall score: ${reviewedPlan.qualityMetrics.overallScore}`);
+  } catch (error) {
+    aiLogger.error("Pass 4 failed, using B-roll plan directly:", error);
+    reviewedPlan = {
+      actions: brollPlan.brollPlacements.map(p => ({
+        type: "insert_stock" as const,
+        start: p.start,
+        end: p.start + p.duration,
+        stockQuery: p.query,
+        mediaType: "video" as const
+      })),
+      qualityMetrics: { 
+        overallScore: 70, 
+        narrativeFlow: "medium", 
+        pacing: "moderate",
+        brollRelevance: "medium" 
+      },
+      warnings: ["Pass 4 refinement failed"]
+    };
+  }
 
   const validatedActions = validateAndFixBrollActions(reviewedPlan.actions, analysis.duration);
 
   const elapsedTime = Date.now() - startTime;
   aiLogger.info(`Multi-pass smart edit planning complete in ${elapsedTime}ms`);
 
-  const stockQueriesSet = new Set(
-    validatedActions
-      .filter(a => a.type === "insert_stock" && a.stockQuery)
-      .map(a => a.stockQuery!)
-  );
-  const stockQueries = Array.from(stockQueriesSet);
+    const stockQueriesSet = new Set<string>();
+    reviewedPlan.actions.forEach(a => {
+      if (a.type === "insert_stock" && (a as any).stockQuery) {
+        stockQueriesSet.add((a as any).stockQuery);
+      }
+    });
+    const stockQueries = Array.from(stockQueriesSet);
 
   const keyPoints = [
-    ...(structuredPlan.sectionMarkers.filter(m => m.type === "climax" || m.type === "section_change").map(m => m.description)),
-    ...(qualityMap.mustKeepSegments.map(s => s.reason)),
+    ...(structuredPlan.sectionMarkers?.filter(m => m.type === "climax" || m.type === "section_change").map(m => m.description) || []),
+    ...(qualityMap.mustKeepSegments?.map(s => s.reason) || []),
   ].slice(0, 10);
 
   const cutDuration = validatedActions

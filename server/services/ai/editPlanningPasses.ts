@@ -413,14 +413,35 @@ Respond in JSON format only (no markdown):
     );
 
     const text = response.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    // Robust JSON extraction for potential malformed AI responses
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
     
-    if (!jsonMatch) {
-      aiLogger.warn("Pass 2: Failed to parse quality assessment, using defaults");
+    if (jsonStart === -1 || jsonEnd === -1) {
+      aiLogger.warn("Pass 2: No JSON block found in response, using defaults");
       return getDefaultQualityMap(duration, semanticAnalysis);
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const jsonText = text.slice(jsonStart, jsonEnd + 1)
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
+      .replace(/\\n/g, " ") // Normalize newlines inside strings
+      .trim();
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (e) {
+      aiLogger.error("Pass 2: JSON.parse failed on cleaned text:", e);
+      // Fallback: try to clean up trailing commas which is a common AI error
+      try {
+        const cleanedJson = jsonText.replace(/,\s*([\]}])/g, '$1');
+        parsed = JSON.parse(cleanedJson);
+      } catch (innerE) {
+        aiLogger.error("Pass 2: JSON.parse failed even after cleanup, using defaults");
+        return getDefaultQualityMap(duration, semanticAnalysis);
+      }
+    }
+
     const normalized = normalizeQualityMapResponse(parsed);
     const validated = QualityMapSchema.safeParse(normalized);
     if (!validated.success) {
@@ -441,10 +462,10 @@ Respond in JSON format only (no markdown):
   }
 }
 
-function getDefaultQualityMap(duration: number, semanticAnalysis: SemanticAnalysis): QualityMap {
-  const hookStrength = semanticAnalysis.hookMoments?.[0]?.score || 50;
+function getDefaultQualityMap(duration: number, semanticAnalysis: any): QualityMap {
+  const hookStrength = semanticAnalysis?.hookStrength || 60;
   return {
-    segmentScores: [{ start: 0, end: duration, engagementScore: 60, valueLevel: "medium", reason: "Default assessment" }],
+    segmentScores: [{ start: 0, end: duration, engagementScore: 60, valueLevel: "medium", reason: "Default assessment due to error" }],
     hookStrength,
     overallEngagement: 60,
     lowValueSegments: [],

@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { storage } from "./storage";
 import { createLogger } from "./utils/logger";
+import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
 
 // Zod schemas for query/path parameter validation
 const idParamSchema = z.object({
@@ -212,8 +213,11 @@ export async function registerRoutes(
         });
       } catch (error) {
         routesLogger.error("Upload error:", error);
+        const friendlyError = getUserFriendlyError(error instanceof Error ? error : new Error("Upload failed"));
         res.status(500).json({
-          error: error instanceof Error ? error.message : "Upload failed",
+          error: friendlyError.message,
+          suggestion: friendlyError.suggestion,
+          errorType: friendlyError.errorType,
         });
       }
     }
@@ -587,7 +591,9 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         editPlan, 
         transcript,
         stockMedia,
-        editOptions
+        editOptions,
+        undefined, // outputFileName - use default
+        semanticAnalysis
       );
       checkAborted(); // Check after rendering
       
@@ -641,13 +647,17 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         // Actual processing error
         routesLogger.error("Processing error:", error);
         
+        const friendlyError = formatErrorForSSE(error instanceof Error ? error : new Error(errorMessage));
+        
         await storage.updateVideoProject(id, {
           status: "failed",
-          errorMessage,
+          errorMessage: friendlyError.error,
         });
 
         sendEvent("error", {
-          error: errorMessage,
+          error: friendlyError.error,
+          suggestion: friendlyError.suggestion,
+          errorType: friendlyError.errorType,
         });
       }
 

@@ -60,6 +60,19 @@ interface ActivityItem {
   details?: Record<string, unknown>;
 }
 
+type ErrorType = 
+  | "upload_failed"
+  | "file_not_found"
+  | "video_processing"
+  | "transcription"
+  | "ai_api"
+  | "rate_limit"
+  | "network"
+  | "timeout"
+  | "permission"
+  | "storage"
+  | "unknown";
+
 interface VideoProject {
   id: number;
   fileName: string;
@@ -71,6 +84,8 @@ interface VideoProject {
   transcript?: TranscriptSegment[] | null;
   stockMedia?: StockMediaItem[] | null;
   errorMessage?: string | null;
+  errorSuggestion?: string | null;
+  errorType?: ErrorType | null;
   aiImageStats?: AiImageStats;
   semanticAnalysis?: SemanticAnalysis;
   fillerSegments?: FillerSegment[];
@@ -170,9 +185,23 @@ export default function Editor() {
           description: "Now describe how you want it edited",
         });
       } catch (error) {
+        let errorMessage = "Please try again";
+        let suggestion = "Check your file and internet connection";
+        
+        if (error instanceof Error) {
+          errorMessage = error.message;
+          if (error.message.toLowerCase().includes("size") || error.message.toLowerCase().includes("large")) {
+            suggestion = "Try uploading a smaller video (under 1GB)";
+          } else if (error.message.toLowerCase().includes("format") || error.message.toLowerCase().includes("type")) {
+            suggestion = "Use MP4, MOV, or WebM format";
+          } else if (error.message.toLowerCase().includes("network") || error.message.toLowerCase().includes("connection")) {
+            suggestion = "Check your internet connection and try again";
+          }
+        }
+        
         toast({
           title: "Upload failed",
-          description: error instanceof Error ? error.message : "Please try again",
+          description: `${errorMessage}. ${suggestion}`,
           variant: "destructive",
         });
       } finally {
@@ -314,7 +343,13 @@ export default function Editor() {
           } else if (data.type === "error") {
             setProject((prev) =>
               prev
-                ? { ...prev, status: "failed", errorMessage: data.error }
+                ? { 
+                    ...prev, 
+                    status: "failed", 
+                    errorMessage: data.error,
+                    errorSuggestion: data.suggestion,
+                    errorType: data.errorType,
+                  }
                 : null
             );
             setIsProcessing(false);
@@ -322,8 +357,8 @@ export default function Editor() {
             eventSourceRef.current = null;
 
             toast({
-              title: "Processing failed",
-              description: data.error,
+              title: data.error || "Processing failed",
+              description: data.suggestion || "Please try again",
               variant: "destructive",
             });
           }
@@ -513,6 +548,8 @@ export default function Editor() {
                 <ProcessingStatus
                   status={project.status}
                   error={project.errorMessage ?? undefined}
+                  errorSuggestion={project.errorSuggestion ?? undefined}
+                  errorType={project.errorType ?? undefined}
                   onRetry={project.status === "failed" ? handleRetryProcessing : undefined}
                   aiImageStats={project.aiImageStats}
                   transcriptSegments={project.transcript?.length}

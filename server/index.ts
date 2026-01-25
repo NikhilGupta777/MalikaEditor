@@ -7,6 +7,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { createLogger } from "./utils/logger";
 import { cleanupStaleTempFiles } from "./services/videoProcessor";
+import { logTranscriptionConfig } from "./services/aiService";
 import { storage } from "./storage";
 
 const expressLogger = createLogger("express");
@@ -145,6 +146,9 @@ app.use((req, res, next) => {
   } catch (e) {
     expressLogger.warn("Failed to clean up stale temp files on startup:", e);
   }
+
+  // Log transcription system configuration at startup
+  logTranscriptionConfig();
 
   // Create default user if not exists
   try {

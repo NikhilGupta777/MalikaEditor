@@ -1,4 +1,4 @@
-import { Check, Loader2, AlertCircle, RotateCcw, XCircle, Video, Brain, Mic, Wand2, Image, Film, Sparkles, PlayCircle } from "lucide-react";
+import { Check, Loader2, AlertCircle, RotateCcw, XCircle, Video, Brain, Mic, Wand2, Image, Film, Sparkles, PlayCircle, Upload, FileX, Wifi, Clock, Lock, Database, HelpCircle, Lightbulb } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -12,15 +12,84 @@ interface AiImageStats {
   totalOverlays?: number;
 }
 
+type ErrorType = 
+  | "upload_failed"
+  | "file_not_found"
+  | "video_processing"
+  | "transcription"
+  | "ai_api"
+  | "rate_limit"
+  | "network"
+  | "timeout"
+  | "permission"
+  | "storage"
+  | "unknown";
+
 interface ProcessingStatusProps {
   status: ProcessingStatusType;
   error?: string;
+  errorSuggestion?: string;
+  errorType?: ErrorType;
   onRetry?: () => void;
   aiImageStats?: AiImageStats;
   transcriptSegments?: number;
   scenesDetected?: number;
   stockMediaCount?: number;
   editActionsCount?: number;
+}
+
+function getErrorIcon(errorType?: ErrorType) {
+  switch (errorType) {
+    case "upload_failed":
+      return Upload;
+    case "file_not_found":
+      return FileX;
+    case "video_processing":
+      return Video;
+    case "transcription":
+      return Mic;
+    case "ai_api":
+      return Brain;
+    case "rate_limit":
+      return Clock;
+    case "network":
+      return Wifi;
+    case "timeout":
+      return Clock;
+    case "permission":
+      return Lock;
+    case "storage":
+      return Database;
+    default:
+      return AlertCircle;
+  }
+}
+
+function getDefaultSuggestion(errorType?: ErrorType): string {
+  switch (errorType) {
+    case "upload_failed":
+      return "Check your file size and format, then try again";
+    case "file_not_found":
+      return "Please upload your video again";
+    case "video_processing":
+      return "Try uploading a different video format (MP4 works best)";
+    case "transcription":
+      return "Make sure your video has clear audio";
+    case "ai_api":
+      return "Wait a moment and try again, or disable AI features";
+    case "rate_limit":
+      return "Please wait a few minutes before trying again";
+    case "network":
+      return "Check your internet connection and try again";
+    case "timeout":
+      return "Try a shorter video or check your connection";
+    case "permission":
+      return "Please try uploading again";
+    case "storage":
+      return "Try again later or contact support";
+    default:
+      return "Please try again. If the problem persists, try a different video";
+  }
 }
 
 const STEPS = [
@@ -77,6 +146,8 @@ const STEPS = [
 export function ProcessingStatus({ 
   status, 
   error, 
+  errorSuggestion,
+  errorType,
   onRetry, 
   aiImageStats,
   transcriptSegments,
@@ -125,15 +196,27 @@ export function ProcessingStatus({
   const CurrentIcon = currentStep?.icon || Loader2;
 
   if (status === "failed") {
+    const ErrorIcon = getErrorIcon(errorType);
+    const suggestion = errorSuggestion || getDefaultSuggestion(errorType);
+    
     return (
-      <Card className="border-destructive">
+      <Card className="border-destructive" data-testid="error-card">
         <CardContent className="p-4">
           <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-destructive flex-shrink-0" />
+            <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center flex-shrink-0">
+              <ErrorIcon className="h-5 w-5 text-destructive" />
+            </div>
             <div className="flex-1">
-              <p className="font-medium text-destructive">Processing failed</p>
-              {error && (
-                <p className="text-sm text-muted-foreground mt-1">{error}</p>
+              <p className="font-medium text-destructive" data-testid="error-message">
+                {error || "Processing failed"}
+              </p>
+              {suggestion && (
+                <div className="flex items-start gap-2 mt-2 p-2 rounded-md bg-muted/50">
+                  <Lightbulb className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-muted-foreground" data-testid="error-suggestion">
+                    {suggestion}
+                  </p>
+                </div>
               )}
               {onRetry && (
                 <Button 

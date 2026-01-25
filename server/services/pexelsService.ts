@@ -67,7 +67,7 @@ export async function searchPhotos(
       photographer: photo.photographer,
     }));
   } catch (error) {
-    console.error("Pexels photo search error:", error);
+    pexelsLogger.error("Pexels photo search error", { query, error: error instanceof Error ? error.message : String(error) });
     return [];
   }
 }
@@ -111,7 +111,7 @@ export async function searchVideos(
       })
       .filter((item: { url: string }) => item.url && item.url.length > 0);
   } catch (error) {
-    console.error("Pexels video search error:", error);
+    pexelsLogger.error("Pexels video search error", { query, error: error instanceof Error ? error.message : String(error) });
     return [];
   }
 }

@@ -4,8 +4,22 @@ import { pipeline } from "stream/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
-import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem } from "@shared/schema";
+import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem, SemanticAnalysis } from "@shared/schema";
 import { createLogger } from "../utils/logger";
+
+export interface ChapterInfo {
+  title: string;
+  startTime: number;
+  endTime: number;
+  type?: "intro" | "section" | "climax" | "outro" | "keypoint";
+}
+
+export interface ChapterExtractionInput {
+  editPlan?: EditPlan;
+  semanticAnalysis?: SemanticAnalysis;
+  videoDuration: number;
+  outputTimeMapping?: { sourceStart: number; sourceEnd: number; outputStart: number }[];
+}
 
 const videoLogger = createLogger("video-processor");
 
@@ -18,6 +32,196 @@ const STOCK_DIR = "/tmp/stock";
 const FFPROBE_TIMEOUT_MS = 30000;
 const FFMPEG_SHORT_TIMEOUT_MS = 2 * 60 * 1000;
 const FFMPEG_LONG_TIMEOUT_MS = 10 * 60 * 1000;
+const CHAPTERS_DIR = "/tmp/chapters";
+
+export function generateChaptersFromEditPlan(input: ChapterExtractionInput): ChapterInfo[] {
+  const { editPlan, semanticAnalysis, videoDuration, outputTimeMapping } = input;
+  const chapters: ChapterInfo[] = [];
+  const usedTimestamps = new Set<number>();
+  
+  const mapSourceToOutputTime = (sourceTime: number): number | null => {
+    if (!outputTimeMapping || outputTimeMapping.length === 0) {
+      return sourceTime;
+    }
+    
+    for (const mapping of outputTimeMapping) {
+      if (sourceTime >= mapping.sourceStart && sourceTime < mapping.sourceEnd) {
+        return mapping.outputStart + (sourceTime - mapping.sourceStart);
+      }
+    }
+    return null;
+  };
+  
+  const addChapter = (title: string, sourceTime: number, type: ChapterInfo["type"]) => {
+    const outputTime = mapSourceToOutputTime(sourceTime);
+    if (outputTime === null || outputTime < 0 || outputTime >= videoDuration) {
+      return;
+    }
+    
+    const roundedTime = Math.round(outputTime * 10) / 10;
+    if (usedTimestamps.has(roundedTime)) {
+      return;
+    }
+    
+    usedTimestamps.add(roundedTime);
+    chapters.push({
+      title: title.slice(0, 80),
+      startTime: roundedTime,
+      endTime: videoDuration,
+      type,
+    });
+  };
+  
+  if (semanticAnalysis?.structureAnalysis) {
+    const structure = semanticAnalysis.structureAnalysis;
+    
+    if (structure.introEnd !== undefined && structure.introEnd > 0) {
+      addChapter("Introduction", 0, "intro");
+    }
+    
+    if (structure.mainStart !== undefined) {
+      addChapter("Main Content", structure.mainStart, "section");
+    }
+    
+    if (structure.outroStart !== undefined) {
+      addChapter("Conclusion", structure.outroStart, "outro");
+    }
+  }
+  
+  if (semanticAnalysis?.keyMoments && semanticAnalysis.keyMoments.length > 0) {
+    for (const moment of semanticAnalysis.keyMoments) {
+      if (moment.importance === "high" || moment.importance === "medium") {
+        const title = moment.description || "Key Point";
+        addChapter(title, moment.timestamp, "keypoint");
+      }
+    }
+  }
+  
+  if (semanticAnalysis?.topicFlow && semanticAnalysis.topicFlow.length > 0) {
+    for (const topic of semanticAnalysis.topicFlow) {
+      if (topic.name && topic.start >= 0) {
+        addChapter(topic.name, topic.start, "section");
+      }
+    }
+  }
+  
+  if (editPlan?.keyPoints && editPlan.keyPoints.length > 0) {
+    const interval = videoDuration / (editPlan.keyPoints.length + 1);
+    editPlan.keyPoints.forEach((point, idx) => {
+      const estimatedTime = interval * (idx + 1);
+      addChapter(point, estimatedTime, "keypoint");
+    });
+  }
+  
+  chapters.sort((a, b) => a.startTime - b.startTime);
+  
+  for (let i = 0; i < chapters.length - 1; i++) {
+    chapters[i].endTime = chapters[i + 1].startTime;
+  }
+  
+  if (chapters.length > 0) {
+    chapters[chapters.length - 1].endTime = videoDuration;
+  }
+  
+  if (chapters.length === 0 && videoDuration > 30) {
+    chapters.push({
+      title: "Video",
+      startTime: 0,
+      endTime: videoDuration,
+      type: "section",
+    });
+  }
+  
+  const validChapters = chapters.filter((ch, idx) => {
+    const duration = ch.endTime - ch.startTime;
+    if (duration < 2) {
+      videoLogger.debug(`[Chapters] Removing short chapter: "${ch.title}" (${duration.toFixed(1)}s)`);
+      return false;
+    }
+    return true;
+  });
+  
+  for (let i = 0; i < validChapters.length - 1; i++) {
+    validChapters[i].endTime = validChapters[i + 1].startTime;
+  }
+  if (validChapters.length > 0) {
+    validChapters[validChapters.length - 1].endTime = videoDuration;
+  }
+  
+  videoLogger.info(`[Chapters] Generated ${validChapters.length} chapters for ${videoDuration.toFixed(1)}s video`);
+  validChapters.forEach((ch, i) => {
+    videoLogger.debug(`  [${i}] ${ch.startTime.toFixed(1)}s - ${ch.endTime.toFixed(1)}s: "${ch.title}" (${ch.type})`);
+  });
+  
+  return validChapters;
+}
+
+export function generateFFmpegChapterMetadata(chapters: ChapterInfo[]): string {
+  if (chapters.length === 0) {
+    return "";
+  }
+  
+  const lines: string[] = [";FFMETADATA1"];
+  
+  for (const chapter of chapters) {
+    const startMs = Math.round(chapter.startTime * 1000);
+    const endMs = Math.round(chapter.endTime * 1000);
+    
+    const escapedTitle = chapter.title
+      .replace(/\\/g, "\\\\")
+      .replace(/=/g, "\\=")
+      .replace(/;/g, "\\;")
+      .replace(/#/g, "\\#")
+      .replace(/\n/g, " ");
+    
+    lines.push("");
+    lines.push("[CHAPTER]");
+    lines.push("TIMEBASE=1/1000");
+    lines.push(`START=${startMs}`);
+    lines.push(`END=${endMs}`);
+    lines.push(`title=${escapedTitle}`);
+  }
+  
+  return lines.join("\n") + "\n";
+}
+
+export async function embedChapterMetadata(
+  inputPath: string,
+  outputPath: string,
+  chapters: ChapterInfo[],
+  tempFiles: string[]
+): Promise<void> {
+  if (chapters.length === 0) {
+    videoLogger.info("[Chapters] No chapters to embed, copying file as-is");
+    await fs.copyFile(inputPath, outputPath);
+    return;
+  }
+  
+  await fs.mkdir(CHAPTERS_DIR, { recursive: true });
+  
+  const chapterMetadataPath = path.join(CHAPTERS_DIR, `chapters_${uuidv4()}.txt`);
+  const metadataContent = generateFFmpegChapterMetadata(chapters);
+  await fs.writeFile(chapterMetadataPath, metadataContent, "utf-8");
+  tempFiles.push(chapterMetadataPath);
+  
+  videoLogger.info(`[Chapters] Embedding ${chapters.length} chapters into output video`);
+  videoLogger.debug(`[Chapters] Metadata file: ${chapterMetadataPath}`);
+  
+  const cmd = ffmpeg()
+    .input(inputPath)
+    .input(chapterMetadataPath)
+    .inputOptions(["-f", "ffmetadata"])
+    .outputOptions([
+      "-map", "0",
+      "-map_metadata", "1",
+      "-c", "copy",
+    ])
+    .output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_SHORT_TIMEOUT_MS, [outputPath, chapterMetadataPath]);
+  
+  videoLogger.info(`[Chapters] Successfully embedded ${chapters.length} chapters`);
+}
 
 class FFmpegTimeoutError extends Error {
   constructor(message: string, public tempFiles?: string[]) {
@@ -107,7 +311,7 @@ function cleanupTempFilesSync(paths: string[]): void {
 }
 
 // Temp file tracking for cleanup on unhandled errors
-const ALL_TEMP_DIRS = [UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR];
+const ALL_TEMP_DIRS = [UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR, CHAPTERS_DIR];
 
 // Clean up stale temp files older than maxAgeHours
 // This should be called on server startup to prevent disk space from filling
@@ -356,6 +560,13 @@ function escapeAssText(text: string): string {
     .replace(/\{/g, '\\{')   // Escape opening braces
     .replace(/\}/g, '\\}')   // Escape closing braces
     .replace(/\n/g, '\\N');  // Convert newlines to ASS format
+}
+
+// Check if two time intervals overlap using proper mathematical intersection
+// Two intervals [start1, end1) and [start2, end2) overlap if start1 < end2 AND start2 < end1
+// This correctly handles all cases: partial overlap, complete containment, and edge cases
+function intervalsOverlap(start1: number, end1: number, start2: number, end2: number): boolean {
+  return start1 < end2 && start2 < end1;
 }
 
 // Generate ASS (Advanced SubStation Alpha) subtitle file for karaoke-style captions
@@ -635,6 +846,56 @@ async function concatSegmentsSimple(
   }
 }
 
+async function concatSegmentsWithTransitions(
+  segmentPaths: string[],
+  outputPath: string,
+  transitionDuration: number = 0.5,
+  tempFiles: string[]
+): Promise<void> {
+  if (segmentPaths.length === 0) {
+    throw new Error("No segments to concatenate");
+  }
+  
+  if (segmentPaths.length === 1) {
+    await fs.copyFile(segmentPaths[0], outputPath);
+    return;
+  }
+
+  videoLogger.info(`Concatenating ${segmentPaths.length} segments with crossfade transitions (${transitionDuration}s)`);
+  
+  let currentPath = segmentPaths[0];
+  
+  for (let i = 1; i < segmentPaths.length; i++) {
+    const nextSegment = segmentPaths[i];
+    const isLastPair = i === segmentPaths.length - 1;
+    const intermediatePath = isLastPair 
+      ? outputPath 
+      : path.join(OUTPUT_DIR, `trans_${uuidv4()}_${i}.mp4`);
+    
+    try {
+      await concatTwoWithTransition(
+        currentPath,
+        nextSegment,
+        intermediatePath,
+        "fade",
+        transitionDuration
+      );
+      
+      videoLogger.debug(`Applied crossfade transition between segment ${i-1} and ${i}`);
+      
+      if (!isLastPair) {
+        tempFiles.push(intermediatePath);
+        currentPath = intermediatePath;
+      }
+    } catch (err) {
+      videoLogger.error(`Failed to apply transition between segments ${i-1} and ${i}:`, err);
+      throw err;
+    }
+  }
+  
+  videoLogger.info(`Successfully concatenated ${segmentPaths.length} segments with transitions`);
+}
+
 async function burnSubtitles(
   inputPath: string,
   outputPath: string,
@@ -897,7 +1158,8 @@ export async function applyEdits(
   transcript: TranscriptSegment[],
   stockMedia: StockMediaItem[],
   options: EditOptions,
-  outputFileName?: string
+  outputFileName?: string,
+  semanticAnalysis?: SemanticAnalysis
 ): Promise<EditResult> {
   await ensureDirs();
   
@@ -906,6 +1168,7 @@ export async function applyEdits(
   videoLogger.debug("Transcript segments:", transcript.length);
   videoLogger.debug("Stock media items:", stockMedia.length);
   videoLogger.debug("Edit plan actions:", editPlan.actions?.length || 0);
+  videoLogger.debug("Semantic analysis available:", !!semanticAnalysis);
 
   const outputId = outputFileName || uuidv4();
   const outputPath = path.join(OUTPUT_DIR, `${outputId}.mp4`);
@@ -924,7 +1187,8 @@ export async function applyEdits(
       outputId,
       outputPath,
       metadata,
-      tempFiles
+      tempFiles,
+      semanticAnalysis
     );
     
     // Success - internal function handles its own cleanup
@@ -951,7 +1215,8 @@ async function applyEditsInternal(
   outputId: string,
   outputPath: string,
   metadata: { duration: number; width: number; height: number; fps: number },
-  tempFiles: string[]
+  tempFiles: string[],
+  semanticAnalysis?: SemanticAnalysis
 ): Promise<EditResult> {
 
   // Extract action types from edit plan
@@ -1163,9 +1428,16 @@ async function applyEditsInternal(
     }
     
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
-    await concatSegmentsSimple(segmentPaths, baseVideoPath);
+    
+    if (options.addTransitions && segmentPaths.length > 1) {
+      videoLogger.info(`Applying crossfade transitions between ${segmentPaths.length} segments...`);
+      await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, 0.5, tempFiles);
+    } else {
+      await concatSegmentsSimple(segmentPaths, baseVideoPath);
+    }
+    
     tempFiles.push(baseVideoPath);
-    videoLogger.info(`Created concatenated base video from ${segmentsToKeep.length} segments`);
+    videoLogger.info(`Created concatenated base video from ${segmentsToKeep.length} segments${options.addTransitions ? ' with transitions' : ''}`);
   }
 
   // Get base video duration
@@ -1195,62 +1467,132 @@ async function applyEditsInternal(
     // FIRST: Process AI-generated images with their embedded timing (deterministic)
     // AI images have startTime/endTime from semantic analysis - use directly
     
+    // Configuration for improved timing validation
+    const TIMING_TOLERANCE_MS = 500; // Allow 0.5s tolerance for edge cases
+    const DEFAULT_AI_IMAGE_DURATION = 2.5; // Default duration if not specified
+    const MAX_PLACEMENT_DISTANCE = 2.0; // Max distance to nearest segment (seconds)
+    
     for (const aiMedia of downloadedAiMedia) {
       const sourceTime = aiMedia.item.startTime;
       const itemDuration = aiMedia.item.duration;
       const itemQuery = aiMedia.item.query || "unknown";
       
-      // STRICT VALIDATION: Require both startTime and duration
+      // Relaxed validation: Allow missing startTime
       if (typeof sourceTime !== "number" || sourceTime < 0) {
         videoLogger.warn(`[AI Image SKIP] Missing/invalid startTime (${sourceTime}): ${itemQuery}`);
         aiImagesSkipped++;
         continue;
       }
       
-      if (typeof itemDuration !== "number" || itemDuration <= 0) {
-        videoLogger.warn(`[AI Image SKIP] Missing/invalid duration (${itemDuration}): ${itemQuery}`);
-        aiImagesSkipped++;
-        continue;
+      // Use provided duration or default if invalid
+      let finalDuration = DEFAULT_AI_IMAGE_DURATION;
+      if (typeof itemDuration === "number" && itemDuration > 0) {
+        finalDuration = Math.min(itemDuration, 5);
+      } else if (itemDuration !== undefined && itemDuration !== null) {
+        videoLogger.debug(`[AI Image] Using default duration ${finalDuration}s (provided value was invalid: ${itemDuration}): ${itemQuery.substring(0, 50)}`);
       }
       
-      // Find output time for this source time
+      // Find output time for this source time - with multi-stage fallback strategy
       let outputTime: number | null = null;
+      let mappingStrategy = "unmapped";
+      
+      // STAGE 1: Try exact match
       for (const mapping of outputTimeMapping) {
         if (sourceTime >= mapping.sourceStart && sourceTime < mapping.sourceEnd) {
           outputTime = mapping.outputStart + (sourceTime - mapping.sourceStart);
+          mappingStrategy = "exact";
           break;
         }
       }
       
-      if (outputTime !== null && outputTime >= 0) {
-        const duration = Math.min(itemDuration, 5);
+      // STAGE 2: If not found, try with tolerance - image might be at cut boundary
+      if (outputTime === null) {
+        const toleranceSeconds = TIMING_TOLERANCE_MS / 1000;
+        for (const mapping of outputTimeMapping) {
+          // Check if source time is within tolerance of this segment
+          if (sourceTime >= mapping.sourceStart - toleranceSeconds && 
+              sourceTime <= mapping.sourceEnd + toleranceSeconds) {
+            // Clamp source time to segment bounds
+            const clampedSourceTime = Math.max(
+              mapping.sourceStart,
+              Math.min(sourceTime, mapping.sourceEnd - 0.1) // Leave 0.1s buffer
+            );
+            outputTime = mapping.outputStart + (clampedSourceTime - mapping.sourceStart);
+            mappingStrategy = `tolerance (clamped ${sourceTime.toFixed(3)}→${clampedSourceTime.toFixed(3)})`;
+            break;
+          }
+        }
+      }
+      
+      // STAGE 3: If still not found, place at nearest segment boundary
+      if (outputTime === null && outputTimeMapping.length > 0) {
+        // Find nearest segment
+        let nearestMapping = outputTimeMapping[0];
+        let nearestDistance = Math.abs(sourceTime - outputTimeMapping[0].sourceStart);
         
-        // Ensure overlay doesn't extend beyond video
-        if (outputTime + duration > baseMetadata.duration) {
-          videoLogger.warn(`[AI Image SKIP] Would extend beyond video (${outputTime}+${duration} > ${baseMetadata.duration}s): ${itemQuery}`);
-          aiImagesSkipped++;
-          continue;
+        for (const mapping of outputTimeMapping) {
+          const distToStart = Math.abs(sourceTime - mapping.sourceStart);
+          const distToEnd = Math.abs(sourceTime - mapping.sourceEnd);
+          const minDist = Math.min(distToStart, distToEnd);
+          
+          if (minDist < nearestDistance) {
+            nearestDistance = minDist;
+            nearestMapping = mapping;
+          }
         }
         
-        brollOverlays.push({
-          localPath: aiMedia.localPath,
-          type: aiMedia.item.type,
-          startTime: outputTime,
-          duration,
-        });
+        // Only place at nearest if within reasonable distance
+        if (nearestDistance <= MAX_PLACEMENT_DISTANCE) {
+          // Place at start of nearest segment
+          outputTime = nearestMapping.outputStart;
+          mappingStrategy = `nearest (${nearestDistance.toFixed(2)}s away→segment start)`;
+        }
+      }
+      
+      if (outputTime !== null && outputTime >= 0) {
+        // Check if overlay extends beyond video - clamp duration instead of skipping
+        let finalOutputTime = outputTime;
+        let finalOutputDuration = finalDuration;
         
-        aiImagesApplied++;
-        videoLogger.debug(`[AI Image OK] Applied at ${outputTime.toFixed(2)}s for ${duration.toFixed(2)}s: ${itemQuery.substring(0, 50)}`);
+        if (outputTime + finalDuration > baseMetadata.duration) {
+          const overflow = (outputTime + finalDuration) - baseMetadata.duration;
+          const prevDuration = finalOutputDuration;
+          finalOutputDuration = Math.max(0.5, finalDuration - overflow); // Keep at least 0.5s
+          videoLogger.debug(`[AI Image] Clamped duration from ${prevDuration.toFixed(2)}s to ${finalOutputDuration.toFixed(2)}s to fit before video end (${baseMetadata.duration.toFixed(2)}s): ${itemQuery.substring(0, 50)}`);
+        }
+        
+        // Safety check: ensure output time is within bounds
+        if (finalOutputTime >= 0 && finalOutputTime < baseMetadata.duration && finalOutputDuration > 0) {
+          brollOverlays.push({
+            localPath: aiMedia.localPath,
+            type: aiMedia.item.type,
+            startTime: finalOutputTime,
+            duration: finalOutputDuration,
+          });
+          
+          aiImagesApplied++;
+          videoLogger.info(`[AI Image OK] Applied at output=${finalOutputTime.toFixed(2)}s (src=${sourceTime.toFixed(2)}s) for ${finalOutputDuration.toFixed(2)}s via ${mappingStrategy}: ${itemQuery.substring(0, 50)}`);
+        } else {
+          aiImagesSkipped++;
+          videoLogger.warn(`[AI Image SKIP] Final validation failed: outputTime=${finalOutputTime.toFixed(2)}s, duration=${finalOutputDuration.toFixed(2)}s (max=${baseMetadata.duration.toFixed(2)}s): ${itemQuery.substring(0, 50)}`);
+        }
       } else {
         aiImagesSkipped++;
-        videoLogger.warn(`[AI Image SKIP] Timing outside video bounds (source=${sourceTime}s): ${itemQuery}`);
+        const mappingDetails = outputTimeMapping.map(m => 
+          `[${m.sourceStart.toFixed(2)}-${m.sourceEnd.toFixed(2)}s]`
+        ).join(", ");
+        videoLogger.warn(`[AI Image SKIP] Could not map to output timeline (source=${sourceTime.toFixed(2)}s, nearest segment >=${MAX_PLACEMENT_DISTANCE}s away). Available segments: ${mappingDetails || "none"}: ${itemQuery.substring(0, 50)}`);
       }
     }
     
-    // Log AI image placement summary
-    videoLogger.info(`AI Image Summary: ${aiImagesApplied} applied, ${aiImagesSkipped} skipped (total: ${downloadedAiMedia.length})`);
-    if (aiImagesSkipped > 0) {
-      videoLogger.warn(`Warning: ${aiImagesSkipped} AI image(s) were not applied due to timing issues`);
+    // Log AI image placement summary with metrics
+    const totalAiImages = downloadedAiMedia.length;
+    const placementRate = totalAiImages > 0 ? ((aiImagesApplied / totalAiImages) * 100).toFixed(1) : "0";
+    videoLogger.info(`AI Image Summary: ${aiImagesApplied}/${totalAiImages} applied (${placementRate}% placement rate), ${aiImagesSkipped} skipped`);
+    if (aiImagesApplied === totalAiImages && totalAiImages > 0) {
+      videoLogger.info(`SUCCESS: All ${aiImagesApplied} AI images were successfully placed!`);
+    } else if (aiImagesSkipped > 0) {
+      videoLogger.warn(`Note: ${aiImagesSkipped} AI image(s) could not be placed due to timing constraints`);
     }
     
     // SECOND: Process stock media based on insert_stock actions from edit plan
@@ -1273,8 +1615,7 @@ async function applyEditsInternal(
         // Check if this time overlaps with any AI image (using actual durations)
         const stockDuration = action.duration || 4;
         const overlapsAi = brollOverlays.some(o => 
-          (outputTime >= o.startTime && outputTime < o.startTime + o.duration) ||
-          (outputTime + stockDuration > o.startTime && outputTime + stockDuration <= o.startTime + o.duration)
+          intervalsOverlap(outputTime, outputTime + stockDuration, o.startTime, o.startTime + o.duration)
         );
         
         if (!overlapsAi) {
@@ -1310,8 +1651,7 @@ async function applyEditsInternal(
         
         // Avoid overlapping with existing overlays
         const overlapsExisting = brollOverlays.some(o => 
-          (startTime >= o.startTime && startTime < o.startTime + o.duration) ||
-          (startTime + duration > o.startTime && startTime + duration <= o.startTime + o.duration)
+          intervalsOverlap(startTime, startTime + duration, o.startTime, o.startTime + o.duration)
         );
         
         if (!overlapsExisting) {
@@ -1417,6 +1757,8 @@ async function applyEditsInternal(
   }
 
   // Apply captions if any - use ASS format for karaoke-style highlighting
+  let preFinalVideoPath: string;
+  
   if (adjustedCaptions.length > 0) {
     videoLogger.info(`Burning ${adjustedCaptions.length} karaoke-style captions into final video`);
     
@@ -1429,11 +1771,29 @@ async function applyEditsInternal(
     await fs.writeFile(assPath, assContent);
     tempFiles.push(assPath);
     
-    await burnSubtitles(overlayedPath, outputPath, assPath);
+    // Write to temp path first, then embed chapters
+    preFinalVideoPath = path.join(OUTPUT_DIR, `prefinal_${outputId}.mp4`);
+    await burnSubtitles(overlayedPath, preFinalVideoPath, assPath);
+    tempFiles.push(preFinalVideoPath);
   } else {
-    // Just copy the result
-    if (overlayedPath !== outputPath) {
-      await fs.copyFile(overlayedPath, outputPath);
+    preFinalVideoPath = overlayedPath;
+  }
+
+  // STEP 5: Generate and embed chapter metadata
+  const finalVideoMetadata = await getVideoMetadata(preFinalVideoPath);
+  const chapters = generateChaptersFromEditPlan({
+    editPlan,
+    semanticAnalysis,
+    videoDuration: finalVideoMetadata.duration,
+    outputTimeMapping,
+  });
+  
+  if (chapters.length > 0) {
+    videoLogger.info(`[Chapters] Embedding ${chapters.length} chapters into final video`);
+    await embedChapterMetadata(preFinalVideoPath, outputPath, chapters, tempFiles);
+  } else {
+    if (preFinalVideoPath !== outputPath) {
+      await fs.copyFile(preFinalVideoPath, outputPath);
     }
   }
 
@@ -1470,4 +1830,4 @@ export async function cleanupTempFiles(paths: string[]): Promise<void> {
   }
 }
 
-export { UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR, ensureDirs };
+export { UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR, CHAPTERS_DIR, ensureDirs };

@@ -120,20 +120,21 @@ export function PromptInput({
             </Label>
           </div>
           
-          <div className="flex items-center space-x-3 opacity-50">
+          <div className="flex items-center space-x-3">
             <Checkbox
               id="addTransitions"
-              checked={false}
-              disabled={true}
+              checked={editOptions.addTransitions}
+              onCheckedChange={() => handleOptionChange("addTransitions")}
+              disabled={isProcessing}
               data-testid="checkbox-transitions"
             />
             <Label 
               htmlFor="addTransitions" 
-              className="flex items-center gap-2"
+              className="flex items-center gap-2 cursor-pointer"
             >
-              <Film className="h-4 w-4 text-muted-foreground" />
+              <Film className="h-4 w-4 text-green-500" />
               <span>Add Transitions</span>
-              <span className="text-xs text-muted-foreground ml-1">(coming soon)</span>
+              <span className="text-xs text-muted-foreground ml-1">(crossfade between segments)</span>
             </Label>
           </div>
           

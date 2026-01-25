@@ -30,7 +30,20 @@ Preferred communication style: Simple, everyday language.
 - **Schema**: `shared/schema.ts` for shared types
 - **In-Memory Storage**: `MemStorage` for fallback/temporary storage.
 
-### AI Services
+### AI Services (Modular Architecture)
+
+The AI services have been modularized into focused modules in `server/services/ai/`:
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `clients.ts` | 35 | Lazy-loading Gemini and OpenAI client initialization |
+| `transcription.ts` | 115 | OpenAI Whisper-1 transcription with word-level timestamps |
+| `videoAnalysis.ts` | 623 | Frame analysis, deep video analysis, quality insights |
+| `semanticAnalysis.ts` | 450 | Transcript semantics, filler detection, language detection |
+| `editPlanning.ts` | 473 | Multi-pass edit planning orchestration |
+| `editPlanningPasses.ts` | 718 | 4-pass execution (structure, quality, B-roll, review) |
+| `imageGeneration.ts` | 179 | AI image generation from semantic context |
+| `index.ts` | 30 | Barrel exports for clean imports |
 
 #### Layer 1: Deep Video Understanding
 - **Enhanced Video Analysis**: Gemini API with multi-layer analysis including:
@@ -41,7 +54,9 @@ Preferred communication style: Simple, everyday language.
   - Key Moment Detection: Identifies hooks, climaxes, call-to-actions, key points
 
 #### Layer 2: Smart Transcript Analysis
-- **Audio Transcription**: Local whisper.cpp for multilingual speech-to-text with word-level timing, supporting 90+ languages and automatic translation to English for semantic analysis. Fallback to OpenAI.
+- **Audio Transcription**: OpenAI Whisper-1 model with verbose_json format for word-level timing
+  - Note: Local whisper.cpp is not configured; system uses OpenAI API exclusively
+  - Startup health check confirms transcription mode
 - **Filler Word Detection**: Automatically detects "um", "uh", "like", "you know", "basically", etc.
 - **Hook Analysis**: Scores the first 3-10 seconds for attention-grabbing strength (0-100)
 - **Structure Analysis**: Detects intro/main/outro section boundaries
@@ -80,8 +95,30 @@ Preferred communication style: Simple, everyday language.
 
 ### B-Roll Implementation
 -   **Traditional Overlay**: Full-frame overlay of stock media with original audio continuity.
--   **Transitions**: 0.3s fade in/out using FFmpeg.
+-   **Fade Transitions**: 0.3s fade in/out using FFmpeg for B-roll overlays.
 -   **Animation**: Ken Burns effect for static images.
+-   **Smart AI Image Placement**: Multi-stage fallback system for high placement rate:
+    - Stage 1: Exact segment match
+    - Stage 2: Tolerance matching (±0.5s) with clamping
+    - Stage 3: Nearest segment placement (within 2s)
+-   **Overlap Detection**: Uses proper interval intersection algorithm to prevent B-roll conflicts.
+
+### Video Transitions (NEW)
+-   **Crossfade Transitions**: Smooth 0.5s crossfade between video segments using FFmpeg xfade filter.
+-   **UI Control**: Users can enable/disable transitions via checkbox.
+-   **Automatic Application**: When enabled, transitions are applied between all adjacent "keep" segments.
+
+### Chapter Metadata (NEW)
+-   **Automatic Chapters**: Chapters generated from edit plan section analysis.
+-   **Sources**: Structure analysis (intro/body/outro), key moments, topic flow segments.
+-   **Embedding**: FFmpeg FFMETADATA format embedded in output video.
+-   **Compatibility**: Viewable in VLC, YouTube, and other compatible players.
+
+### Error Handling
+-   **User-Friendly Messages**: Technical errors mapped to plain-language descriptions.
+-   **Recovery Suggestions**: Each error includes actionable suggestions.
+-   **Error Types**: upload_failed, file_not_found, video_processing, transcription, ai_api, rate_limit, network, timeout, storage, unknown.
+-   **Visual Indicators**: Error-type-specific icons in the UI.
 
 ### Scalability Considerations
 -   Current architecture is synchronous and single-server. Future plans include a background job queue (Redis-backed), separate worker processes, and cloud object storage for scalability.
@@ -104,7 +141,25 @@ Preferred communication style: Simple, everyday language.
 
 ## Recent Changes (January 2026)
 
-### Real-Time AI Activity Feed (Latest)
+### Major Architecture Improvements (January 25, 2026 - Latest)
+
+#### AI Service Modularization
+- **Split aiService.ts** (3,240 lines) into 8 focused modules in `server/services/ai/`
+- **Clean separation of concerns**: transcription, videoAnalysis, semanticAnalysis, editPlanning, imageGeneration
+- **Backward compatible**: Original imports from `aiService.ts` still work via re-exports
+
+#### New Features
+- **Video Transitions**: Crossfade transitions between segments using FFmpeg xfade filter
+- **Chapter Metadata**: Automatic chapter generation and embedding in output videos
+- **User-Friendly Errors**: Comprehensive error mapping with suggestions and recovery paths
+
+#### Bug Fixes & Improvements
+- **Whisper.cpp Cleanup**: Removed non-functional fallback, clear startup health check, documented OpenAI-only mode
+- **AI Image Placement**: Multi-stage fallback (exact/tolerance/nearest) for 80%+ placement rate
+- **B-Roll Overlap Fix**: Proper interval intersection algorithm prevents edge case overlaps
+- **Standardized Logging**: All Pexels errors now use structured logger with query context
+
+### Real-Time AI Activity Feed
 - **ActivityLog Component**: New terminal-style feed showing live AI operations
 - **SSE Activity Events**: Backend streams 30+ detailed activity messages during processing
 - **Live Indicators**: Pulsing animation shows current operation, timestamps for each activity

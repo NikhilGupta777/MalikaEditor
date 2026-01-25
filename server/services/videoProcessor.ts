@@ -659,14 +659,41 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   }
 
   if (allWords.length === 0) {
-    // Fallback: use segment-level timing
-    const dialogueLines = captions.map(cap => {
-      const escapedText = escapeAssText(cap.text);
-      return `Dialogue: 0,${formatAssTime(cap.start)},${formatAssTime(cap.end)},Default,,0,0,0,,${escapedText}`;
-    });
-    return header + dialogueLines.join('\n') + '\n';
+    // Fallback: synthesize word-level timing from segments
+    // Split each segment's text into words and estimate timing
+    for (const cap of captions) {
+      const words = cap.text.split(/\s+/).filter(w => w.trim());
+      if (words.length === 0) continue;
+      
+      const segDuration = cap.end - cap.start;
+      const wordDuration = segDuration / words.length;
+      
+      for (let i = 0; i < words.length; i++) {
+        allWords.push({
+          word: words[i],
+          start: cap.start + (i * wordDuration),
+          end: cap.start + ((i + 1) * wordDuration),
+        });
+      }
+    }
+    
+    // If still no words after synthesis, return empty
+    if (allWords.length === 0) {
+      return header;
+    }
   }
+  
+  // Sort words by start time to handle any out-of-order input
+  allWords.sort((a, b) => a.start - b.start);
+  
+  // Filter out words with invalid timing (end <= start)
+  const validWords = allWords.filter(w => w.end > w.start);
 
+  // Use validated words for phrase grouping
+  if (validWords.length === 0) {
+    return header;
+  }
+  
   // Group words into phrases of 2-3 words
   // Force new line on gaps > 0.5 seconds
   const WORDS_PER_PHRASE = 3;
@@ -675,9 +702,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const phrases: WordTiming[][] = [];
   let currentPhrase: WordTiming[] = [];
   
-  for (let i = 0; i < allWords.length; i++) {
-    const word = allWords[i];
-    const prevWord = i > 0 ? allWords[i - 1] : null;
+  for (let i = 0; i < validWords.length; i++) {
+    const word = validWords[i];
+    const prevWord = i > 0 ? validWords[i - 1] : null;
     
     // Check if we should start a new phrase
     const gapToPrevious = prevWord ? word.start - prevWord.end : 0;
@@ -695,32 +722,72 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   if (currentPhrase.length > 0) {
     phrases.push(currentPhrase);
   }
+  
+  // FINAL VALIDATION: Ensure phrases are sorted by start time and non-overlapping
+  // Sort phrases by their first word's start time
+  phrases.sort((a, b) => (a[0]?.start || 0) - (b[0]?.start || 0));
+  
+  // Remove any phrases that would create overlap (start before previous end)
+  const sanitizedPhrases: WordTiming[][] = [];
+  let lastEnd = -Infinity;
+  
+  for (const phrase of phrases) {
+    if (phrase.length === 0) continue;
+    const phraseStart = phrase[0].start;
+    
+    // Only include phrases that start after the previous phrase ended
+    if (phraseStart >= lastEnd) {
+      sanitizedPhrases.push(phrase);
+      lastEnd = phrase[phrase.length - 1].end;
+    }
+    // Otherwise skip this phrase to prevent overlap
+  }
 
   // Build dialogue lines with karaoke effect
   // CRITICAL: Each phrase must have NON-OVERLAPPING timing to show one at a time
   const dialogueLines: string[] = [];
   
-  for (let p = 0; p < phrases.length; p++) {
-    const phrase = phrases[p];
+  for (let p = 0; p < sanitizedPhrases.length; p++) {
+    const phrase = sanitizedPhrases[p];
     if (phrase.length === 0) continue;
     
     const phraseStart = phrase[0].start;
     // End this phrase RIGHT BEFORE the next phrase starts (no overlap)
     // This ensures only ONE phrase shows at any time
-    const nextPhrase = phrases[p + 1];
+    const nextPhrase = sanitizedPhrases[p + 1];
     let phraseEnd: number;
     
     if (nextPhrase && nextPhrase.length > 0) {
-      // End 0.01s before next phrase to prevent any overlap
-      phraseEnd = Math.max(phrase[phrase.length - 1].end, nextPhrase[0].start - 0.01);
+      // CRITICAL: End BEFORE next phrase starts to prevent overlap
+      const nextPhraseStart = nextPhrase[0].start;
+      const lastWordEnd = phrase[phrase.length - 1].end;
+      
+      // Calculate end time: earlier of word end or next phrase start - 0.01s
+      phraseEnd = Math.min(lastWordEnd, nextPhraseStart - 0.01);
+      
+      // Edge case: if phraseEnd <= phraseStart (malformed/unsorted timing)
+      if (phraseEnd <= phraseStart) {
+        // Try to give minimum duration while respecting next phrase
+        const minEnd = phraseStart + 0.05; // Absolute minimum 50ms duration
+        if (minEnd < nextPhraseStart - 0.01) {
+          phraseEnd = minEnd;
+        } else {
+          // Extreme edge case: phrases are too close, skip this phrase
+          continue;
+        }
+      }
+      
+      // FINAL INVARIANT: Absolutely ensure phraseEnd < nextPhraseStart
+      // This is the ultimate guard against any overlap
+      if (phraseEnd >= nextPhraseStart) {
+        phraseEnd = nextPhraseStart - 0.01;
+        if (phraseEnd <= phraseStart) {
+          continue; // Skip phrase entirely if impossible to fit
+        }
+      }
     } else {
-      // Last phrase - use actual end time
-      phraseEnd = phrase[phrase.length - 1].end;
-    }
-    
-    // Ensure end is always after start
-    if (phraseEnd <= phraseStart) {
-      phraseEnd = phraseStart + 0.5;
+      // Last phrase - use actual end time with minimum duration
+      phraseEnd = Math.max(phrase[phrase.length - 1].end, phraseStart + 0.3);
     }
     
     // Build karaoke text with \k timing for each word

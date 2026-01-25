@@ -492,6 +492,10 @@ export default function Editor() {
                   error={project.errorMessage ?? undefined}
                   onRetry={project.status === "failed" ? handleRetryProcessing : undefined}
                   aiImageStats={project.aiImageStats}
+                  transcriptSegments={project.transcript?.length}
+                  scenesDetected={project.semanticAnalysis?.keyMoments?.length}
+                  stockMediaCount={project.stockMedia?.length}
+                  editActionsCount={project.editPlan?.actions?.length}
                 />
               )}
 

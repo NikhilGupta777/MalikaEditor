@@ -731,14 +731,33 @@ Respond in JSON format only (no markdown):
     );
 
     const text = response.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    // Robust JSON extraction for potential malformed AI responses
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
     
-    if (!jsonMatch) {
-      aiLogger.warn("Pass 4: Failed to parse quality review, using preliminary actions");
+    if (jsonStart === -1 || jsonEnd === -1) {
+      aiLogger.warn("Pass 4: No JSON block found in response, using preliminary actions");
       return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
+    const jsonText = text.slice(jsonStart, jsonEnd + 1)
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
+      .replace(/\\n/g, " ") // Normalize newlines inside strings
+      .trim();
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (e) {
+      aiLogger.warn("Pass 4: JSON.parse failed, attempting cleanup");
+      try {
+        const cleanedJson = jsonText.replace(/,\s*([\]}])/g, '$1'); // Remove trailing commas
+        parsed = JSON.parse(cleanedJson);
+      } catch (innerE) {
+        aiLogger.error("Pass 4: JSON.parse failed even after cleanup, using preliminary actions");
+        return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
+      }
+    }
     const normalized = normalizeReviewedPlanResponse(parsed);
     const validated = ReviewedEditPlanSchema.safeParse(normalized);
     if (!validated.success) {

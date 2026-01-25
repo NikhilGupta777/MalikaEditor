@@ -140,3 +140,9 @@ Preferred communication style: Simple, everyday language.
 ### SSE Event Handling
 All 11 server events now properly matched with client handlers:
 - status, transcript, editPlan, stockMedia, aiImages, aiImagesError, aiImageStats, enhancedAnalysis, activity, complete, error
+
+### Code Quality Improvements (January 25, 2026)
+- **Proper Logging**: Replaced all console.log/warn/error with structured logger in videoProcessor.ts and pexelsService.ts
+- **OpenAI Transcription**: Now uses verbose_json format with word-level timestamps instead of estimated timing
+- **Video Encoding Quality**: Upgraded FFmpeg preset from "ultrafast" to "fast" and CRF from 28 to 23 for significantly better output quality
+- **Lazy AI Client Initialization**: Gemini and OpenAI clients now initialize on first use, preventing startup crashes when API keys aren't configured

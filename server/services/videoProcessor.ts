@@ -650,84 +650,105 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
   };
 
-  // Collect all words from all captions with timing
-  const allWords: WordTiming[] = [];
-  for (const cap of captions) {
-    if (cap.words && cap.words.length > 0) {
-      allWords.push(...cap.words);
-    }
+  // CRITICAL FIX: Process words per caption to respect caption boundaries
+  // This prevents phrases from crossing caption/segment boundaries after edits
+  
+  // First, collect words per caption with proper clamping
+  interface CaptionWords {
+    captionStart: number;
+    captionEnd: number;
+    words: WordTiming[];
   }
-
-  if (allWords.length === 0) {
-    // Fallback: synthesize word-level timing from segments
-    // Split each segment's text into words and estimate timing
-    for (const cap of captions) {
+  
+  const captionWordGroups: CaptionWords[] = [];
+  
+  for (const cap of captions) {
+    let captionWords: WordTiming[] = [];
+    
+    if (cap.words && cap.words.length > 0) {
+      // Clamp word timings to caption bounds
+      captionWords = cap.words
+        .map(w => ({
+          word: w.word,
+          start: Math.max(w.start, cap.start),
+          end: Math.min(w.end, cap.end),
+        }))
+        .filter(w => w.end > w.start); // Remove invalid after clamping
+    } else {
+      // Synthesize word-level timing from text if not available
       const words = cap.text.split(/\s+/).filter(w => w.trim());
-      if (words.length === 0) continue;
-      
-      const segDuration = cap.end - cap.start;
-      const wordDuration = segDuration / words.length;
-      
-      for (let i = 0; i < words.length; i++) {
-        allWords.push({
-          word: words[i],
-          start: cap.start + (i * wordDuration),
-          end: cap.start + ((i + 1) * wordDuration),
-        });
+      if (words.length > 0) {
+        const segDuration = cap.end - cap.start;
+        const wordDuration = segDuration / words.length;
+        
+        for (let i = 0; i < words.length; i++) {
+          captionWords.push({
+            word: words[i],
+            start: cap.start + (i * wordDuration),
+            end: cap.start + ((i + 1) * wordDuration),
+          });
+        }
       }
     }
     
-    // If still no words after synthesis, return empty
-    if (allWords.length === 0) {
-      return header;
+    if (captionWords.length > 0) {
+      // Sort by start time within caption
+      captionWords.sort((a, b) => a.start - b.start);
+      captionWordGroups.push({
+        captionStart: cap.start,
+        captionEnd: cap.end,
+        words: captionWords,
+      });
     }
   }
   
-  // Sort words by start time to handle any out-of-order input
-  allWords.sort((a, b) => a.start - b.start);
-  
-  // Filter out words with invalid timing (end <= start)
-  const validWords = allWords.filter(w => w.end > w.start);
-
-  // Use validated words for phrase grouping
-  if (validWords.length === 0) {
+  if (captionWordGroups.length === 0) {
     return header;
   }
   
-  // Group words into phrases of 2-3 words
-  // Force new line on gaps > 0.5 seconds
+  // Sort caption groups by start time
+  captionWordGroups.sort((a, b) => a.captionStart - b.captionStart);
+  
+  // Group words into phrases of 2-3 words WITHIN each caption
+  // This ensures phrases never cross caption boundaries
   const WORDS_PER_PHRASE = 3;
   const GAP_THRESHOLD = 0.5; // seconds
   
   const phrases: WordTiming[][] = [];
-  let currentPhrase: WordTiming[] = [];
   
-  for (let i = 0; i < validWords.length; i++) {
-    const word = validWords[i];
-    const prevWord = i > 0 ? validWords[i - 1] : null;
+  for (const group of captionWordGroups) {
+    let currentPhrase: WordTiming[] = [];
     
-    // Check if we should start a new phrase
-    const gapToPrevious = prevWord ? word.start - prevWord.end : 0;
-    const shouldBreak = gapToPrevious > GAP_THRESHOLD || currentPhrase.length >= WORDS_PER_PHRASE;
-    
-    if (shouldBreak && currentPhrase.length > 0) {
-      phrases.push(currentPhrase);
-      currentPhrase = [];
+    for (let i = 0; i < group.words.length; i++) {
+      const word = group.words[i];
+      const prevWord = i > 0 ? group.words[i - 1] : null;
+      
+      // Check if we should start a new phrase
+      const gapToPrevious = prevWord ? word.start - prevWord.end : 0;
+      const shouldBreak = gapToPrevious > GAP_THRESHOLD || currentPhrase.length >= WORDS_PER_PHRASE;
+      
+      if (shouldBreak && currentPhrase.length > 0) {
+        phrases.push(currentPhrase);
+        currentPhrase = [];
+      }
+      
+      currentPhrase.push(word);
     }
     
-    currentPhrase.push(word);
+    // End of caption group - push remaining phrase
+    if (currentPhrase.length > 0) {
+      phrases.push(currentPhrase);
+    }
   }
   
-  // Don't forget the last phrase
-  if (currentPhrase.length > 0) {
-    phrases.push(currentPhrase);
+  if (phrases.length === 0) {
+    return header;
   }
   
-  // FINAL VALIDATION: Ensure phrases are sorted by start time and non-overlapping
-  // Sort phrases by their first word's start time
+  // Sort phrases by start time (should already be sorted due to per-caption processing)
   phrases.sort((a, b) => (a[0]?.start || 0) - (b[0]?.start || 0));
   
-  // Remove any phrases that would create overlap (start before previous end)
+  // Remove any phrases that would create overlap
   const sanitizedPhrases: WordTiming[][] = [];
   let lastEnd = -Infinity;
   
@@ -740,7 +761,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       sanitizedPhrases.push(phrase);
       lastEnd = phrase[phrase.length - 1].end;
     }
-    // Otherwise skip this phrase to prevent overlap
   }
 
   // Build dialogue lines with karaoke effect

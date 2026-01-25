@@ -173,9 +173,20 @@ async function transcribeWithOpenAI(audioPath: string, audioDuration?: number): 
       
       // Since gpt-4o-mini-transcribe doesn't provide word-level timestamps,
       // we synthesize them based on text length and audio duration
-      const segments = createSegmentsFromTextWithDuration(text, audioDuration || 60);
-      aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing`);
-      return segments;
+      // CRITICAL: Only use duration-based timing if we have actual duration
+      // Using incorrect duration causes severely misaligned captions
+      if (audioDuration && audioDuration > 0) {
+        const segments = createSegmentsFromTextWithDuration(text, audioDuration);
+        aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing (duration: ${audioDuration.toFixed(1)}s)`);
+        return segments;
+      } else {
+        // Fallback: Use estimated timing without word-level sync
+        // This prevents wildly incorrect karaoke timing
+        aiLogger.warn("No audio duration provided - using estimated timestamps (karaoke timing may be imprecise)");
+        const segments = createSegmentsFromText(text);
+        aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
+        return segments;
+      }
       
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);

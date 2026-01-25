@@ -104,15 +104,15 @@ function getEditStyleGuidance(context?: VideoContext): string {
     spiritual: `SPIRITUAL/RELIGIOUS CONTENT GUIDELINES:
 - Preserve the contemplative, reverent atmosphere
 - Use minimal cuts to maintain flow and allow moments of reflection
-- B-roll should be calming: nature scenes, peaceful imagery, symbolic visuals
+- B-roll should be calming: nature scenes, peaceful imagery, symbolic visuals BUT it should be mostly Video B-roll and according to the video context only
 - Avoid jarring transitions or fast-paced editing
 - Prioritize audio clarity for prayers, mantras, or teachings
 - Text overlays should be subtle and elegant`,
 
     tutorial: `TUTORIAL/EDUCATIONAL CONTENT GUIDELINES:
 - Keep demonstrations and explanations intact
-- Cut hesitations, repeated attempts, and off-topic tangents
-- Use B-roll to illustrate concepts being explained
+- Cut repeated attempts and areas where speaker stops (cut in milliseconds only)
+- Use Maximum Ai Clip's and also B-roll to illustrate concepts being explained (use video B-roll and clips wherever possible)
 - Add text overlays for key steps or important notes
 - Maintain logical flow and progression
 - Ensure all instructional content is preserved`,
@@ -127,7 +127,7 @@ function getEditStyleGuidance(context?: VideoContext): string {
 
     tech: `TECH CONTENT GUIDELINES:
 - Keep code demonstrations and explanations clear
-- Use B-roll of modern technology, clean interfaces
+- Use Ai Clips and B-roll of modern technology, clean interfaces
 - Cut tangents while preserving technical accuracy
 - Text overlays for code snippets, URLs, or key specs
 - Maintain logical progression of technical concepts
@@ -152,9 +152,10 @@ function getEditStyleGuidance(context?: VideoContext): string {
     documentary: `DOCUMENTARY CONTENT GUIDELINES:
 - Preserve narrative structure and pacing
 - Use archival or contextual B-roll appropriately
+- ai clips should be used to show the context of the video
 - Maintain emotional beats and story arc
 - Text overlays for dates, locations, names
-- Thoughtful cuts that serve the story
+- no cuts
 - Balance between information and engagement`,
   };
 
@@ -212,7 +213,7 @@ export async function generateEditPlan(
   const extractedKeywords = semanticAnalysis?.extractedKeywords || [];
   const contentSummary = semanticAnalysis?.contentSummary || analysis.summary || "";
   
-  const systemPrompt = `You are an expert professional video editor with years of experience in ${contextInfo?.genre || "video"} content. Your task is to create a precise, intelligent edit plan that maximizes viewer engagement while respecting the content's nature and purpose.
+  const systemPrompt = `You are an expert professional video editor with years of experience in ${contextInfo?.genre || "video"} content. Your task is to create a precise, intelligent edit plan that maximizes viewer engagement and attention while respecting the content's nature and purpose.
 
 VIDEO CONTEXT:
 - Genre: ${contextInfo?.genre || "general"}
@@ -226,7 +227,7 @@ ${editStyleGuidance}
 
 AVAILABLE EDIT ACTIONS:
 
-1. "cut" - Remove sections (audio AND video removed)
+1. "cut" - Remove sections (audio AND video removed synchronously)
 2. "keep" - Explicitly mark important segments to preserve
 3. "insert_stock" - OVERLAY B-roll stock footage (original audio CONTINUES)
 4. "add_caption" - Add captions for key dialogue
@@ -234,9 +235,9 @@ AVAILABLE EDIT ACTIONS:
 
 TIMING RULES FOR B-ROLL:
 - Minimum duration: 2 seconds
-- Maximum duration: 6 seconds
-- Optimal duration: 3-4 seconds
-- Leave 2+ seconds between B-roll overlays
+- Maximum duration: 10 seconds
+- Optimal duration: 3-6 seconds
+- Leave 1+ seconds between B-roll overlays adjustable to the video context and editing style
 
 B-ROLL SEARCH QUERY GUIDELINES:
 - Be specific and contextual
@@ -298,8 +299,8 @@ CREATE YOUR EDIT PLAN:
 1. USE the pre-identified B-roll opportunities
 2. For each insert_stock action, include "transcriptContext" field
 3. Stock queries MUST be specific to content
-4. Ensure B-roll doesn't overlap and has 3+ seconds spacing
-5. Cut silent/boring sections while preserving narrative flow
+4. Ensure B-roll doesn't overlap and has 2+ seconds spacing
+5. Cut silent with no voice or text section carefully while preserving narrative flow
 
 Respond with a JSON object only (no markdown):
 {

@@ -21,11 +21,16 @@ export async function generateAiImage(
 ): Promise<{ base64Data: string; mimeType: string }> {
   try {
     const contextualPrompt = videoContext 
-      ? `Create a professional, high-quality image suitable for ${videoContext.genre} video content with a ${videoContext.tone} tone. 
-         The image should be: ${prompt}
-         Style: Clean, professional, suitable as B-roll footage. No text or watermarks.`
-      : `Create a professional, high-quality image: ${prompt}
-         Style: Clean, professional, suitable as B-roll footage. No text or watermarks.`;
+      ? `Create a UHD, cinematic, high-quality image suitable for ${videoContext.genre} video content with a ${videoContext.tone} tone. 
+         The image should visually represent: ${prompt}
+       Use realistic lighting, natural depth of field, strong composition, and emotionally appropriate atmosphere.
+       Style: Professional, cinematic realism, documentary-grade, clean and context-aware.
+       Must look authentic, timeless, and suitable for high-quality B-roll usage.
+       No text, subtitles, logos, symbols, watermarks, UI elements, or graphic overlays.`
+    : `Create a UHD, cinematic, professional-quality image representing: ${prompt}.
+       Use realistic lighting, clear subject focus, natural depth, and balanced composition.
+       Style: Clean, cinematic realism suitable for generic AI B-roll footage.
+       No text, subtitles, logos, watermarks, or graphic overlays.`;
 
     aiLogger.debug(`Generating AI image with prompt: ${contextualPrompt.substring(0, 100)}...`);
     

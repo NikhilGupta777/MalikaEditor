@@ -15,6 +15,9 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { createLogger } from "./utils/logger";
+
+const logger = createLogger("storage");
 
 export class OptimisticLockError extends Error {
   constructor(message: string = "Version mismatch: resource was modified by another request") {
@@ -96,37 +99,60 @@ export class MemStorage implements IStorage {
     return user;
   }
 
-  private validateJsonbFields(data: Partial<VideoProject>): void {
+  private validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<VideoProject> {
+    const normalized = { ...data };
+    
     if (data.analysis !== undefined && data.analysis !== null) {
       const result = videoAnalysisSchema.safeParse(data.analysis);
       if (!result.success) {
-        throw new ValidationError(`Invalid analysis data: ${result.error.message}`);
+        logger.warn("Analysis data validation warning - storing raw data", {
+          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+        });
+      } else {
+        normalized.analysis = result.data;
       }
     }
+    
     if (data.editPlan !== undefined && data.editPlan !== null) {
       const result = editPlanSchema.safeParse(data.editPlan);
       if (!result.success) {
-        throw new ValidationError(`Invalid editPlan data: ${result.error.message}`);
+        logger.warn("EditPlan data validation warning - storing raw data", {
+          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+        });
+      } else {
+        normalized.editPlan = result.data;
       }
     }
+    
     if (data.transcript !== undefined && data.transcript !== null) {
       const result = z.array(transcriptSegmentSchema).safeParse(data.transcript);
       if (!result.success) {
-        throw new ValidationError(`Invalid transcript data: ${result.error.message}`);
+        logger.warn("Transcript data validation warning - storing raw data", {
+          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+        });
+      } else {
+        normalized.transcript = result.data;
       }
     }
+    
     if (data.stockMedia !== undefined && data.stockMedia !== null) {
       const result = z.array(stockMediaItemSchema).safeParse(data.stockMedia);
       if (!result.success) {
-        throw new ValidationError(`Invalid stockMedia data: ${result.error.message}`);
+        logger.warn("StockMedia data validation warning - storing raw data", {
+          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+        });
+      } else {
+        normalized.stockMedia = result.data;
       }
     }
+    
+    return normalized;
   }
 
   async createVideoProject(project: InsertVideoProject): Promise<VideoProject> {
     this.evictLeastRecentlyAccessed();
     
-    this.validateJsonbFields(project as Partial<VideoProject>);
+    const normalizedProject = this.validateAndNormalizeJsonbFields(project as Partial<VideoProject>);
     
     const id = this.nextProjectId++;
     const now = new Date();
@@ -138,10 +164,10 @@ export class MemStorage implements IStorage {
       prompt: project.prompt || null,
       status: project.status || "pending",
       duration: project.duration || null,
-      analysis: project.analysis || null,
-      editPlan: project.editPlan || null,
-      transcript: project.transcript || null,
-      stockMedia: project.stockMedia || null,
+      analysis: (normalizedProject.analysis as any) || null,
+      editPlan: (normalizedProject.editPlan as any) || null,
+      transcript: (normalizedProject.transcript as any) || null,
+      stockMedia: (normalizedProject.stockMedia as any) || null,
       errorMessage: project.errorMessage || null,
       version: 1,
       createdAt: now,
@@ -174,11 +200,12 @@ export class MemStorage implements IStorage {
       );
     }
 
-    this.validateJsonbFields(updates);
+    const normalizedUpdates = this.validateAndNormalizeJsonbFields(updates);
 
     const updatedProject: VideoProject = {
       ...project,
       ...updates,
+      ...normalizedUpdates,
       version: project.version + 1,
       updatedAt: new Date(),
     };

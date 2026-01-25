@@ -521,3 +521,95 @@ export function normalizeStockMediaType(value: string): StockMediaType {
   const firstWord = extractFirstWord(value);
   return map[firstWord] || map[normalized] || "video";
 }
+
+// ============================================================================
+// SAFE JSON PARSING UTILITIES
+// Handle malformed AI responses gracefully without crashing
+// ============================================================================
+
+/**
+ * Safely parse JSON from AI response text
+ * Returns parsed object or null on failure
+ */
+export function safeJsonParse<T>(jsonString: string): T | null {
+  try {
+    return JSON.parse(jsonString) as T;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Extract JSON from AI response text (handles markdown code blocks)
+ * Returns the extracted JSON string or null
+ */
+export function extractJsonFromResponse(text: string): string | null {
+  // Try to find JSON in markdown code blocks first
+  const jsonBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (jsonBlockMatch) {
+    return jsonBlockMatch[1].trim();
+  }
+  
+  // Try to find raw JSON object or array
+  const jsonMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+  if (jsonMatch) {
+    return jsonMatch[0];
+  }
+  
+  return null;
+}
+
+/**
+ * Safely parse JSON from AI response with fallback
+ * Combines extraction and parsing in one utility
+ */
+export function safeParseAiResponse<T>(responseText: string, fallback: T): T {
+  const jsonString = extractJsonFromResponse(responseText);
+  if (!jsonString) {
+    return fallback;
+  }
+  
+  const parsed = safeJsonParse<T>(jsonString);
+  return parsed ?? fallback;
+}
+
+/**
+ * Filter null/undefined values from arrays (AI sometimes returns sparse arrays)
+ */
+export function filterNullish<T>(arr: (T | null | undefined)[]): T[] {
+  return arr.filter((item): item is T => item != null);
+}
+
+/**
+ * Ensure value is an array (AI sometimes returns single item instead of array)
+ */
+export function ensureArray<T>(value: T | T[] | null | undefined): T[] {
+  if (value == null) return [];
+  return Array.isArray(value) ? filterNullish(value) : [value];
+}
+
+/**
+ * Safe number coercion (AI sometimes returns "12.5" instead of 12.5)
+ */
+export function safeNumber(value: unknown, fallback: number = 0): number {
+  if (typeof value === 'number' && !isNaN(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = parseFloat(value);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+/**
+ * Safe boolean coercion (AI sometimes returns "true" instead of true)
+ */
+export function safeBoolean(value: unknown, fallback: boolean = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lower = value.toLowerCase().trim();
+    if (lower === 'true' || lower === 'yes' || lower === '1') return true;
+    if (lower === 'false' || lower === 'no' || lower === '0') return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return fallback;
+}

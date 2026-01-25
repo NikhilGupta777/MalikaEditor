@@ -400,7 +400,7 @@ export async function registerRoutes(
       checkAborted();
 
       sendActivity("Running speech-to-text AI (this may take a moment)...");
-      transcript = await transcribeAudio(audioPath);
+      transcript = await transcribeAudio(audioPath, metadata.duration);
       sendActivity(`Transcribed ${transcript.length} speech segments with timestamps`, { segments: transcript.length });
       checkAborted();
 

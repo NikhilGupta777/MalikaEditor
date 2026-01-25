@@ -18,7 +18,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
   
   if (hasOpenAIKey) {
-    aiLogger.info("Primary: OpenAI whisper-1 (word-level timestamps)");
+    aiLogger.info("Primary: OpenAI gpt-4o-mini-transcribe (with synthesized word timing)");
   }
   
   if (hasGeminiKey) {
@@ -89,23 +89,77 @@ function createSegmentsFromText(text: string): TranscriptSegment[] {
   }).filter((s: TranscriptSegment) => s.text.length > 0);
 }
 
-async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegment[]> {
-  // whisper-1 is required for verbose_json with word-level timestamps
-  // gpt-4o-mini-transcribe does NOT support verbose_json format
-  aiLogger.info("Using OpenAI whisper-1 for transcription (with word timestamps)...");
+// Create segments with synthesized word-level timing based on actual audio duration
+function createSegmentsFromTextWithDuration(text: string, audioDuration: number): TranscriptSegment[] {
+  // Split into sentences
+  const sentences = text.split(/(?<=[.!?।])\s+/).filter((s: string) => s.trim());
+  
+  if (sentences.length === 0) {
+    if (text.trim()) {
+      // Single segment with word-level timing
+      const words = text.trim().split(/\s+/);
+      const wordDuration = audioDuration / Math.max(words.length, 1);
+      const wordTimings = words.map((word, i) => ({
+        word: word,
+        start: i * wordDuration,
+        end: (i + 1) * wordDuration,
+      }));
+      return [{
+        start: 0,
+        end: audioDuration,
+        text: text.trim(),
+        words: wordTimings,
+      }];
+    }
+    return [];
+  }
+  
+  // Calculate total characters for proportional timing
+  const totalChars = sentences.reduce((sum, s) => sum + s.length, 0);
+  let currentTime = 0;
+  
+  return sentences.map((sentence: string) => {
+    // Proportional duration based on sentence length
+    const proportion = sentence.length / totalChars;
+    const segmentDuration = Math.max(1.0, proportion * audioDuration * 0.95); // 95% to leave gaps
+    
+    // Create word-level timing for this segment
+    const words = sentence.trim().split(/\s+/).filter(w => w.length > 0);
+    const wordDuration = segmentDuration / Math.max(words.length, 1);
+    
+    const wordTimings = words.map((word, i) => ({
+      word: word,
+      start: currentTime + (i * wordDuration),
+      end: currentTime + ((i + 1) * wordDuration),
+    }));
+    
+    const segment: TranscriptSegment = {
+      start: currentTime,
+      end: currentTime + segmentDuration,
+      text: sentence.trim(),
+      words: wordTimings,
+    };
+    
+    currentTime += segmentDuration + 0.2; // Small gap between segments
+    return segment;
+  }).filter((s: TranscriptSegment) => s.text.length > 0);
+}
+
+async function transcribeWithOpenAI(audioPath: string, audioDuration?: number): Promise<TranscriptSegment[]> {
+  // Replit AI Integrations only supports gpt-4o-mini-transcribe with 'json' format
+  // whisper-1 and verbose_json are NOT available through the integration
+  aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription...");
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const audioBuffer = await fs.readFile(audioPath);
       const file = await toFile(audioBuffer, "audio.mp3");
 
-      // Use verbose_json to get word-level timestamps for karaoke captions
-      // CRITICAL: whisper-1 is the only model that supports verbose_json + timestamp_granularities
+      // Use json format (only format supported by gpt-4o-mini-transcribe via Replit AI)
       const response = await getOpenAIClient().audio.transcriptions.create({
         file,
-        model: "whisper-1",
-        response_format: "verbose_json",
-        timestamp_granularities: ["word", "segment"],
+        model: "gpt-4o-mini-transcribe",
+        response_format: "json",
       }) as any;
 
       const text = response.text || "";
@@ -117,38 +171,11 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
 
       aiLogger.info(`OpenAI transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
-      // Extract word-level timing from verbose_json response
-      const words = response.words || [];
-      const segments = response.segments || [];
-      
-      if (segments.length > 0) {
-        // Use OpenAI's native segments with word-level timing
-        const transcriptSegments: TranscriptSegment[] = segments.map((seg: any) => {
-          // Find words that belong to this segment
-          const segmentWords = words.filter((w: any) => 
-            w.start >= seg.start && w.end <= seg.end
-          ).map((w: any) => ({
-            word: w.word.trim(),
-            start: w.start,
-            end: w.end,
-          }));
-          
-          return {
-            start: seg.start,
-            end: seg.end,
-            text: seg.text.trim(),
-            words: segmentWords.length > 0 ? segmentWords : undefined,
-          };
-        });
-        
-        aiLogger.info(`Created ${transcriptSegments.length} segments with ${words.length} word-level timestamps`);
-        return transcriptSegments;
-      }
-      
-      // Fallback: Create segments from text if no segments returned
-      const fallbackSegments = createSegmentsFromText(text);
-      aiLogger.info(`Created ${fallbackSegments.length} transcript segments with estimated timestamps (no word-level timing)`);
-      return fallbackSegments;
+      // Since gpt-4o-mini-transcribe doesn't provide word-level timestamps,
+      // we synthesize them based on text length and audio duration
+      const segments = createSegmentsFromTextWithDuration(text, audioDuration || 60);
+      aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing`);
+      return segments;
       
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -170,7 +197,7 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
   return [];
 }
 
-async function transcribeWithGemini(audioPath: string): Promise<TranscriptSegment[]> {
+async function transcribeWithGemini(audioPath: string, audioDuration?: number): Promise<TranscriptSegment[]> {
   const audioBuffer = await fs.readFile(audioPath);
   const fileSizeMB = audioBuffer.length / (1024 * 1024);
   
@@ -228,8 +255,11 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
 
       aiLogger.info(`Gemini transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
-      const segments = createSegmentsFromText(text);
-      aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
+      // Use duration-aware segment creation for better word timing
+      const segments = audioDuration 
+        ? createSegmentsFromTextWithDuration(text, audioDuration)
+        : createSegmentsFromText(text);
+      aiLogger.info(`Created ${segments.length} transcript segments with ${audioDuration ? 'synthesized word timing' : 'estimated timestamps'}`);
       return segments;
       
     } catch (error: unknown) {
@@ -258,7 +288,8 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
 }
 
 export async function transcribeAudio(
-  audioPath: string
+  audioPath: string,
+  audioDuration?: number
 ): Promise<TranscriptSegment[]> {
   aiLogger.info("Starting audio transcription...");
   
@@ -266,7 +297,7 @@ export async function transcribeAudio(
   const hasGemini = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   
   if (hasOpenAI) {
-    const openAIResult = await transcribeWithOpenAI(audioPath);
+    const openAIResult = await transcribeWithOpenAI(audioPath, audioDuration);
     if (openAIResult.length > 0) {
       aiLogger.info(`Transcription successful with OpenAI: ${openAIResult.length} segments extracted`);
       return openAIResult;
@@ -275,7 +306,7 @@ export async function transcribeAudio(
   }
   
   if (hasGemini) {
-    const geminiResult = await transcribeWithGemini(audioPath);
+    const geminiResult = await transcribeWithGemini(audioPath, audioDuration);
     if (geminiResult.length > 0) {
       aiLogger.info(`Transcription successful with Gemini: ${geminiResult.length} segments extracted`);
       return geminiResult;

@@ -27,6 +27,7 @@ const CutKeepActionSchema = z.object({
   end: z.number().min(0),
   reason: z.string().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
+  qualityScore: z.number().min(0).max(100).optional(),
 }).refine(data => data.end >= data.start, { message: "end must be >= start" });
 
 const InsertStockActionSchema = z.object({
@@ -37,6 +38,7 @@ const InsertStockActionSchema = z.object({
   reason: z.string().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
   transcriptContext: z.string().optional(),
+  qualityScore: z.number().min(0).max(100).optional(),
 });
 
 // Note: InsertAiImageActionSchema removed - AI images are auto-placed from semantic analysis
@@ -47,12 +49,14 @@ const TextActionSchema = z.object({
   end: z.number().min(0).optional(),
   text: z.string(),
   reason: z.string().optional(),
+  qualityScore: z.number().min(0).max(100).optional(),
 });
 
 const TransitionActionSchema = z.object({
   type: z.literal("transition"),
   transitionType: z.string().optional(),
   reason: z.string().optional(),
+  qualityScore: z.number().min(0).max(100).optional(),
 });
 
 const EditActionSchema = z.union([
@@ -195,6 +199,96 @@ interface RawKeyMoment {
   description?: string;
   importance?: "low" | "medium" | "high";
 }
+
+// ============================================================================
+// ZOD SCHEMAS FOR MULTI-PASS PLANNING (validated AI responses)
+// ============================================================================
+
+const SectionSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().min(0),
+}).nullable();
+
+const SectionMarkerSchema = z.object({
+  timestamp: z.number().min(0),
+  type: z.enum(["intro_end", "section_change", "climax", "outro_start", "transition"]),
+  description: z.string(),
+});
+
+const StructuredPlanSchema = z.object({
+  introSection: SectionSchema.optional().nullable(),
+  mainContentSection: z.object({
+    start: z.number().min(0),
+    end: z.number().min(0),
+  }),
+  outroSection: SectionSchema.optional().nullable(),
+  sectionMarkers: z.array(SectionMarkerSchema).optional().default([]),
+  narrativeArc: z.enum(["linear", "problem_solution", "story", "tutorial", "listicle", "conversational"]).optional().default("linear"),
+});
+
+const SegmentScoreSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().min(0),
+  engagementScore: z.number().min(0).max(100),
+  valueLevel: z.enum(["must_keep", "high", "medium", "low", "cut_candidate"]),
+  reason: z.string().optional().default(""),
+}).refine(data => data.end >= data.start, { message: "end must be >= start" });
+
+const SegmentWithReasonSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().min(0),
+  reason: z.string().optional().default(""),
+}).refine(data => data.end >= data.start, { message: "end must be >= start" });
+
+const QualityMapSchema = z.object({
+  segmentScores: z.array(SegmentScoreSchema).optional().default([]),
+  hookStrength: z.number().min(0).max(100).optional().default(50),
+  overallEngagement: z.number().min(0).max(100).optional().default(60),
+  lowValueSegments: z.array(SegmentWithReasonSchema).optional().default([]),
+  mustKeepSegments: z.array(SegmentWithReasonSchema).optional().default([]),
+});
+
+const BrollPlacementSchema = z.object({
+  start: z.number().min(0),
+  duration: z.number().min(1).max(10),
+  query: z.string(),
+  transcriptContext: z.string().optional().default(""),
+  priority: z.enum(["high", "medium", "low"]).optional().default("medium"),
+  reason: z.string().optional().default(""),
+});
+
+const FillerActionSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().min(0),
+  word: z.string(),
+  action: z.enum(["cut", "overlay"]),
+});
+
+const CutActionSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().min(0),
+  reason: z.string().optional().default(""),
+});
+
+const OptimizedBrollPlanSchema = z.object({
+  brollPlacements: z.array(BrollPlacementSchema).optional().default([]),
+  fillerActions: z.array(FillerActionSchema).optional().default([]),
+  cutActions: z.array(CutActionSchema).optional().default([]),
+});
+
+const QualityMetricsSchema = z.object({
+  pacing: z.enum(["slow", "moderate", "fast"]).optional().default("moderate"),
+  brollRelevance: z.enum(["high", "medium", "low"]).optional().default("medium"),
+  narrativeFlow: z.enum(["high", "medium", "low"]).optional().default("medium"),
+  overallScore: z.number().min(0).max(100).optional().default(70),
+});
+
+const ReviewedEditPlanSchema = z.object({
+  actions: z.array(EditActionSchema),
+  qualityMetrics: QualityMetricsSchema.optional(),
+  recommendations: z.array(z.string()).optional().default([]),
+  warnings: z.array(z.string()).optional().default([]),
+});
 
 const geminiClient = new GoogleGenAI({
   apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
@@ -576,13 +670,25 @@ Respond in JSON format only (no markdown):
     };
   }
 
-  let parsed: Partial<VideoAnalysisResponse>;
+  let validatedData: VideoAnalysisResponse;
   try {
-    parsed = JSON.parse(jsonMatch[0]) as Partial<VideoAnalysisResponse>;
+    const parsed = JSON.parse(jsonMatch[0]);
     const validated = VideoAnalysisResponseSchema.safeParse(parsed);
     if (!validated.success) {
-      aiLogger.warn("AI response validation failed:", validated.error);
+      aiLogger.warn("AI response validation failed, using defaults:", validated.error.issues);
+      return {
+        duration,
+        frames: framePaths.map((_, i) => ({
+          timestamp: frameInterval * (i + 1),
+          description: "Frame analysis unavailable",
+          keyMoment: false,
+          suggestedStockQuery: undefined,
+        })),
+        silentSegments,
+        summary: "Analysis unavailable - validation failed",
+      };
     }
+    validatedData = validated.data;
   } catch (parseError) {
     aiLogger.warn("JSON parse error in frame analysis:", parseError);
     return {
@@ -598,7 +704,7 @@ Respond in JSON format only (no markdown):
     };
   }
 
-  const frames: FrameAnalysis[] = (parsed.frames || []).map((f: RawFrameAnalysis, i: number) => ({
+  const frames: FrameAnalysis[] = (validatedData.frames || []).map((f: RawFrameAnalysis, i: number) => ({
     timestamp: f.timestamp || frameInterval * (i + 1),
     description: f.description || "",
     keyMoment: f.keyMoment || false,
@@ -607,19 +713,19 @@ Respond in JSON format only (no markdown):
     speakingPace: f.speakingPace || undefined,
   }));
 
-  const context: VideoContext | undefined = parsed.context ? {
-    genre: parsed.context.genre || "other",
-    subGenre: parsed.context.subGenre,
-    targetAudience: parsed.context.targetAudience,
-    tone: parsed.context.tone || "casual",
-    pacing: parsed.context.pacing || "moderate",
-    visualStyle: parsed.context.visualStyle,
-    suggestedEditStyle: parsed.context.suggestedEditStyle || "moderate",
-    regionalContext: parsed.context.regionalContext ?? undefined,
-    languageDetected: parsed.context.languageDetected ?? undefined,
+  const context: VideoContext | undefined = validatedData.context ? {
+    genre: validatedData.context.genre || "other",
+    subGenre: validatedData.context.subGenre,
+    targetAudience: validatedData.context.targetAudience,
+    tone: validatedData.context.tone || "casual",
+    pacing: validatedData.context.pacing || "moderate",
+    visualStyle: validatedData.context.visualStyle,
+    suggestedEditStyle: validatedData.context.suggestedEditStyle || "moderate",
+    regionalContext: validatedData.context.regionalContext ?? undefined,
+    languageDetected: validatedData.context.languageDetected ?? undefined,
   } : undefined;
 
-  const topicSegments: TopicSegment[] | undefined = parsed.topicSegments?.map((t: RawTopicSegment) => ({
+  const topicSegments: TopicSegment[] | undefined = validatedData.topicSegments?.map((t: RawTopicSegment) => ({
     start: t.start || 0,
     end: t.end || duration,
     topic: t.topic || "Unknown topic",
@@ -627,7 +733,7 @@ Respond in JSON format only (no markdown):
     suggestedBrollWindow: t.suggestedBrollWindow,
   }));
 
-  const brollOpportunities = parsed.brollOpportunities?.map((b: RawBrollOpportunity) => ({
+  const brollOpportunities = validatedData.brollOpportunities?.map((b: RawBrollOpportunity) => ({
     start: Math.max(0, b.start || 0),
     end: Math.min(duration, b.end || b.start + 3),
     suggestedDuration: Math.min(6, Math.max(2, b.suggestedDuration || 3)),
@@ -637,18 +743,18 @@ Respond in JSON format only (no markdown):
   }));
 
   // Convert null to undefined for narrativeStructure fields
-  const narrativeStructure = parsed.narrativeStructure ? {
-    hasIntro: parsed.narrativeStructure.hasIntro ?? undefined,
-    introEnd: parsed.narrativeStructure.introEnd ?? undefined,
-    hasOutro: parsed.narrativeStructure.hasOutro ?? undefined,
-    outroStart: parsed.narrativeStructure.outroStart ?? undefined,
-    mainContentStart: parsed.narrativeStructure.mainContentStart ?? undefined,
-    mainContentEnd: parsed.narrativeStructure.mainContentEnd ?? undefined,
-    peakMoments: parsed.narrativeStructure.peakMoments ?? undefined,
+  const narrativeStructure = validatedData.narrativeStructure ? {
+    hasIntro: validatedData.narrativeStructure.hasIntro ?? undefined,
+    introEnd: validatedData.narrativeStructure.introEnd ?? undefined,
+    hasOutro: validatedData.narrativeStructure.hasOutro ?? undefined,
+    outroStart: validatedData.narrativeStructure.outroStart ?? undefined,
+    mainContentStart: validatedData.narrativeStructure.mainContentStart ?? undefined,
+    mainContentEnd: validatedData.narrativeStructure.mainContentEnd ?? undefined,
+    peakMoments: validatedData.narrativeStructure.peakMoments ?? undefined,
   } : undefined;
 
   // Parse enhanced analysis fields (scenes, emotionFlow, speakers, keyMoments)
-  const scenes: SceneSegment[] | undefined = parsed.scenes?.map((s: RawSceneSegment) => ({
+  const scenes: SceneSegment[] | undefined = validatedData.scenes?.map((s: RawSceneSegment) => ({
     start: s.start || 0,
     end: s.end || duration,
     sceneType: s.sceneType || "talking_head",
@@ -658,20 +764,20 @@ Respond in JSON format only (no markdown):
     visualImportance: s.visualImportance || "medium",
   }));
 
-  const emotionFlow: EmotionFlowPoint[] | undefined = parsed.emotionFlow?.map((e: RawEmotionFlowPoint) => ({
+  const emotionFlow: EmotionFlowPoint[] | undefined = validatedData.emotionFlow?.map((e: RawEmotionFlowPoint) => ({
     timestamp: e.timestamp || 0,
     emotion: e.emotion || "calm",
     intensity: Math.min(100, Math.max(0, e.intensity || 50)),
   }));
 
-  const speakers: SpeakerSegment[] | undefined = parsed.speakers?.map((s: RawSpeakerSegment) => ({
+  const speakers: SpeakerSegment[] | undefined = validatedData.speakers?.map((s: RawSpeakerSegment) => ({
     start: s.start || 0,
     end: s.end || duration,
     speakerId: s.speakerId || "speaker_1",
     speakerLabel: s.speakerLabel,
   }));
 
-  const keyMoments: KeyMoment[] | undefined = parsed.keyMoments?.map((k: RawKeyMomentResponse) => ({
+  const keyMoments: KeyMoment[] | undefined = validatedData.keyMoments?.map((k: RawKeyMomentResponse) => ({
     timestamp: k.timestamp || 0,
     type: k.type || "keyPoint",
     description: k.description || "",
@@ -683,7 +789,7 @@ Respond in JSON format only (no markdown):
     duration,
     frames,
     silentSegments,
-    summary: parsed.summary || "",
+    summary: validatedData.summary || "",
     context,
     topicSegments,
     narrativeStructure,
@@ -2085,16 +2191,23 @@ Respond in JSON format only (no markdown):
 
     const parsed = JSON.parse(jsonMatch[0]);
     
+    // Validate with Zod schema
+    const validated = StructuredPlanSchema.safeParse(parsed);
+    if (!validated.success) {
+      aiLogger.warn("Pass 1: Schema validation failed, using defaults:", validated.error.issues);
+      return getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
+    }
+    
     return {
-      introSection: parsed.introSection || null,
-      mainContentSection: parsed.mainContentSection || { start: 0, end: duration },
-      outroSection: parsed.outroSection || null,
-      sectionMarkers: (parsed.sectionMarkers || []).map((m: { timestamp?: number; type?: string; description?: string }) => ({
-        timestamp: m.timestamp || 0,
-        type: m.type || "transition",
-        description: m.description || "",
+      introSection: validated.data.introSection || null,
+      mainContentSection: validated.data.mainContentSection || { start: 0, end: duration },
+      outroSection: validated.data.outroSection || null,
+      sectionMarkers: validated.data.sectionMarkers.map((m) => ({
+        timestamp: m.timestamp,
+        type: m.type,
+        description: m.description,
       })),
-      narrativeArc: parsed.narrativeArc || "linear",
+      narrativeArc: validated.data.narrativeArc,
     };
   } catch (error) {
     aiLogger.error("Pass 1 error:", error);
@@ -2222,18 +2335,25 @@ Respond in JSON format only (no markdown):
 
     const parsed = JSON.parse(jsonMatch[0]);
     
+    // Validate with Zod schema
+    const validated = QualityMapSchema.safeParse(parsed);
+    if (!validated.success) {
+      aiLogger.warn("Pass 2: Schema validation failed, using defaults:", validated.error.issues);
+      return getDefaultQualityMap(duration, analysis, semanticAnalysis);
+    }
+    
     return {
-      segmentScores: (parsed.segmentScores || []).map((s: { start?: number; end?: number; engagementScore?: number; valueLevel?: string; reason?: string }) => ({
-        start: s.start || 0,
-        end: s.end || duration,
-        engagementScore: Math.min(100, Math.max(0, s.engagementScore || 50)),
-        valueLevel: s.valueLevel || "medium",
-        reason: s.reason || "",
+      segmentScores: validated.data.segmentScores.map((s) => ({
+        start: s.start,
+        end: s.end,
+        engagementScore: s.engagementScore,
+        valueLevel: s.valueLevel,
+        reason: s.reason,
       })),
-      hookStrength: Math.min(100, Math.max(0, parsed.hookStrength || 50)),
-      overallEngagement: Math.min(100, Math.max(0, parsed.overallEngagement || 60)),
-      lowValueSegments: parsed.lowValueSegments || [],
-      mustKeepSegments: parsed.mustKeepSegments || [],
+      hookStrength: validated.data.hookStrength,
+      overallEngagement: validated.data.overallEngagement,
+      lowValueSegments: validated.data.lowValueSegments,
+      mustKeepSegments: validated.data.mustKeepSegments,
     };
   } catch (error) {
     aiLogger.error("Pass 2 error:", error);
@@ -2392,31 +2512,38 @@ Respond in JSON format only (no markdown):
 
     const parsed = JSON.parse(jsonMatch[0]);
     
+    // Validate with Zod schema
+    const validated = OptimizedBrollPlanSchema.safeParse(parsed);
+    if (!validated.success) {
+      aiLogger.warn("Pass 3: Schema validation failed, using defaults:", validated.error.issues);
+      return getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
+    }
+    
     // Validate and ensure B-roll spacing
     const brollPlacements = validateBrollSpacing(
-      (parsed.brollPlacements || []).map((b: { start?: number; duration?: number; query?: string; transcriptContext?: string; priority?: string; reason?: string }) => ({
-        start: Math.max(0, b.start || 0),
-        duration: Math.min(6, Math.max(2, b.duration || 4)),
+      validated.data.brollPlacements.map((b) => ({
+        start: Math.max(0, b.start),
+        duration: Math.min(6, Math.max(2, b.duration)),
         query: b.query || "background footage",
-        transcriptContext: b.transcriptContext || "",
-        priority: b.priority || "medium",
-        reason: b.reason || "",
+        transcriptContext: b.transcriptContext,
+        priority: b.priority,
+        reason: b.reason,
       })),
       duration
     );
 
     return {
       brollPlacements,
-      fillerActions: (parsed.fillerActions || []).map((f: { start?: number; end?: number; word?: string; action?: string }) => ({
-        start: f.start || 0,
-        end: f.end || (f.start || 0) + 0.5,
-        word: f.word || "",
-        action: f.action || "cut",
+      fillerActions: validated.data.fillerActions.map((f) => ({
+        start: f.start,
+        end: f.end,
+        word: f.word,
+        action: f.action,
       })),
-      cutActions: (parsed.cutActions || []).map((c: { start?: number; end?: number; reason?: string }) => ({
-        start: c.start || 0,
-        end: c.end || (c.start || 0) + 1,
-        reason: c.reason || "",
+      cutActions: validated.data.cutActions.map((c) => ({
+        start: c.start,
+        end: c.end,
+        reason: c.reason,
       })),
     };
   } catch (error) {
@@ -2646,27 +2773,30 @@ Respond in JSON format only (no markdown):
 
     const parsed = JSON.parse(jsonMatch[0]);
     
-    // Parse and validate actions
-    const reviewedActions: EditAction[] = [];
-    for (const a of (parsed.actions || [])) {
-      const action: EditAction = {
-        type: a.type || "keep",
-        start: a.start,
-        end: a.end,
-        duration: a.duration,
-        stockQuery: a.stockQuery,
-        transcriptContext: a.transcriptContext,
-        reason: a.reason,
-        priority: a.priority,
-        qualityScore: Math.min(100, Math.max(0, a.qualityScore || 50)),
-      };
-      
-      // Validate timing
-      if (action.start !== undefined && action.start < 0) action.start = 0;
-      if (action.end !== undefined && action.end > duration) action.end = duration;
-      
-      reviewedActions.push(action);
+    // Validate with Zod schema
+    const validated = ReviewedEditPlanSchema.safeParse(parsed);
+    if (!validated.success) {
+      aiLogger.warn("Pass 4: Schema validation failed, using preliminary actions:", validated.error.issues);
+      return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
     }
+    
+    // Parse and validate actions with timing constraints
+    // Cast to EditAction to handle discriminated union types
+    const reviewedActions: EditAction[] = validated.data.actions.map(a => {
+      const rawAction = a as Record<string, unknown>;
+      const action: EditAction = {
+        type: a.type,
+        start: typeof rawAction.start === "number" ? Math.max(0, rawAction.start) : undefined,
+        end: typeof rawAction.end === "number" ? Math.min(duration, rawAction.end) : undefined,
+        duration: typeof rawAction.duration === "number" ? rawAction.duration : undefined,
+        stockQuery: typeof rawAction.stockQuery === "string" ? rawAction.stockQuery : undefined,
+        transcriptContext: typeof rawAction.transcriptContext === "string" ? rawAction.transcriptContext : undefined,
+        reason: typeof rawAction.reason === "string" ? rawAction.reason : undefined,
+        priority: typeof rawAction.priority === "string" ? (rawAction.priority as "low" | "medium" | "high") : undefined,
+        qualityScore: typeof rawAction.qualityScore === "number" ? rawAction.qualityScore : 50,
+      };
+      return action;
+    });
 
     // Ensure there's at least one keep action
     const hasKeepActions = reviewedActions.some(a => a.type === "keep");
@@ -2683,14 +2813,14 @@ Respond in JSON format only (no markdown):
 
     return {
       actions: reviewedActions,
-      qualityMetrics: {
-        pacing: parsed.qualityMetrics?.pacing || "moderate",
-        brollRelevance: parsed.qualityMetrics?.brollRelevance || "medium",
-        narrativeFlow: parsed.qualityMetrics?.narrativeFlow || "medium",
-        overallScore: Math.min(100, Math.max(0, parsed.qualityMetrics?.overallScore || 60)),
+      qualityMetrics: validated.data.qualityMetrics || {
+        pacing: "moderate",
+        brollRelevance: "medium",
+        narrativeFlow: "medium",
+        overallScore: 60,
       },
-      recommendations: parsed.recommendations || [],
-      warnings: parsed.warnings || [],
+      recommendations: validated.data.recommendations,
+      warnings: validated.data.warnings,
     };
   } catch (error) {
     aiLogger.error("Pass 4 error:", error);

@@ -117,6 +117,17 @@ Preferred communication style: Simple, everyday language.
 - **Live Statistics**: Shows scenes detected, transcript segments, B-roll count, edit actions
 - **Progress Visualization**: Hover tooltips on progress bar segments
 
+### Comprehensive Zod Validation (Latest)
+- **EditActionSchema** - All action types now include qualityScore field
+- **Multi-Pass Planning Schemas** - Full Zod schemas for all 4 passes:
+  - StructuredPlanSchema (Pass 1: Structure Analysis)
+  - QualityMapSchema (Pass 2: Quality Assessment)
+  - OptimizedBrollPlanSchema (Pass 3: B-Roll Optimization)
+  - ReviewedEditPlanSchema (Pass 4: Quality Review)
+- **Fail-Fast Validation** - All AI responses use safeParse() with default fallbacks
+- **Timing Constraints** - end >= start refinements on segment schemas
+- **analyzeVideoFrames** - Now properly validates all AI output before use
+
 ### Bug Fixes
 - Fixed `hookScore` null validation error - AI responses returning `null` instead of `undefined` now handled correctly
 - Added `insert_ai_image` to editActionSchema enum - AI-generated image actions now validate properly

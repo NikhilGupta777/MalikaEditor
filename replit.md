@@ -132,6 +132,10 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - Original `editOptions` (captions, remove silence, etc.) are now stored in `reviewData` and used during rendering
 - Detailed activity logging shows exactly what edit actions are being applied during rendering
 - Summary shows excluded transcript segments and no-cuts messaging when user unchecks all cuts
+- **Prominent cut warning**: Red warning box shows exactly which cuts will happen and how much video will be removed
+- **"Keep Full Video" button**: One-click option to disable all cuts and preserve original video length
+- **"Uncheck All Cuts" toggle**: Quick toggle in Edit Plan tab to enable/disable all cuts at once
+- **Enhanced logging**: Backend logs exactly which cuts were approved/rejected for debugging
 
 ## Environment Variables
 

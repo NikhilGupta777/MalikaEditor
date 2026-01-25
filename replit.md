@@ -101,3 +101,18 @@ Preferred communication style: Simple, everyday language.
 
 ### Cloud Storage
 -   **Google Cloud Storage**: For object storage, integrated via Replit sidecar.
+
+## Recent Changes (January 2026)
+
+### Bug Fixes
+- Fixed `hookScore` null validation error - AI responses returning `null` instead of `undefined` now handled correctly
+- Added `insert_ai_image` to editActionSchema enum - AI-generated image actions now validate properly
+- Fixed missing `sendEvent("transcript", ...)` - Transcript data now streams to frontend in real-time
+
+### Security Improvements
+- Added `requireAuth` middleware to `/api/videos/upload` and `/api/videos/:id/process` endpoints
+- Added Zod validation for editPlan PUT endpoint to prevent invalid data
+
+### SSE Event Handling
+All 10 server events now properly matched with client handlers:
+- status, transcript, editPlan, stockMedia, aiImages, aiImagesError, aiImageStats, enhancedAnalysis, complete, error

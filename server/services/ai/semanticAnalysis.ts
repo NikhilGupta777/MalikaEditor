@@ -1,6 +1,12 @@
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import {
+  normalizePriority,
+  normalizeOverallTone,
+  normalizeKeyMomentType,
+  type Priority,
+} from "./normalization";
 import type {
   TranscriptSegment,
   VideoContext,
@@ -14,14 +20,15 @@ interface RawBrollWindow {
   end?: number;
   context?: string;
   suggestedQuery?: string;
-  priority?: "low" | "medium" | "high";
+  priority?: string; // Allow any string, will normalize
   reason?: string;
 }
 
 interface RawKeyMoment {
   timestamp?: number;
+  type?: string; // Allow any string, will normalize
   description?: string;
-  importance?: "low" | "medium" | "high";
+  importance?: string; // Allow any string, will normalize
 }
 
 export function detectTranscriptLanguage(transcript: TranscriptSegment[]): string {
@@ -383,7 +390,7 @@ Respond in JSON format only (no markdown):
         end: Math.min(duration, b.end || (b.start || 0) + 4),
         context: b.context || "",
         suggestedQuery: b.suggestedQuery || "",
-        priority: b.priority || "medium",
+        priority: normalizePriority(b.priority || "medium"),
         reason: b.reason || "Enhance visual interest",
       }))
       .slice(0, 15);
@@ -410,11 +417,11 @@ Respond in JSON format only (no markdown):
 
     return {
       mainTopics: parsed.mainTopics || [],
-      overallTone: parsed.overallTone || "casual",
+      overallTone: normalizeOverallTone(parsed.overallTone || "casual"),
       keyMoments: (parsed.keyMoments || []).map((k: RawKeyMoment) => ({
         timestamp: k.timestamp || 0,
         description: k.description || "",
-        importance: k.importance || "medium",
+        importance: normalizePriority(k.importance || "medium"),
       })),
       brollWindows: validatedBrollWindows,
       extractedKeywords: parsed.extractedKeywords || [],

@@ -1100,6 +1100,16 @@ async function applyEditsInternal(
   videoLogger.debug(`Segments to keep: ${segmentsToKeep.length}`);
   segmentsToKeep.forEach((s, i) => videoLogger.debug(`  [${i}] ${s.start.toFixed(2)}s - ${s.end.toFixed(2)}s`));
 
+  // SAFETY CHECK: Prevent discarding too much of the video
+  // If keep segments cover less than 20% of original duration, something is wrong
+  const totalKeepDuration = segmentsToKeep.reduce((sum, s) => sum + (s.end - s.start), 0);
+  const keepPercentage = (totalKeepDuration / metadata.duration) * 100;
+  
+  if (keepPercentage < 20) {
+    videoLogger.warn(`SAFETY: Keep segments only cover ${keepPercentage.toFixed(1)}% of video - keeping entire video instead`);
+    segmentsToKeep = [{ start: 0, end: metadata.duration }];
+  }
+
   // Create base video from kept segments
   if (segmentsToKeep.length === 1 && segmentsToKeep[0].start === 0 && 
       Math.abs(segmentsToKeep[0].end - metadata.duration) < 0.1) {

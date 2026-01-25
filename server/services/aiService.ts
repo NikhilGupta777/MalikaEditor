@@ -829,17 +829,17 @@ const WHISPER_MODEL_URL = process.env.WHISPER_MODEL_URL || "https://huggingface.
 
 /**
  * Fallback transcription using OpenAI API
- * Uses gpt-4o-mini-transcribe with verbose_json for accurate word-level timestamps
+ * Uses whisper-1 with verbose_json for accurate word-level timestamps
  */
 async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegment[]> {
   try {
-    aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription with word-level timestamps...");
+    aiLogger.info("Using OpenAI whisper-1 for transcription with word-level timestamps...");
     const audioBuffer = await fs.readFile(audioPath);
     const file = await toFile(audioBuffer, "audio.mp3");
 
     const response = await getOpenAIClient().audio.transcriptions.create({
       file,
-      model: "gpt-4o-mini-transcribe",
+      model: "whisper-1",
       response_format: "verbose_json",
       timestamp_granularities: ["word", "segment"],
     }) as any;
@@ -2850,9 +2850,26 @@ Respond in JSON format only (no markdown):
       return action;
     });
 
-    // Ensure there's at least one keep action
-    const hasKeepActions = reviewedActions.some(a => a.type === "keep");
-    if (!hasKeepActions) {
+    // Ensure keep actions cover at least 40% of the video
+    const keepActions = reviewedActions.filter(a => a.type === "keep" && a.start !== undefined && a.end !== undefined);
+    const totalKeepDuration = keepActions.reduce((sum, a) => sum + ((a.end || 0) - (a.start || 0)), 0);
+    const keepPercentage = (totalKeepDuration / duration) * 100;
+    
+    if (keepPercentage < 40) {
+      aiLogger.warn(`Pass 4: Keep actions only cover ${keepPercentage.toFixed(1)}% - adding full video keep`);
+      // Remove any small keep segments and replace with full video
+      const nonKeepActions = reviewedActions.filter(a => a.type !== "keep");
+      reviewedActions.length = 0;
+      reviewedActions.push(...nonKeepActions);
+      reviewedActions.push({
+        type: "keep",
+        start: 0,
+        end: duration,
+        reason: "Default keep - entire video (safety fallback)",
+        priority: "medium",
+        qualityScore: 60,
+      });
+    } else if (keepActions.length === 0) {
       reviewedActions.push({
         type: "keep",
         start: 0,
@@ -2891,9 +2908,26 @@ function getDefaultReviewedPlan(
     qualityScore: a.type === "keep" ? 70 : a.type === "insert_stock" ? 60 : 50,
   }));
 
-  // Ensure keep coverage
-  const hasKeepActions = scoredActions.some(a => a.type === "keep");
-  if (!hasKeepActions) {
+  // Ensure keep actions cover at least 40% of the video
+  const keepActions = scoredActions.filter(a => a.type === "keep" && a.start !== undefined && a.end !== undefined);
+  const totalKeepDuration = keepActions.reduce((sum, a) => sum + ((a.end || 0) - (a.start || 0)), 0);
+  const keepPercentage = (totalKeepDuration / duration) * 100;
+  
+  if (keepPercentage < 40) {
+    aiLogger.warn(`Default plan: Keep actions only cover ${keepPercentage.toFixed(1)}% - using full video`);
+    // Remove all keep segments and add full video
+    const nonKeepActions = scoredActions.filter(a => a.type !== "keep");
+    scoredActions.length = 0;
+    scoredActions.push(...nonKeepActions);
+    scoredActions.push({
+      type: "keep",
+      start: 0,
+      end: duration,
+      reason: "Default keep - entire video (safety fallback)",
+      priority: "medium",
+      qualityScore: 60,
+    });
+  } else if (keepActions.length === 0) {
     scoredActions.push({
       type: "keep",
       start: 0,

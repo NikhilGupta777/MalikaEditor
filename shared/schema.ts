@@ -223,11 +223,14 @@ export const topicSegmentSchema = z.object({
 
 export type TopicSegment = z.infer<typeof topicSegmentSchema>;
 
+// All valid genres - comprehensive list to handle AI variations
 export const videoContextSchema = z.object({
   genre: z.enum([
     "tutorial", "vlog", "interview", "presentation", "documentary",
     "spiritual", "educational", "entertainment", "tech", "lifestyle",
-    "gaming", "music", "news", "review", "motivational", "other"
+    "gaming", "music", "news", "review", "motivational", "advertisement",
+    "promotional", "commercial", "product", "finance", "business", 
+    "cooking", "fitness", "travel", "comedy", "drama", "other"
   ]),
   subGenre: z.string().optional(),
   targetAudience: z.string().optional(),

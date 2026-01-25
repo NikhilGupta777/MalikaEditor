@@ -2,6 +2,16 @@ import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import {
+  normalizePriority,
+  normalizeValueLevel,
+  normalizeMetricPacing,
+  normalizeVisualImportance,
+  normalizeEditActionType,
+  normalizeNarrativeArc,
+  normalizeSectionType,
+  normalizeFillerAction,
+} from "./normalization";
 import type {
   VideoAnalysis,
   TranscriptSegment,
@@ -11,56 +21,10 @@ import type {
 
 const aiLogger = createLogger("ai-service");
 
-// Normalization functions to handle AI response variations
-function normalizeValueLevel(value: string): "must_keep" | "high" | "medium" | "low" | "cut_candidate" {
-  const normalized = value?.toLowerCase()?.trim() || "medium";
-  if (normalized === "must_keep" || normalized === "must-keep" || normalized === "mustkeep") return "must_keep";
-  if (normalized === "high" || normalized === "high_value" || normalized === "high-value" || normalized === "highvalue") return "high";
-  if (normalized === "medium" || normalized === "mid" || normalized === "moderate") return "medium";
-  if (normalized === "low" || normalized === "low_value" || normalized === "lowvalue") return "low";
-  if (normalized === "cut_candidate" || normalized === "cut" || normalized === "cutcandidate") return "cut_candidate";
-  return "medium";
-}
-
-function normalizeQualityLevel(value: string): "high" | "medium" | "low" {
-  const normalized = value?.toLowerCase()?.trim() || "medium";
-  if (normalized === "high" || normalized === "excellent" || normalized === "good") return "high";
-  if (normalized === "low" || normalized === "poor" || normalized === "none" || normalized === "n/a" || normalized === "na") return "low";
-  return "medium";
-}
-
-function normalizePacing(value: string): "slow" | "moderate" | "fast" {
-  const normalized = value?.toLowerCase()?.trim() || "moderate";
-  if (normalized === "slow" || normalized === "relaxed") return "slow";
-  if (normalized === "fast" || normalized === "quick" || normalized === "rapid") return "fast";
-  return "moderate";
-}
-
-function normalizePriority(value: string): "high" | "medium" | "low" {
-  const normalized = value?.toLowerCase()?.trim() || "medium";
-  if (normalized === "high" || normalized === "critical" || normalized === "important") return "high";
-  if (normalized === "low" || normalized === "optional") return "low";
-  return "medium";
-}
-
-function normalizeActionType(value: string): "cut" | "keep" | "insert_stock" | "insert_ai_image" | "add_caption" | "add_text_overlay" | "transition" | "speed_change" {
-  const normalized = value?.toLowerCase()?.trim()?.replace(/-/g, "_") || "keep";
-  
-  // Map variations to standard types
-  if (normalized === "cut" || normalized === "remove" || normalized === "delete" || 
-      normalized === "remove_silent_parts" || normalized === "remove_silence" ||
-      normalized === "trim" || normalized === "skip") return "cut";
-  if (normalized === "keep" || normalized === "preserve" || normalized === "retain") return "keep";
-  if (normalized === "insert_stock" || normalized === "stock" || normalized === "broll" || 
-      normalized === "b_roll" || normalized === "stock_video" || normalized === "stock_image") return "insert_stock";
-  if (normalized === "insert_ai_image" || normalized === "ai_image" || normalized === "generate_image") return "insert_ai_image";
-  if (normalized === "add_caption" || normalized === "caption" || normalized === "subtitle") return "add_caption";
-  if (normalized === "add_text_overlay" || normalized === "text_overlay" || normalized === "text") return "add_text_overlay";
-  if (normalized === "transition" || normalized === "fade" || normalized === "crossfade") return "transition";
-  if (normalized === "speed_change" || normalized === "speed" || normalized === "slow_motion" || normalized === "fast_forward") return "speed_change";
-  
-  return "keep"; // Default to keep if unknown
-}
+// Alias for backward compatibility
+const normalizeQualityLevel = normalizeVisualImportance;
+const normalizePacing = normalizeMetricPacing;
+const normalizeActionType = normalizeEditActionType;
 
 // Pre-process AI responses to normalize enum values before validation
 function normalizeQualityMapResponse(parsed: any): any {
@@ -173,16 +137,19 @@ export interface ReviewedEditPlan {
   warnings: string[];
 }
 
+// Schema with AI response normalization - handles variations in AI output
 const StructuredPlanSchema = z.object({
   introSection: z.object({ start: z.number(), end: z.number() }).nullable(),
   mainContentSection: z.object({ start: z.number(), end: z.number() }),
   outroSection: z.object({ start: z.number(), end: z.number() }).nullable(),
   sectionMarkers: z.array(z.object({
     timestamp: z.number(),
-    type: z.enum(["intro_end", "section_change", "climax", "outro_start", "transition"]),
+    type: z.enum(["intro_end", "section_change", "climax", "outro_start", "transition"])
+      .or(z.string().transform(normalizeSectionType)),
     description: z.string(),
   })),
-  narrativeArc: z.enum(["linear", "problem_solution", "story", "tutorial", "listicle", "conversational"]),
+  narrativeArc: z.enum(["linear", "problem_solution", "story", "tutorial", "listicle", "conversational"])
+    .or(z.string().transform(normalizeNarrativeArc)),
 });
 
 const QualityMapSchema = z.object({
@@ -190,7 +157,8 @@ const QualityMapSchema = z.object({
     start: z.number(),
     end: z.number(),
     engagementScore: z.number(),
-    valueLevel: z.enum(["must_keep", "high", "medium", "low", "cut_candidate"]),
+    valueLevel: z.enum(["must_keep", "high", "medium", "low", "cut_candidate"])
+      .or(z.string().transform(normalizeValueLevel)),
     reason: z.string(),
   })),
   hookStrength: z.number(),
@@ -205,14 +173,16 @@ const OptimizedBrollPlanSchema = z.object({
     duration: z.number(),
     query: z.string(),
     transcriptContext: z.string(),
-    priority: z.enum(["high", "medium", "low"]),
+    priority: z.enum(["high", "medium", "low"])
+      .or(z.string().transform(normalizePriority)),
     reason: z.string(),
   })),
   fillerActions: z.array(z.object({
     start: z.number(),
     end: z.number(),
     word: z.string(),
-    action: z.enum(["cut", "overlay"]),
+    action: z.enum(["cut", "overlay"])
+      .or(z.string().transform(normalizeFillerAction)),
   })),
   cutActions: z.array(z.object({
     start: z.number(),
@@ -224,9 +194,12 @@ const OptimizedBrollPlanSchema = z.object({
 const ReviewedEditPlanSchema = z.object({
   actions: z.array(z.any()),
   qualityMetrics: z.object({
-    pacing: z.enum(["slow", "moderate", "fast"]),
-    brollRelevance: z.enum(["high", "medium", "low"]),
-    narrativeFlow: z.enum(["high", "medium", "low"]),
+    pacing: z.enum(["slow", "moderate", "fast"])
+      .or(z.string().transform(normalizeMetricPacing)),
+    brollRelevance: z.enum(["high", "medium", "low"])
+      .or(z.string().transform(normalizeVisualImportance)),
+    narrativeFlow: z.enum(["high", "medium", "low"])
+      .or(z.string().transform(normalizeVisualImportance)),
     overallScore: z.number(),
   }).optional(),
   recommendations: z.array(z.string()),

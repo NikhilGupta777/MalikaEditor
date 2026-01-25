@@ -3,6 +3,13 @@ import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import {
+  normalizePriority,
+  normalizeEnergyLevel,
+  normalizeSpeakingPace,
+  normalizeVisualImportance,
+  normalizeKeyMomentType,
+} from "./normalization";
 import type {
   VideoAnalysis,
   FrameAnalysis,
@@ -23,8 +30,10 @@ const FrameAnalysisSchema = z.object({
   description: z.string().optional().default(""),
   keyMoment: z.boolean().optional().default(false),
   suggestedStockQuery: z.string().nullable().optional(),
-  energyLevel: z.enum(["low", "medium", "high"]).optional(),
-  speakingPace: z.enum(["slow", "normal", "fast"]).optional(),
+  energyLevel: z.enum(["low", "medium", "high"])
+    .or(z.string().transform(normalizeEnergyLevel)).optional(),
+  speakingPace: z.enum(["slow", "normal", "fast"])
+    .or(z.string().transform(normalizeSpeakingPace)).optional(),
 });
 
 // All valid genres - add new ones here as AI suggests them
@@ -188,7 +197,8 @@ const TopicSegmentSchema = z.object({
   start: z.number(),
   end: z.number(),
   topic: z.string(),
-  importance: z.enum(["low", "medium", "high"]).optional(),
+  importance: z.enum(["low", "medium", "high"])
+    .or(z.string().transform(normalizePriority)).optional(),
   suggestedBrollWindow: z.boolean().optional(),
 });
 
@@ -197,7 +207,8 @@ const BrollOpportunitySchema = z.object({
   end: z.number(),
   suggestedDuration: z.number(),
   query: z.string(),
-  priority: z.enum(["low", "medium", "high"]),
+  priority: z.enum(["low", "medium", "high"])
+    .or(z.string().transform(normalizePriority)),
   reason: z.string(),
 });
 
@@ -208,7 +219,8 @@ const SceneSegmentResponseSchema = z.object({
   visualDescription: z.string().optional().default(""),
   emotionalTone: z.string(),
   speakerId: z.string().optional(),
-  visualImportance: z.enum(["high", "medium", "low"]),
+  visualImportance: z.enum(["high", "medium", "low"])
+    .or(z.string().transform(normalizeVisualImportance)),
 });
 
 const EmotionFlowPointResponseSchema = z.object({
@@ -226,9 +238,11 @@ const SpeakerSegmentResponseSchema = z.object({
 
 const KeyMomentResponseSchema = z.object({
   timestamp: z.number(),
-  type: z.enum(["hook", "climax", "callToAction", "keyPoint", "transition"]),
+  type: z.enum(["hook", "climax", "callToAction", "keyPoint", "transition"])
+    .or(z.string().transform(normalizeKeyMomentType)),
   description: z.string(),
-  importance: z.enum(["high", "medium", "low"]),
+  importance: z.enum(["high", "medium", "low"])
+    .or(z.string().transform(normalizeVisualImportance)),
   hookScore: z.number().min(0).max(100).nullish(),
 });
 

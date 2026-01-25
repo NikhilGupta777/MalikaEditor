@@ -290,13 +290,23 @@ const ReviewedEditPlanSchema = z.object({
   warnings: z.array(z.string()).optional().default([]),
 });
 
-const geminiClient = new GoogleGenAI({
-  apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-  httpOptions: {
-    apiVersion: "",
-    baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-  },
-});
+let geminiClient: GoogleGenAI | null = null;
+
+function getGeminiClient(): GoogleGenAI {
+  if (!geminiClient) {
+    if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
+      throw new Error('Gemini API key is not configured. Please set up the Gemini integration.');
+    }
+    geminiClient = new GoogleGenAI({
+      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+      httpOptions: {
+        apiVersion: "",
+        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+      },
+    });
+  }
+  return geminiClient;
+}
 
 function getEditStyleGuidance(context?: VideoContext): string {
   if (!context) {
@@ -425,10 +435,20 @@ function validateAndFixBrollActions(actions: EditAction[], duration: number): Ed
   return [...otherActions, ...validatedBroll];
 }
 
-const openaiClient = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (!openaiClient) {
+    if (!process.env.AI_INTEGRATIONS_OPENAI_API_KEY) {
+      throw new Error('OpenAI API key is not configured. Please set up the OpenAI integration.');
+    }
+    openaiClient = new OpenAI({
+      apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
+      baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+    });
+  }
+  return openaiClient;
+}
 
 async function encodeImageToBase64(imagePath: string): Promise<string> {
   return fs.readFile(imagePath, { encoding: "base64" });
@@ -637,7 +657,7 @@ Respond in JSON format only (no markdown):
   }));
 
   const response = await withRetry(
-    () => geminiClient.models.generateContent({
+    () => getGeminiClient().models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
         {
@@ -817,7 +837,7 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
     const audioBuffer = await fs.readFile(audioPath);
     const file = await toFile(audioBuffer, "audio.mp3");
 
-    const response = await openaiClient.audio.transcriptions.create({
+    const response = await getOpenAIClient().audio.transcriptions.create({
       file,
       model: "gpt-4o-mini-transcribe",
       response_format: "json",
@@ -1161,7 +1181,7 @@ Important:
 
   try {
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
@@ -1432,7 +1452,7 @@ Respond in JSON format only (no markdown):
 
   try {
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
@@ -1565,7 +1585,7 @@ export async function generateAiImage(
     aiLogger.debug(`Generating AI image with prompt: ${contextualPrompt.substring(0, 100)}...`);
     
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash-image",
         contents: [
           {
@@ -1911,7 +1931,7 @@ Respond with a JSON object only (no markdown):
 }`;
 
   const response = await withRetry(
-    () => geminiClient.models.generateContent({
+    () => getGeminiClient().models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
         {
@@ -2173,7 +2193,7 @@ Respond in JSON format only (no markdown):
 
   try {
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
@@ -2317,7 +2337,7 @@ Respond in JSON format only (no markdown):
 
   try {
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
@@ -2494,7 +2514,7 @@ Respond in JSON format only (no markdown):
 
   try {
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
@@ -2755,7 +2775,7 @@ Respond in JSON format only (no markdown):
 
   try {
     const response = await withRetry(
-      () => geminiClient.models.generateContent({
+      () => getGeminiClient().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: reviewPrompt }] }],
       }),

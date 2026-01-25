@@ -204,3 +204,12 @@ All 11 server events now properly matched with client handlers:
 - **OpenAI Transcription**: Now uses verbose_json format with word-level timestamps instead of estimated timing
 - **Video Encoding Quality**: Upgraded FFmpeg preset from "ultrafast" to "fast" and CRF from 28 to 23 for significantly better output quality
 - **Lazy AI Client Initialization**: Gemini and OpenAI clients now initialize on first use, preventing startup crashes when API keys aren't configured
+
+### AI Response Normalization Layer (January 25, 2026)
+- **Normalization Functions**: Added comprehensive functions to handle AI enum response variations:
+  - `normalizeValueLevel`: Handles `high_value` → `high`, `must-keep` → `must_keep`, etc.
+  - `normalizeQualityLevel`: Handles `N/A` → `low`, `excellent` → `high`, etc.
+  - `normalizePacing`: Handles `quick` → `fast`, `relaxed` → `slow`, etc.
+  - `normalizePriority`: Handles `critical` → `high`, `optional` → `low`, etc.
+- **Pre-Validation Normalization**: Applied in Pass 2 (quality map), Pass 3 (B-roll plan), and Pass 4 (reviewed plan) before Zod validation
+- **Graceful Degradation**: Defaults to sensible values (`medium`) when AI responses are unexpected

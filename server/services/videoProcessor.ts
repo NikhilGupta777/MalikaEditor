@@ -1,5 +1,6 @@
 import ffmpeg from "fluent-ffmpeg";
-import { promises as fs } from "fs";
+import { promises as fs, createWriteStream } from "fs";
+import { pipeline } from "stream/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
@@ -265,11 +266,12 @@ async function downloadFile(url: string, outputPath: string): Promise<void> {
   const response = await axios({
     method: "GET",
     url,
-    responseType: "arraybuffer",
-    timeout: 60000,
+    responseType: "stream",
+    timeout: 120000,
   });
   
-  await fs.writeFile(outputPath, Buffer.from(response.data));
+  const writer = createWriteStream(outputPath);
+  await pipeline(response.data, writer);
 }
 
 function escapeFFmpegText(text: string): string {

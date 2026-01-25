@@ -5,6 +5,9 @@ import path from "path";
 import { promises as fs } from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { storage } from "./storage";
+import { createLogger } from "./utils/logger";
+
+const routesLogger = createLogger("routes");
 import {
   getVideoMetadata,
   extractFrames,
@@ -165,7 +168,7 @@ export async function registerRoutes(
           duration: project.duration,
         });
       } catch (error) {
-        console.error("Upload error:", error);
+        routesLogger.error("Upload error:", error);
         res.status(500).json({
           error: error instanceof Error ? error.message : "Upload failed",
         });
@@ -310,17 +313,17 @@ export async function registerRoutes(
           // Translate to English if non-English (for Gemini semantic analysis)
           let transcriptForAnalysis = transcript;
           if (detectedLanguage !== "en") {
-            console.log(`Transcript is in ${detectedLanguage}, translating to English for semantic analysis...`);
+            routesLogger.info(`Transcript is in ${detectedLanguage}, translating to English for semantic analysis...`);
             transcriptForAnalysis = await translateTranscriptToEnglish(transcript, detectedLanguage);
             
             // Verify translation produced English text
             const translatedLanguage = detectTranscriptLanguage(transcriptForAnalysis);
             if (translatedLanguage !== "en") {
-              console.warn(`Translation may have failed: detected ${translatedLanguage} instead of English`);
+              routesLogger.warn(`Translation may have failed: detected ${translatedLanguage} instead of English`);
             }
           }
           
-          console.log("Performing semantic transcript analysis...");
+          routesLogger.info("Performing semantic transcript analysis...");
           // Use translated transcript for analysis, but original timestamps are preserved
           semanticAnalysis = await analyzeTranscriptSemantics(
             transcriptForAnalysis,
@@ -329,7 +332,7 @@ export async function registerRoutes(
           );
         } else {
           // Fallback: Generate B-roll windows from video analysis when no transcript available
-          console.log("No transcript available, creating fallback semantic analysis from video context...");
+          routesLogger.info("No transcript available, creating fallback semantic analysis from video context...");
           const videoContext = analysis.context;
           const toneMap: { [key: string]: "serious" | "inspirational" | "educational" | "casual" | "professional" | "entertaining" } = {
             "serious": "serious", "calm": "casual", "inspirational": "inspirational",
@@ -350,7 +353,7 @@ export async function registerRoutes(
           };
         }
         
-        console.log("Semantic analysis complete:", {
+        routesLogger.info("Semantic analysis complete:", {
           topics: semanticAnalysis!.mainTopics,
           brollWindows: semanticAnalysis!.brollWindows.length,
           keywords: semanticAnalysis!.extractedKeywords.length,
@@ -390,14 +393,14 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       let aiGeneratedImages: StockMediaItem[] = [];
       if (editOptions.generateAiImages && semanticAnalysis && semanticAnalysis.brollWindows.length > 0) {
         await updateStatus("generating_ai_images");
-        console.log("Generating AI images based on video content...");
+        routesLogger.info("Generating AI images based on video content...");
         
         try {
           // Calculate optimal number of AI images based on video duration
           // Target: ~1 AI image per 8-10 seconds of video, minimum 3, maximum 12
           const videoDuration = metadata.duration;
           const optimalImages = Math.min(12, Math.max(3, Math.ceil(videoDuration / 8)));
-          console.log(`Video is ${videoDuration.toFixed(1)}s, targeting ${optimalImages} AI images`);
+          routesLogger.info(`Video is ${videoDuration.toFixed(1)}s, targeting ${optimalImages} AI images`);
           
           const generatedImages = await generateAiImagesForVideo(
             semanticAnalysis,
@@ -427,17 +430,17 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
               duration: img.duration,
             });
             
-            console.log(`AI image ${i}: "${img.prompt.substring(0, 40)}..." at ${img.startTime.toFixed(1)}s-${img.endTime.toFixed(1)}s`);
+            routesLogger.debug(`AI image ${i}: "${img.prompt.substring(0, 40)}..." at ${img.startTime.toFixed(1)}s-${img.endTime.toFixed(1)}s`);
           }
           
-          console.log(`Generated ${aiGeneratedImages.length} AI images`);
+          routesLogger.info(`Generated ${aiGeneratedImages.length} AI images`);
           sendEvent("aiImages", { count: aiGeneratedImages.length });
           
           // Add AI images to stock media for B-roll overlay
           stockMedia = [...stockMedia, ...aiGeneratedImages];
           await storage.updateVideoProject(id, { stockMedia });
         } catch (aiError) {
-          console.error("AI image generation failed, continuing with stock media:", aiError);
+          routesLogger.error("AI image generation failed, continuing with stock media:", aiError);
           sendEvent("aiImagesError", { error: "AI image generation failed, using stock media only" });
         }
       }
@@ -483,7 +486,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
 
       await cleanupTempFiles(tempFiles);
     } catch (error) {
-      console.error("Processing error:", error);
+      routesLogger.error("Processing error:", error);
 
       await storage.updateVideoProject(id, {
         status: "failed",

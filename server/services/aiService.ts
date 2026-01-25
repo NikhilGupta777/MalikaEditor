@@ -3,6 +3,7 @@ import OpenAI, { toFile } from "openai";
 import { promises as fs } from "fs";
 import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../utils/retry";
+import { createLogger } from "../utils/logger";
 import type {
   VideoAnalysis,
   FrameAnalysis,
@@ -13,6 +14,8 @@ import type {
   TopicSegment,
   SemanticAnalysis,
 } from "@shared/schema";
+
+const aiLogger = createLogger("ai-service");
 
 const CutKeepActionSchema = z.object({
   type: z.enum(["cut", "keep"]),
@@ -254,7 +257,7 @@ function validateAndFixBrollActions(actions: EditAction[], duration: number): Ed
       });
       lastEnd = start + actionDuration;
     } else {
-      console.log(`Skipping overlapping B-roll (${action.type}) at ${start}s (previous ended at ${lastEnd}s)`);
+      aiLogger.debug(`Skipping overlapping B-roll (${action.type}) at ${start}s (previous ended at ${lastEnd}s)`);
     }
   }
   
@@ -419,7 +422,7 @@ Respond in JSON format only (no markdown):
   const text = response.text || "";
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    console.warn("Failed to parse AI response for frame analysis, using defaults");
+    aiLogger.warn("Failed to parse AI response for frame analysis, using defaults");
     return {
       duration,
       frames: framePaths.map((_, i) => ({
@@ -438,10 +441,10 @@ Respond in JSON format only (no markdown):
     parsed = JSON.parse(jsonMatch[0]);
     const validated = VideoAnalysisResponseSchema.safeParse(parsed);
     if (!validated.success) {
-      console.warn("AI response validation failed:", validated.error);
+      aiLogger.warn("AI response validation failed:", validated.error);
     }
   } catch (parseError) {
-    console.warn("JSON parse error in frame analysis:", parseError);
+    aiLogger.warn("JSON parse error in frame analysis:", parseError);
     return {
       duration,
       frames: framePaths.map((_, i) => ({
@@ -520,14 +523,14 @@ export async function transcribeAudio(
   const execPromise = promisify(exec);
   const { v4: uuidv4 } = await import("uuid");
   
-  console.log(`Transcription starting with local whisper.cpp...`);
+  aiLogger.info(`Transcription starting with local whisper.cpp...`);
   
   // Check if model exists
   try {
     await fs.access(WHISPER_MODEL_PATH);
   } catch {
-    console.error(`Whisper model not found at ${WHISPER_MODEL_PATH}`);
-    console.log("Downloading multilingual whisper model...");
+    aiLogger.error(`Whisper model not found at ${WHISPER_MODEL_PATH}`);
+    aiLogger.info("Downloading multilingual whisper model...");
     await fs.mkdir("/tmp/whisper_models", { recursive: true });
     await execPromise(
       `curl -L -o "${WHISPER_MODEL_PATH}" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"`,
@@ -547,13 +550,13 @@ export async function transcribeAudio(
   };
   
   try {
-    console.log("Converting audio to WAV format for whisper.cpp...");
+    aiLogger.info("Converting audio to WAV format for whisper.cpp...");
     await execPromise(
       `ffmpeg -y -i "${audioPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavPath}" 2>/dev/null`
     );
     
     // Run whisper.cpp with JSON output
-    console.log("Running whisper.cpp transcription...");
+    aiLogger.info("Running whisper.cpp transcription...");
     const whisperCmd = `whisper-cpp -m "${WHISPER_MODEL_PATH}" -oj -of "${jsonOutputBase}" -f "${wavPath}" 2>/dev/null`;
     
     await execPromise(whisperCmd, { timeout: 300000 }); // 5 minute timeout
@@ -636,27 +639,27 @@ export async function transcribeAudio(
             words: words.length > 0 ? words : undefined,
           });
         } else if (text.length > 0) {
-          console.warn(`Skipping segment with invalid timestamps: "${text.substring(0, 30)}..." (from=${startMs}, to=${endMs})`);
+          aiLogger.warn(`Skipping segment with invalid timestamps: "${text.substring(0, 30)}..." (from=${startMs}, to=${endMs})`);
         }
       }
     }
     
     if (segments.length > 0) {
-      console.log(`Whisper.cpp transcription complete: ${segments.length} segments with REAL timestamps`);
+      aiLogger.info(`Whisper.cpp transcription complete: ${segments.length} segments with REAL timestamps`);
       return segments;
     }
     
     // If whisper produced segments but we couldn't parse any, this is a format error
     // Return empty array to surface the issue - do NOT fallback to estimated timestamps
     if (rawSegmentCount > 0 && segments.length === 0) {
-      console.error(`CRITICAL: Whisper.cpp returned ${rawSegmentCount} segments but all failed timestamp parsing. Format may have changed.`);
-      console.error("Refusing to fallback to estimated timestamps - returning empty transcript");
+      aiLogger.error(`CRITICAL: Whisper.cpp returned ${rawSegmentCount} segments but all failed timestamp parsing. Format may have changed.`);
+      aiLogger.error("Refusing to fallback to estimated timestamps - returning empty transcript");
       return [];
     }
     
-    console.warn("Whisper.cpp returned no segments, trying fallback...");
+    aiLogger.warn("Whisper.cpp returned no segments, trying fallback...");
   } catch (error: any) {
-    console.error("Whisper.cpp transcription failed:", error?.message || error);
+    aiLogger.error("Whisper.cpp transcription failed:", error?.message || error);
     // Only fallback if whisper completely failed (not if parsing failed)
     // The parsing failure case returns early above
   } finally {
@@ -667,7 +670,7 @@ export async function transcribeAudio(
   // Fallback: Use OpenAI gpt-4o-mini-transcribe (text only, estimate timestamps)
   // This only runs if whisper.cpp completely failed or returned zero segments
   try {
-    console.log("Fallback: OpenAI gpt-4o-mini-transcribe (NOTE: timestamps will be estimated)...");
+    aiLogger.info("Fallback: OpenAI gpt-4o-mini-transcribe (NOTE: timestamps will be estimated)...");
     const audioBuffer = await fs.readFile(audioPath);
     const file = await toFile(audioBuffer, "audio.mp3");
 
@@ -679,7 +682,7 @@ export async function transcribeAudio(
 
     const text = response.text || "";
     if (text.trim()) {
-      console.log("OpenAI transcription successful. Estimating timestamps based on speech pacing...");
+      aiLogger.info("OpenAI transcription successful. Estimating timestamps based on speech pacing...");
       const sentences = text.split(/(?<=[.!?])\s+/).filter((s: string) => s.trim());
       
       const charsPerSecond = 12.5;
@@ -696,14 +699,14 @@ export async function transcribeAudio(
         return segment;
       }).filter((s: TranscriptSegment) => s.text.length > 0);
       
-      console.log(`Estimated ${segments.length} transcript segments (timing is approximate)`);
+      aiLogger.info(`Estimated ${segments.length} transcript segments (timing is approximate)`);
       return segments;
     }
   } catch (error: any) {
-    console.error("OpenAI transcription failed:", error?.message || error);
+    aiLogger.error("OpenAI transcription failed:", error?.message || error);
   }
   
-  console.error("All transcription methods failed - no transcript available");
+  aiLogger.error("All transcription methods failed - no transcript available");
   return [];
 }
 
@@ -719,47 +722,47 @@ export function detectTranscriptLanguage(transcript: TranscriptSegment[]): strin
   // Check for Devanagari script (Hindi, Sanskrit, Marathi, etc.)
   const devanagariPattern = /[\u0900-\u097F]/;
   if (devanagariPattern.test(allText)) {
-    console.log("Detected language: Hindi (Devanagari script)");
+    aiLogger.debug("Detected language: Hindi (Devanagari script)");
     return "hi";
   }
   
   // Check for Arabic script
   const arabicPattern = /[\u0600-\u06FF]/;
   if (arabicPattern.test(allText)) {
-    console.log("Detected language: Arabic");
+    aiLogger.debug("Detected language: Arabic");
     return "ar";
   }
   
   // Check for Chinese characters
   const chinesePattern = /[\u4E00-\u9FFF]/;
   if (chinesePattern.test(allText)) {
-    console.log("Detected language: Chinese");
+    aiLogger.debug("Detected language: Chinese");
     return "zh";
   }
   
   // Check for Japanese (Hiragana/Katakana)
   const japanesePattern = /[\u3040-\u30FF]/;
   if (japanesePattern.test(allText)) {
-    console.log("Detected language: Japanese");
+    aiLogger.debug("Detected language: Japanese");
     return "ja";
   }
   
   // Check for Korean (Hangul)
   const koreanPattern = /[\uAC00-\uD7AF]/;
   if (koreanPattern.test(allText)) {
-    console.log("Detected language: Korean");
+    aiLogger.debug("Detected language: Korean");
     return "ko";
   }
   
   // Check for Cyrillic (Russian, etc.)
   const cyrillicPattern = /[\u0400-\u04FF]/;
   if (cyrillicPattern.test(allText)) {
-    console.log("Detected language: Russian/Cyrillic");
+    aiLogger.debug("Detected language: Russian/Cyrillic");
     return "ru";
   }
   
   // Default to English
-  console.log("Detected language: English (default)");
+  aiLogger.debug("Detected language: English (default)");
   return "en";
 }
 
@@ -789,7 +792,7 @@ export async function translateTranscriptToEnglish(
   };
   
   const langName = languageNames[sourceLanguage] || sourceLanguage;
-  console.log(`Translating transcript from ${langName} to English for semantic analysis...`);
+  aiLogger.info(`Translating transcript from ${langName} to English for semantic analysis...`);
   
   // Prepare text for translation (batch all segments)
   const textsToTranslate = transcript.map((seg, i) => `[${i}]: ${seg.text}`).join("\n");
@@ -824,14 +827,14 @@ Important:
     const jsonMatch = responseText.match(/\[[\s\S]*\]/);
     
     if (!jsonMatch) {
-      console.warn("Failed to parse translation response, using original text");
+      aiLogger.warn("Failed to parse translation response, using original text");
       return transcript;
     }
     
     const translations = JSON.parse(jsonMatch[0]);
     
     if (!Array.isArray(translations) || translations.length !== transcript.length) {
-      console.warn(`Translation count mismatch: got ${translations.length}, expected ${transcript.length}`);
+      aiLogger.warn(`Translation count mismatch: got ${translations.length}, expected ${transcript.length}`);
       return transcript;
     }
     
@@ -842,10 +845,10 @@ Important:
       text: translations[i] || seg.text,
     }));
     
-    console.log(`Translation complete: ${translatedSegments.length} segments translated to English`);
+    aiLogger.info(`Translation complete: ${translatedSegments.length} segments translated to English`);
     return translatedSegments;
   } catch (error) {
-    console.error("Translation failed:", error);
+    aiLogger.error("Translation failed:", error);
     return transcript;
   }
 }
@@ -992,7 +995,7 @@ Respond in JSON format only (no markdown):
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     
     if (!jsonMatch) {
-      console.warn("Failed to parse semantic analysis response");
+      aiLogger.warn("Failed to parse semantic analysis response");
       return getDefaultSemanticAnalysis(transcript, duration);
     }
 
@@ -1024,7 +1027,7 @@ Respond in JSON format only (no markdown):
       contentSummary: parsed.contentSummary || "",
     };
   } catch (error) {
-    console.error("Semantic analysis error:", error);
+    aiLogger.error("Semantic analysis error:", error);
     return getDefaultSemanticAnalysis(transcript, duration);
   }
 }
@@ -1068,7 +1071,7 @@ export async function generateAiImage(
       : `Create a professional, high-quality image: ${prompt}
          Style: Clean, professional, suitable as B-roll footage. No text or watermarks.`;
 
-    console.log(`Generating AI image with prompt: ${contextualPrompt.substring(0, 100)}...`);
+    aiLogger.debug(`Generating AI image with prompt: ${contextualPrompt.substring(0, 100)}...`);
     
     const response = await withRetry(
       () => geminiClient.models.generateContent({
@@ -1093,19 +1096,19 @@ export async function generateAiImage(
     );
 
     if (!imagePart?.inlineData?.data) {
-      console.warn("No image data in AI generation response");
+      aiLogger.warn("No image data in AI generation response");
       return null;
     }
 
     const mimeType = imagePart.inlineData.mimeType || "image/png";
-    console.log(`AI image generated successfully: ${mimeType}`);
+    aiLogger.debug(`AI image generated successfully: ${mimeType}`);
     
     return {
       base64Data: imagePart.inlineData.data,
       mimeType,
     };
   } catch (error) {
-    console.error("AI image generation error:", error);
+    aiLogger.error("AI image generation error:", error);
     return null;
   }
 }
@@ -1138,18 +1141,18 @@ export async function generateAiImagesForVideo(
     .filter(w => {
       // Strict timing validation - require start, end, and positive duration
       if (typeof w.start !== "number" || typeof w.end !== "number") {
-        console.warn(`Rejecting AI image candidate: missing start/end time - ${w.suggestedQuery}`);
+        aiLogger.warn(`Rejecting AI image candidate: missing start/end time - ${w.suggestedQuery}`);
         return false;
       }
       if (w.start < 0 || w.end <= w.start) {
-        console.warn(`Rejecting AI image candidate: invalid timing (${w.start}s-${w.end}s) - ${w.suggestedQuery}`);
+        aiLogger.warn(`Rejecting AI image candidate: invalid timing (${w.start}s-${w.end}s) - ${w.suggestedQuery}`);
         return false;
       }
       return true;
     })
     .sort((a, b) => a.start - b.start);  // Sort by time for even distribution
   
-  console.log(`Valid B-roll candidates: ${validCandidates.length}/${semanticAnalysis.brollWindows.length}`);
+  aiLogger.debug(`Valid B-roll candidates: ${validCandidates.length}/${semanticAnalysis.brollWindows.length}`);
   
   // If we have fewer candidates than maxImages, use all of them
   // Otherwise, select evenly distributed candidates across the video timeline
@@ -1201,7 +1204,7 @@ export async function generateAiImagesForVideo(
       .slice(0, maxImages);
   }
 
-  console.log(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${maxImages})`);
+  aiLogger.debug(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${maxImages})`);
 
   for (const candidate of aiImageCandidates) {
     try {
@@ -1222,11 +1225,11 @@ export async function generateAiImagesForVideo(
         });
       }
     } catch (error) {
-      console.error(`Failed to generate AI image for: ${candidate.suggestedQuery}`, error);
+      aiLogger.error(`Failed to generate AI image for: ${candidate.suggestedQuery}`, error);
     }
   }
 
-  console.log(`Generated ${generatedImages.length} AI images for video`);
+  aiLogger.info(`Generated ${generatedImages.length} AI images for video`);
   return generatedImages;
 }
 
@@ -1428,7 +1431,7 @@ Respond with a JSON object only (no markdown):
   };
   
   if (!jsonMatch) {
-    console.warn("No JSON found in AI response for edit plan");
+    aiLogger.warn("No JSON found in AI response for edit plan");
     return fallbackPlan();
   }
 
@@ -1437,15 +1440,15 @@ Respond with a JSON object only (no markdown):
     parsed = JSON.parse(jsonMatch[0]);
     const validated = EditPlanResponseSchema.safeParse(parsed);
     if (!validated.success) {
-      console.warn("Edit plan validation warning:", validated.error);
+      aiLogger.warn("Edit plan validation warning:", validated.error);
     }
   } catch (parseError) {
-    console.warn("JSON parse error in edit plan:", parseError);
+    aiLogger.warn("JSON parse error in edit plan:", parseError);
     return fallbackPlan();
   }
 
   if (!parsed.actions || !Array.isArray(parsed.actions)) {
-    console.warn("No valid actions array in AI response");
+    aiLogger.warn("No valid actions array in AI response");
     return fallbackPlan();
   }
 
@@ -1462,7 +1465,7 @@ Respond with a JSON object only (no markdown):
       }
       actions.push(validAction as EditAction);
     } else {
-      console.warn("Skipping invalid action:", a, actionValidation.error);
+      aiLogger.warn("Skipping invalid action:", a, actionValidation.error);
     }
   }
 

@@ -5,6 +5,9 @@ import { createServer } from "http";
 import { sessionMiddleware } from "./middleware/auth";
 import cors from "cors";
 import helmet from "helmet";
+import { createLogger } from "./utils/logger";
+
+const expressLogger = createLogger("express");
 
 const app = express();
 const httpServer = createServer(app);
@@ -100,14 +103,8 @@ app.use(express.urlencoded({ extended: false }));
 app.use(sessionMiddleware);
 
 export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
+  const sourceLogger = createLogger(source);
+  sourceLogger.info(message);
 }
 
 app.use((req, res, next) => {
@@ -143,7 +140,7 @@ app.use((req, res, next) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
-    console.error("Internal Server Error:", err);
+    expressLogger.error("Internal Server Error:", err);
 
     if (res.headersSent) {
       return next(err);

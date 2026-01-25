@@ -1,3 +1,7 @@
+import { createLogger } from "./logger";
+
+const retryLogger = createLogger("retry");
+
 interface RetryOptions {
   maxRetries?: number;
   initialDelayMs?: number;
@@ -80,8 +84,8 @@ export async function withRetry<T>(
       const jitter = Math.random() * 0.2 * delay;
       const waitTime = Math.min(delay + jitter, config.maxDelayMs);
       
-      console.warn(
-        `[Retry] ${operationName} failed (attempt ${attempt}/${config.maxRetries + 1}), ` +
+      retryLogger.warn(
+        `${operationName} failed (attempt ${attempt}/${config.maxRetries + 1}), ` +
         `retrying in ${Math.round(waitTime)}ms: ${error instanceof Error ? error.message : String(error)}`
       );
       

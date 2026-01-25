@@ -170,9 +170,8 @@ export async function registerRoutes(
 
   app.post(
     "/api/videos/upload",
-    requireAuth,
     upload.single("video"),
-    async (req: AuthenticatedRequest, res: Response) => {
+    async (req: Request, res: Response) => {
       try {
         if (!req.file) {
           return res.status(400).json({ error: "No video file uploaded" });
@@ -215,7 +214,7 @@ export async function registerRoutes(
     }
   );
 
-  app.get("/api/videos/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.get("/api/videos/:id", async (req: Request, res: Response) => {
     try {
       const paramResult = idParamSchema.safeParse(req.params);
       if (!paramResult.success) {
@@ -237,7 +236,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/videos/:id/process", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  app.get("/api/videos/:id/process", async (req: Request, res: Response) => {
     // Validate path parameters
     const paramResult = idParamSchema.safeParse(req.params);
     if (!paramResult.success) {

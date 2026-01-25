@@ -860,6 +860,17 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       return res.status(400).json({ error: "Project must be awaiting review or completed to render" });
     }
 
+    // Enforce review approval for awaiting_review status
+    if (project.status === "awaiting_review") {
+      const reviewData = project.reviewData as ReviewData | null;
+      if (!reviewData) {
+        return res.status(409).json({ error: "Review data is missing. Please re-process the video." });
+      }
+      if (!reviewData.userApproved) {
+        return res.status(409).json({ error: "Please approve the review before rendering." });
+      }
+    }
+
     const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
     
     try {
@@ -967,6 +978,23 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         ];
         
         sendActivity(`Applying ${approvedActions.length} approved edit actions...`);
+        
+        // Handle edge case: all actions rejected - keep original video without cuts
+        if (approvedActions.length === 0) {
+          sendActivity("All edit actions were rejected. Output will be the original video with captions only.");
+        }
+        
+        // Handle edge case: all transcript rejected - use original transcript for captions
+        if (transcript.length === 0) {
+          const originalTranscript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
+          transcript = originalTranscript;
+          sendActivity("All transcript segments were rejected. Using original transcript for captions.");
+        }
+        
+        // Handle edge case: all media rejected - proceed without b-roll
+        if (stockMedia.length === 0) {
+          sendActivity("All media was rejected. Proceeding without B-roll overlays.");
+        }
       }
 
       if (!editPlan || !editPlan.actions) {

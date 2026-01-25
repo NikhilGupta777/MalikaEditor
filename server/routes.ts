@@ -59,6 +59,7 @@ import {
   detectFillerWords,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem, ProcessingStatus } from "@shared/schema";
+import { editPlanSchema } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
 import { registerAuthRoutes } from "./routes/auth";
@@ -173,6 +174,7 @@ export async function registerRoutes(
 
   app.post(
     "/api/videos/upload",
+    requireAuth,
     upload.single("video"),
     async (req: Request, res: Response) => {
       try {
@@ -252,12 +254,18 @@ export async function registerRoutes(
         return res.status(400).json({ error: "editPlan is required" });
       }
 
+      // Validate editPlan structure
+      const editPlanResult = editPlanSchema.safeParse(editPlan);
+      if (!editPlanResult.success) {
+        return res.status(400).json({ error: formatZodError(editPlanResult.error) });
+      }
+
       const project = await storage.getVideoProject(id);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
 
-      await storage.updateVideoProject(id, { editPlan });
+      await storage.updateVideoProject(id, { editPlan: editPlanResult.data });
       
       const updatedProject = await storage.getVideoProject(id);
       res.json({ editPlan: updatedProject?.editPlan });
@@ -269,7 +277,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/videos/:id/process", async (req: Request, res: Response) => {
+  app.get("/api/videos/:id/process", requireAuth, async (req: Request, res: Response) => {
     // Validate path parameters
     const paramResult = idParamSchema.safeParse(req.params);
     if (!paramResult.success) {

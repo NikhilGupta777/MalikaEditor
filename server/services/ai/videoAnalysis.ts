@@ -81,14 +81,105 @@ function normalizeGenre(genre: string): typeof VALID_GENRES[number] {
   return "other";
 }
 
+// Valid tone values
+const VALID_TONES = ["serious", "casual", "professional", "humorous", "inspirational", "dramatic", "calm"] as const;
+
+// Normalize tone (handles AI variations like "Thoughtful", "Engaging", etc.)
+function normalizeTone(tone: string): typeof VALID_TONES[number] {
+  const normalized = tone.toLowerCase().trim().split(/[\s(,]/)[0]; // Take first word only
+  
+  if (VALID_TONES.includes(normalized as any)) {
+    return normalized as typeof VALID_TONES[number];
+  }
+  
+  const toneMap: Record<string, typeof VALID_TONES[number]> = {
+    "thoughtful": "serious",
+    "reflective": "serious",
+    "formal": "professional",
+    "engaging": "casual",
+    "friendly": "casual",
+    "funny": "humorous",
+    "comedic": "humorous",
+    "motivational": "inspirational",
+    "uplifting": "inspirational",
+    "intense": "dramatic",
+    "emotional": "dramatic",
+    "relaxed": "calm",
+    "peaceful": "calm",
+    "soothing": "calm",
+    "informative": "professional",
+    "educational": "professional",
+  };
+  
+  return toneMap[normalized] || "casual";
+}
+
+// Valid pacing values  
+const VALID_PACING = ["slow", "moderate", "fast", "dynamic"] as const;
+
+// Normalize pacing (handles capitalization and variations)
+function normalizePacing(pacing: string): typeof VALID_PACING[number] {
+  const normalized = pacing.toLowerCase().trim().split(/[\s(,]/)[0];
+  
+  if (VALID_PACING.includes(normalized as any)) {
+    return normalized as typeof VALID_PACING[number];
+  }
+  
+  const pacingMap: Record<string, typeof VALID_PACING[number]> = {
+    "quick": "fast",
+    "rapid": "fast",
+    "energetic": "fast",
+    "relaxed": "slow",
+    "leisurely": "slow",
+    "medium": "moderate",
+    "normal": "moderate",
+    "varied": "dynamic",
+    "variable": "dynamic",
+    "changing": "dynamic",
+  };
+  
+  return pacingMap[normalized] || "moderate";
+}
+
+// Valid edit style values
+const VALID_EDIT_STYLES = ["minimal", "moderate", "dynamic", "cinematic", "fast-paced"] as const;
+
+// Normalize suggestedEditStyle (AI often adds explanations like "Dynamic (to maintain engagement)")
+function normalizeEditStyle(style: string): typeof VALID_EDIT_STYLES[number] {
+  const normalized = style.toLowerCase().trim().split(/[\s(,]/)[0];
+  
+  if (VALID_EDIT_STYLES.includes(normalized as any)) {
+    return normalized as typeof VALID_EDIT_STYLES[number];
+  }
+  
+  const styleMap: Record<string, typeof VALID_EDIT_STYLES[number]> = {
+    "simple": "minimal",
+    "basic": "minimal",
+    "subtle": "minimal",
+    "standard": "moderate",
+    "balanced": "moderate",
+    "energetic": "dynamic",
+    "engaging": "dynamic",
+    "active": "dynamic",
+    "movie": "cinematic",
+    "film": "cinematic",
+    "professional": "cinematic",
+    "quick": "fast-paced",
+    "rapid": "fast-paced",
+    "fast": "fast-paced",
+  };
+  
+  return styleMap[normalized] || "moderate";
+}
+
 const VideoContextSchema = z.object({
   genre: z.enum(VALID_GENRES).or(z.string().transform(normalizeGenre)),
   subGenre: z.string().optional(),
   targetAudience: z.string().optional(),
-  tone: z.enum(["serious", "casual", "professional", "humorous", "inspirational", "dramatic", "calm"]),
-  pacing: z.enum(["slow", "moderate", "fast", "dynamic"]),
+  tone: z.enum(VALID_TONES).or(z.string().transform(normalizeTone)),
+  pacing: z.enum(VALID_PACING).or(z.string().transform(normalizePacing)),
   visualStyle: z.string().optional(),
-  suggestedEditStyle: z.enum(["minimal", "moderate", "dynamic", "cinematic", "fast-paced"]),
+  suggestedEditStyle: z.enum(VALID_EDIT_STYLES).or(z.string().transform(normalizeEditStyle)),
   regionalContext: z.string().nullish(),
   languageDetected: z.string().nullish(),
 });

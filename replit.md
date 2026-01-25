@@ -111,6 +111,14 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - Added missing `reviewData` field to VideoProject creation in MemStorage
 - Added reviewData schema validation in storage layer
 
+### Transcription & Caption Pipeline Improvements
+- Fixed transcription timing: No longer defaults to incorrect 60-second duration when actual duration is unavailable
+- Improved karaoke caption accuracy: Word timings are now properly clamped to caption boundaries
+- Fixed phrase grouping: Phrases no longer cross caption/segment boundaries after video edits
+- Added silent audio detection: Pre-checks audio levels before transcription with user feedback
+- Improved empty transcription handling: Gracefully disables captions when no speech is detected
+- Fixed word timing mapping: Properly maps word timings from source to output timeline during video edits
+
 ### New Features
 - Added file magic byte validation for video uploads (validates actual file content, not just MIME type)
 - Added SSE reconnection hook for frontend with exponential backoff (client/src/hooks/useSSE.ts)

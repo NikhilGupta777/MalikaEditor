@@ -11,6 +11,88 @@ import type {
 
 const aiLogger = createLogger("ai-service");
 
+// Normalization functions to handle AI response variations
+function normalizeValueLevel(value: string): "must_keep" | "high" | "medium" | "low" | "cut_candidate" {
+  const normalized = value?.toLowerCase()?.trim() || "medium";
+  if (normalized === "must_keep" || normalized === "must-keep" || normalized === "mustkeep") return "must_keep";
+  if (normalized === "high" || normalized === "high_value" || normalized === "high-value" || normalized === "highvalue") return "high";
+  if (normalized === "medium" || normalized === "mid" || normalized === "moderate") return "medium";
+  if (normalized === "low" || normalized === "low_value" || normalized === "lowvalue") return "low";
+  if (normalized === "cut_candidate" || normalized === "cut" || normalized === "cutcandidate") return "cut_candidate";
+  return "medium";
+}
+
+function normalizeQualityLevel(value: string): "high" | "medium" | "low" {
+  const normalized = value?.toLowerCase()?.trim() || "medium";
+  if (normalized === "high" || normalized === "excellent" || normalized === "good") return "high";
+  if (normalized === "low" || normalized === "poor" || normalized === "none" || normalized === "n/a" || normalized === "na") return "low";
+  return "medium";
+}
+
+function normalizePacing(value: string): "slow" | "moderate" | "fast" {
+  const normalized = value?.toLowerCase()?.trim() || "moderate";
+  if (normalized === "slow" || normalized === "relaxed") return "slow";
+  if (normalized === "fast" || normalized === "quick" || normalized === "rapid") return "fast";
+  return "moderate";
+}
+
+function normalizePriority(value: string): "high" | "medium" | "low" {
+  const normalized = value?.toLowerCase()?.trim() || "medium";
+  if (normalized === "high" || normalized === "critical" || normalized === "important") return "high";
+  if (normalized === "low" || normalized === "optional") return "low";
+  return "medium";
+}
+
+// Pre-process AI responses to normalize enum values before validation
+function normalizeQualityMapResponse(parsed: any): any {
+  if (!parsed) return parsed;
+  
+  if (parsed.segmentScores && Array.isArray(parsed.segmentScores)) {
+    parsed.segmentScores = parsed.segmentScores.map((s: any) => ({
+      ...s,
+      valueLevel: normalizeValueLevel(s.valueLevel),
+    }));
+  }
+  
+  return parsed;
+}
+
+function normalizeReviewedPlanResponse(parsed: any): any {
+  if (!parsed) return parsed;
+  
+  if (parsed.qualityMetrics) {
+    parsed.qualityMetrics = {
+      ...parsed.qualityMetrics,
+      pacing: normalizePacing(parsed.qualityMetrics.pacing),
+      brollRelevance: normalizeQualityLevel(parsed.qualityMetrics.brollRelevance),
+      narrativeFlow: normalizeQualityLevel(parsed.qualityMetrics.narrativeFlow),
+      overallScore: typeof parsed.qualityMetrics.overallScore === 'number' ? parsed.qualityMetrics.overallScore : 60,
+    };
+  }
+  
+  if (parsed.actions && Array.isArray(parsed.actions)) {
+    parsed.actions = parsed.actions.map((a: any) => ({
+      ...a,
+      priority: a.priority ? normalizePriority(a.priority) : undefined,
+    }));
+  }
+  
+  return parsed;
+}
+
+function normalizeBrollPlanResponse(parsed: any): any {
+  if (!parsed) return parsed;
+  
+  if (parsed.brollPlacements && Array.isArray(parsed.brollPlacements)) {
+    parsed.brollPlacements = parsed.brollPlacements.map((b: any) => ({
+      ...b,
+      priority: normalizePriority(b.priority),
+    }));
+  }
+  
+  return parsed;
+}
+
 export interface StructuredPlan {
   introSection: { start: number; end: number } | null;
   mainContentSection: { start: number; end: number };
@@ -346,7 +428,8 @@ Respond in JSON format only (no markdown):
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
-    const validated = QualityMapSchema.safeParse(parsed);
+    const normalized = normalizeQualityMapResponse(parsed);
+    const validated = QualityMapSchema.safeParse(normalized);
     if (!validated.success) {
       aiLogger.warn("Pass 2: Schema validation failed, using defaults:", validated.error.issues);
       return getDefaultQualityMap(duration, semanticAnalysis);
@@ -468,7 +551,8 @@ Respond in JSON format only (no markdown):
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
-    const validated = OptimizedBrollPlanSchema.safeParse(parsed);
+    const normalized = normalizeBrollPlanResponse(parsed);
+    const validated = OptimizedBrollPlanSchema.safeParse(normalized);
     if (!validated.success) {
       aiLogger.warn("Pass 3: Schema validation failed, using defaults:", validated.error.issues);
       return getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
@@ -641,7 +725,8 @@ Respond in JSON format only (no markdown):
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
-    const validated = ReviewedEditPlanSchema.safeParse(parsed);
+    const normalized = normalizeReviewedPlanResponse(parsed);
+    const validated = ReviewedEditPlanSchema.safeParse(normalized);
     if (!validated.success) {
       aiLogger.warn("Pass 4: Schema validation failed, using preliminary actions:", validated.error.issues);
       return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);

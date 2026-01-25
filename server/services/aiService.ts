@@ -63,7 +63,7 @@ const EditActionSchema = z.union([
 ]);
 
 const EditPlanResponseSchema = z.object({
-  actions: z.array(z.any()),
+  actions: z.array(EditActionSchema),
   stockQueries: z.array(z.string()).optional(),
   keyPoints: z.array(z.string()).optional(),
   estimatedDuration: z.number().optional(),

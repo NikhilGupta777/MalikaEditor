@@ -8,6 +8,7 @@ const aiLogger = createLogger("ai-service");
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
+const GEMINI_MAX_FILE_SIZE_MB = 7;
 
 export function logTranscriptionConfig(): void {
   const hasOpenAIKey = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
@@ -21,7 +22,7 @@ export function logTranscriptionConfig(): void {
   }
   
   if (hasGeminiKey) {
-    aiLogger.info("Fallback: Gemini 2.5 Flash audio transcription");
+    aiLogger.info(`Fallback: Gemini 2.5 Flash (audio files < ${GEMINI_MAX_FILE_SIZE_MB}MB)`);
   }
   
   if (!hasOpenAIKey && !hasGeminiKey) {
@@ -36,6 +37,56 @@ export function logTranscriptionConfig(): void {
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableError(error: unknown): boolean {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const errorCode = (error as any)?.status || (error as any)?.code;
+  
+  if (errorCode === 400 || errorCode === 401 || errorCode === 403) {
+    return false;
+  }
+  
+  if (errorMessage.includes("model") && errorMessage.includes("not found")) {
+    return false;
+  }
+  if (errorMessage.includes("Invalid API Key") || errorMessage.includes("authentication")) {
+    return false;
+  }
+  if (errorMessage.includes("permission") || errorMessage.includes("forbidden")) {
+    return false;
+  }
+  
+  return true;
+}
+
+function createSegmentsFromText(text: string): TranscriptSegment[] {
+  const sentences = text.split(/(?<=[.!?।])\s+/).filter((s: string) => s.trim());
+  
+  if (sentences.length === 0) {
+    if (text.trim()) {
+      return [{
+        start: 0,
+        end: 10,
+        text: text.trim(),
+      }];
+    }
+    return [];
+  }
+  
+  const charsPerSecond = 12.5;
+  let currentTime = 0;
+  
+  return sentences.map((sentence: string) => {
+    const duration = Math.max(1.5, sentence.length / charsPerSecond);
+    const segment = {
+      start: currentTime,
+      end: currentTime + duration,
+      text: sentence.trim(),
+    };
+    currentTime += duration + 0.3;
+    return segment;
+  }).filter((s: TranscriptSegment) => s.text.length > 0);
 }
 
 async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegment[]> {
@@ -55,42 +106,24 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
       const text = response.text || "";
       
       if (!text.trim()) {
-        aiLogger.warn("OpenAI transcription returned empty text");
+        aiLogger.warn("OpenAI transcription returned empty text (possibly silent audio)");
         return [];
       }
 
       aiLogger.info(`OpenAI transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
-      const sentences = text.split(/(?<=[.!?।])\s+/).filter((s: string) => s.trim());
-      
-      if (sentences.length === 0) {
-        return [{
-          start: 0,
-          end: 10,
-          text: text.trim(),
-        }];
-      }
-      
-      const charsPerSecond = 12.5;
-      let currentTime = 0;
-      
-      const segments = sentences.map((sentence: string) => {
-        const duration = Math.max(1.5, sentence.length / charsPerSecond);
-        const segment = {
-          start: currentTime,
-          end: currentTime + duration,
-          text: sentence.trim(),
-        };
-        currentTime += duration + 0.3;
-        return segment;
-      }).filter((s: TranscriptSegment) => s.text.length > 0);
-      
+      const segments = createSegmentsFromText(text);
       aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
       return segments;
       
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       aiLogger.error(`OpenAI transcription attempt ${attempt}/${MAX_RETRIES} failed:`, errorMessage);
+      
+      if (!isRetryableError(error)) {
+        aiLogger.warn("Non-retryable error detected, skipping remaining retries");
+        break;
+      }
       
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
@@ -104,11 +137,18 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
 }
 
 async function transcribeWithGemini(audioPath: string): Promise<TranscriptSegment[]> {
-  aiLogger.info("Using Gemini 2.5 Flash for audio transcription (fallback)...");
+  const audioBuffer = await fs.readFile(audioPath);
+  const fileSizeMB = audioBuffer.length / (1024 * 1024);
+  
+  if (fileSizeMB > GEMINI_MAX_FILE_SIZE_MB) {
+    aiLogger.warn(`Audio file (${fileSizeMB.toFixed(1)}MB) exceeds Gemini limit (${GEMINI_MAX_FILE_SIZE_MB}MB), skipping Gemini fallback`);
+    return [];
+  }
+  
+  aiLogger.info(`Using Gemini 2.5 Flash for transcription (file size: ${fileSizeMB.toFixed(1)}MB)...`);
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const audioBuffer = await fs.readFile(audioPath);
       const base64Audio = audioBuffer.toString('base64');
       
       const ext = audioPath.split('.').pop()?.toLowerCase() || 'mp3';
@@ -133,9 +173,9 @@ async function transcribeWithGemini(audioPath: string): Promise<TranscriptSegmen
                 }
               },
               {
-                text: `Transcribe this audio accurately. Include all spoken words. 
-If the audio contains speech in any language (including Hindi, English, or any other), transcribe it in the original language.
-Return ONLY the transcription text, nothing else. No explanations, no timestamps, just the spoken words.`
+                text: `Transcribe this audio accurately and completely. Include every spoken word.
+If the audio contains speech in any language (Hindi, English, Spanish, or any other), transcribe it in the original language.
+Return ONLY the transcription text, nothing else. No explanations, no timestamps, no formatting - just the exact words spoken.`
               }
             ]
           }
@@ -154,30 +194,7 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
 
       aiLogger.info(`Gemini transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
-      const sentences = text.split(/(?<=[.!?।])\s+/).filter((s: string) => s.trim());
-      
-      if (sentences.length === 0) {
-        return [{
-          start: 0,
-          end: 10,
-          text: text.trim(),
-        }];
-      }
-      
-      const charsPerSecond = 12.5;
-      let currentTime = 0;
-      
-      const segments = sentences.map((sentence: string) => {
-        const duration = Math.max(1.5, sentence.length / charsPerSecond);
-        const segment = {
-          start: currentTime,
-          end: currentTime + duration,
-          text: sentence.trim(),
-        };
-        currentTime += duration + 0.3;
-        return segment;
-      }).filter((s: TranscriptSegment) => s.text.length > 0);
-      
+      const segments = createSegmentsFromText(text);
       aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
       return segments;
       
@@ -185,8 +202,13 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
       const errorMessage = error instanceof Error ? error.message : String(error);
       aiLogger.error(`Gemini transcription attempt ${attempt}/${MAX_RETRIES} failed:`, errorMessage);
       
-      if (errorMessage.includes("8 MB") || errorMessage.includes("too large")) {
-        aiLogger.warn("Audio file too large for Gemini inline data. Consider chunking for very long videos.");
+      if (errorMessage.includes("8 MB") || errorMessage.includes("too large") || errorMessage.includes("INVALID_ARGUMENT")) {
+        aiLogger.warn("Audio file too large for Gemini inline data");
+        break;
+      }
+      
+      if (!isRetryableError(error)) {
+        aiLogger.warn("Non-retryable error detected, skipping remaining retries");
         break;
       }
       
@@ -226,6 +248,6 @@ export async function transcribeAudio(
     }
   }
   
-  aiLogger.error("All transcription methods failed. No segments extracted.");
+  aiLogger.error("All transcription methods failed. No segments extracted from audio.");
   return [];
 }

@@ -1,4 +1,4 @@
-import type { Express, Response } from "express";
+import type { Express, Request, Response } from "express";
 import { type Server } from "http";
 import multer from "multer";
 import path from "path";
@@ -344,7 +344,7 @@ export async function registerRoutes(
       }
     }, 15000);
 
-    const updateStatus = async (status: string) => {
+    const updateStatus = async (status: "pending" | "uploading" | "analyzing" | "transcribing" | "planning" | "fetching_stock" | "generating_ai_images" | "editing" | "rendering" | "completed" | "failed" | "cancelled") => {
       if (abortSignal.aborted) return; // Don't update status if aborted
       await storage.updateVideoProject(id, { status });
       sendEvent("status", { status });

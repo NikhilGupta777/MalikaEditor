@@ -14,8 +14,11 @@ export const projectStatusEnum = pgEnum("project_status", [
   "editing",
   "rendering",
   "completed",
-  "failed"
+  "failed",
+  "cancelled"
 ]);
+
+export type ProjectStatus = typeof projectStatusEnum.enumValues[number];
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

@@ -2431,7 +2431,7 @@ function validateBrollSpacing(
 ): Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> {
   // Sort by start time
   const sorted = [...placements].sort((a, b) => a.start - b.start);
-  const validated: typeof placements = [];
+  const validated: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> = [];
   let lastEnd = -5; // Allow first B-roll at 0
 
   for (const placement of sorted) {
@@ -2464,7 +2464,7 @@ function getDefaultBrollPlan(
       duration: Math.min(5, b.end - b.start),
       query: b.suggestedQuery,
       transcriptContext: b.context,
-      priority: b.priority,
+      priority: (b.priority || "medium") as "low" | "medium" | "high",
       reason: b.reason,
     }));
 
@@ -2795,11 +2795,12 @@ export async function generateSmartEditPlan(
   aiLogger.info(`Multi-pass smart edit planning complete in ${elapsedTime}ms`);
 
   // Extract unique stock queries
-  const stockQueries = [...new Set(
+  const stockQueriesSet = new Set(
     validatedActions
       .filter(a => a.type === "insert_stock" && a.stockQuery)
       .map(a => a.stockQuery!)
-  )];
+  );
+  const stockQueries = Array.from(stockQueriesSet);
 
   // Extract key points from structure analysis
   const keyPoints = [

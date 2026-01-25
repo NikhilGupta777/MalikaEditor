@@ -636,7 +636,7 @@ Timer: 100.0000
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Montserrat-Bold,${fontSize},${highlightColor},${baseColor},${outlineColor},${backColor},1,0,0,0,100,100,0,0,1,4,2,2,30,30,${marginBottom},1
+Style: Default,Noto Sans,${fontSize},${highlightColor},${baseColor},${outlineColor},${backColor},1,0,0,0,100,100,0,0,1,4,2,2,30,30,${marginBottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1758,7 +1758,7 @@ async function applyEditsInternal(
         if (finalOutputTime >= 0 && finalOutputTime < baseMetadata.duration && finalOutputDuration > 0) {
           brollOverlays.push({
             localPath: aiMedia.localPath,
-            type: aiMedia.item.type,
+            type: aiMedia.item.type as "video" | "image" | "ai_generated",
             startTime: finalOutputTime,
             duration: finalOutputDuration,
           });
@@ -1820,7 +1820,7 @@ async function applyEditsInternal(
           
           brollOverlays.push({
             localPath: mediaItem.localPath,
-            type: mediaItem.item.type,
+            type: mediaItem.item.type as "video" | "image" | "ai_generated",
             startTime: outputTime,
             duration,
             text: action.text,
@@ -1850,7 +1850,7 @@ async function applyEditsInternal(
         if (!overlapsExisting) {
           brollOverlays.push({
             localPath: remainingStock[i].localPath,
-            type: remainingStock[i].item.type,
+            type: remainingStock[i].item.type as "video" | "image" | "ai_generated",
             startTime,
             duration,
           });

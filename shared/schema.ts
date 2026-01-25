@@ -295,8 +295,7 @@ export const qualityScoreSchema = z.object({
 export type QualityScore = z.infer<typeof qualityScoreSchema>;
 
 export const editActionSchema = z.object({
-  // Note: AI images are auto-placed from semantic analysis (not in edit plan)
-  type: z.enum(["cut", "keep", "insert_stock", "add_caption", "add_text_overlay", "transition", "speed_change"]),
+  type: z.enum(["cut", "keep", "insert_stock", "insert_ai_image", "add_caption", "add_text_overlay", "transition", "speed_change"]),
   start: z.number().optional(),
   end: z.number().optional(),
   duration: z.number().optional(),

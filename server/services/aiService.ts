@@ -145,7 +145,7 @@ const KeyMomentResponseSchema = z.object({
   type: z.enum(["hook", "climax", "callToAction", "keyPoint", "transition"]),
   description: z.string(),
   importance: z.enum(["high", "medium", "low"]),
-  hookScore: z.number().min(0).max(100).optional(),
+  hookScore: z.number().min(0).max(100).nullish(),
 });
 
 const VideoAnalysisResponseSchema = z.object({
@@ -676,7 +676,7 @@ Respond in JSON format only (no markdown):
     type: k.type || "keyPoint",
     description: k.description || "",
     importance: k.importance || "medium",
-    hookScore: k.hookScore,
+    hookScore: k.hookScore ?? undefined,
   }));
 
   return {

@@ -57,14 +57,14 @@ interface VideoProject {
   id: number;
   fileName: string;
   originalPath: string;
-  outputPath?: string;
+  outputPath?: string | null;
   status: ProcessingStatusType;
-  duration?: number;
-  editPlan?: EditPlan;
-  stockMedia?: StockMediaItem[];
-  errorMessage?: string;
+  duration?: number | null;
+  editPlan?: EditPlan | null;
+  transcript?: TranscriptSegment[] | null;
+  stockMedia?: StockMediaItem[] | null;
+  errorMessage?: string | null;
   aiImageStats?: AiImageStats;
-  transcript?: TranscriptSegment[];
   semanticAnalysis?: SemanticAnalysis;
   fillerSegments?: FillerSegment[];
   qualityInsights?: QualityInsights;
@@ -479,7 +479,7 @@ export default function Editor() {
               {project && project.status !== "pending" && project.status !== "completed" && (
                 <ProcessingStatus
                   status={project.status}
-                  error={project.errorMessage}
+                  error={project.errorMessage ?? undefined}
                   onRetry={project.status === "failed" ? handleRetryProcessing : undefined}
                   aiImageStats={project.aiImageStats}
                 />
@@ -495,7 +495,7 @@ export default function Editor() {
                       Your edited video is ready to download
                     </p>
                     <DownloadButton
-                      outputPath={project.outputPath}
+                      outputPath={project.outputPath ?? undefined}
                       isProcessing={false}
                       isComplete={true}
                     />

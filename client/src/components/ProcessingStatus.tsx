@@ -20,6 +20,7 @@ interface ProcessingStatusProps {
 }
 
 const STEPS = [
+  { id: "uploading", label: "Uploading video" },
   { id: "analyzing", label: "Analyzing video" },
   { id: "transcribing", label: "Transcribing speech" },
   { id: "planning", label: "Creating edit plan" },

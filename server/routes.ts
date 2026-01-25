@@ -913,23 +913,31 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         const approvedAiImages = reviewData.aiImages.filter(m => m.approved);
         
         // Apply transcript edits from user (approved segments with updated text)
-        const approvedTranscriptIds = new Set(
-          reviewData.transcript.filter(t => t.approved).map(t => t.id)
-        );
-        const transcriptEditsMap = new Map(
-          reviewData.transcript.map(t => [t.id, t])
+        // Use start+end timestamps as stable identifiers for matching
+        const reviewTranscriptByTime = new Map(
+          reviewData.transcript.map(t => [`${t.start.toFixed(3)}_${t.end.toFixed(3)}`, t])
         );
         
-        // Update transcript with user edits
-        transcript = transcript.map((seg, idx) => {
-          const reviewSeg = transcriptEditsMap.get(`transcript_${idx}`);
-          if (reviewSeg && reviewSeg.edited) {
-            return { ...seg, text: reviewSeg.text };
-          }
-          return seg;
-        }).filter((_, idx) => approvedTranscriptIds.has(`transcript_${idx}`));
+        // Update transcript with user edits and filter out rejected segments
+        transcript = transcript
+          .map((seg) => {
+            const timeKey = `${seg.start.toFixed(3)}_${seg.end.toFixed(3)}`;
+            const reviewSeg = reviewTranscriptByTime.get(timeKey);
+            if (reviewSeg) {
+              // Skip if not approved
+              if (!reviewSeg.approved) {
+                return null;
+              }
+              // Apply text edits if modified
+              if (reviewSeg.edited) {
+                return { ...seg, text: reviewSeg.text };
+              }
+            }
+            return seg;
+          })
+          .filter((seg): seg is NonNullable<typeof seg> => seg !== null);
         
-        sendActivity(`Applied transcript edits: ${reviewData.transcript.filter(t => t.edited).length} segments modified`);
+        sendActivity(`Applied transcript edits: ${reviewData.transcript.filter(t => t.edited).length} segments modified, ${reviewData.transcript.filter(t => !t.approved).length} rejected`);
         
         // Update edit plan with only approved actions
         if (editPlan) {

@@ -12,6 +12,7 @@ import {
   editPlanSchema,
   transcriptSegmentSchema,
   stockMediaItemSchema,
+  reviewDataSchema,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { z } from "zod";
@@ -65,7 +66,8 @@ export class MemStorage implements IStorage {
     let oldestId: number | null = null;
     let oldestTime = Infinity;
 
-    for (const [id, lastAccessed] of this.projectLastAccessed) {
+    for (const entry of Array.from(this.projectLastAccessed.entries())) {
+      const [id, lastAccessed] = entry;
       if (lastAccessed < oldestTime) {
         oldestTime = lastAccessed;
         oldestId = id;
@@ -146,6 +148,17 @@ export class MemStorage implements IStorage {
       }
     }
     
+    if (data.reviewData !== undefined && data.reviewData !== null) {
+      const result = reviewDataSchema.safeParse(data.reviewData);
+      if (!result.success) {
+        logger.warn("ReviewData validation warning - storing raw data", {
+          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+        });
+      } else {
+        normalized.reviewData = result.data;
+      }
+    }
+    
     return normalized;
   }
 
@@ -168,6 +181,7 @@ export class MemStorage implements IStorage {
       editPlan: (normalizedProject.editPlan as any) || null,
       transcript: (normalizedProject.transcript as any) || null,
       stockMedia: (normalizedProject.stockMedia as any) || null,
+      reviewData: (normalizedProject.reviewData as any) || null,
       errorMessage: project.errorMessage || null,
       version: 1,
       createdAt: now,

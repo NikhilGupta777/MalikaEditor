@@ -96,3 +96,31 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 
 ### Cloud Storage
 -   **Google Cloud Storage**: For object storage, integrated via Replit sidecar.
+
+## Recent Changes (January 2026)
+
+### Security Updates
+- Removed hardcoded credentials from source code
+- Admin user credentials now configured via environment variables:
+  - `DEFAULT_ADMIN_USERNAME`: Username for auto-created admin account
+  - `DEFAULT_ADMIN_PASSWORD`: Password for auto-created admin account
+- Session secret validation strengthened for production environments
+
+### Bug Fixes
+- Fixed TypeScript compilation error with Map iteration (using `Array.from()`)
+- Added missing `reviewData` field to VideoProject creation in MemStorage
+- Added reviewData schema validation in storage layer
+
+## Environment Variables
+
+### Required for Authentication
+- `SESSION_SECRET`: Secret key for session encryption (required in production)
+- `DEFAULT_ADMIN_USERNAME`: Username for initial admin account
+- `DEFAULT_ADMIN_PASSWORD`: Password for initial admin account
+
+### AI Services (via Replit Integrations)
+- `AI_INTEGRATIONS_OPENAI_API_KEY`: OpenAI API key (for transcription)
+- `AI_INTEGRATIONS_GEMINI_API_KEY`: Gemini API key (for video analysis)
+
+### Media Services
+- `PEXELS_API_KEY`: Pexels API key for stock media

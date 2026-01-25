@@ -150,20 +150,25 @@ app.use((req, res, next) => {
   // Log transcription system configuration at startup
   logTranscriptionConfig();
 
-  // Create default user if not exists
+  // Create default admin user from environment variables if not exists
   try {
-    const defaultUsername = "Malikaeditor";
-    const defaultPassword = "Malikaeditor#123";
-    const existingUser = await storage.getUserByUsername(defaultUsername);
-    if (!existingUser) {
-      const hashedPassword = await hashPassword(defaultPassword);
-      await storage.createUser({ username: defaultUsername, password: hashedPassword });
-      log(`Default user '${defaultUsername}' created`);
+    const defaultUsername = process.env.DEFAULT_ADMIN_USERNAME;
+    const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD;
+    
+    if (defaultUsername && defaultPassword) {
+      const existingUser = await storage.getUserByUsername(defaultUsername);
+      if (!existingUser) {
+        const hashedPassword = await hashPassword(defaultPassword);
+        await storage.createUser({ username: defaultUsername, password: hashedPassword });
+        log(`Admin user '${defaultUsername}' created from environment variables`);
+      } else {
+        log(`Admin user '${defaultUsername}' already exists`);
+      }
     } else {
-      log(`Default user '${defaultUsername}' already exists`);
+      log("No default admin credentials configured. Set DEFAULT_ADMIN_USERNAME and DEFAULT_ADMIN_PASSWORD environment variables to create an admin user on startup.");
     }
   } catch (e) {
-    expressLogger.warn("Failed to create default user:", e);
+    expressLogger.warn("Failed to create admin user:", e);
   }
 
   await registerRoutes(httpServer, app);

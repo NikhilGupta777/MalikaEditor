@@ -48,3 +48,9 @@ expertMode = true
 
 [objectStorage]
 defaultBucketID = "replit-objstore-c89eb0fe-dd55-471d-953a-e56bf65de372"
+
+[userenv]
+
+[userenv.shared]
+DEFAULT_ADMIN_USERNAME = "Malikaeditor"
+DEFAULT_ADMIN_PASSWORD = "Malikaeditor#123"

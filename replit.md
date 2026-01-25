@@ -111,6 +111,12 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - Added missing `reviewData` field to VideoProject creation in MemStorage
 - Added reviewData schema validation in storage layer
 
+### New Features
+- Added file magic byte validation for video uploads (validates actual file content, not just MIME type)
+- Added SSE reconnection hook for frontend with exponential backoff (client/src/hooks/useSSE.ts)
+- Health check endpoint available at `/api/health`
+- Improved SSE disconnect handling with proper abort controllers and resource cleanup
+
 ## Environment Variables
 
 ### Required for Authentication

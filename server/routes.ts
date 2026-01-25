@@ -8,6 +8,7 @@ import { z } from "zod";
 import { storage } from "./storage";
 import { createLogger } from "./utils/logger";
 import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
+import { validateVideoMagicBytes } from "./utils/fileValidation";
 
 // Zod schemas for query/path parameter validation
 const idParamSchema = z.object({
@@ -282,6 +283,16 @@ export async function registerRoutes(
         }
 
         const filePath = req.file.path;
+        
+        const magicBytesResult = await validateVideoMagicBytes(filePath);
+        if (!magicBytesResult.valid) {
+          await fs.unlink(filePath).catch(() => {});
+          return res.status(400).json({
+            error: magicBytesResult.error || "Invalid video file format",
+            suggestion: "Please upload a valid video file (MP4, MOV, WebM, or AVI)",
+          });
+        }
+
         const metadata = await getVideoMetadata(filePath);
 
         // Check video duration limit (default: 30 minutes = 1800 seconds)

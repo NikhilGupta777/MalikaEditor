@@ -255,6 +255,16 @@ export default function Editor() {
             setProject((prev) =>
               prev ? { ...prev, transcript: data.transcript } : null
             );
+          } else if (data.type === "aiImages") {
+            // AI images generated notification - aiImageStats will have the full data
+            console.log(`Generated ${data.count} AI images`);
+          } else if (data.type === "aiImagesError") {
+            // AI image generation failed, continuing with stock media
+            toast({
+              title: "AI Image Generation",
+              description: data.error || "AI images unavailable, using stock media",
+              variant: "default",
+            });
           } else if (data.type === "complete") {
             setProject((prev) =>
               prev

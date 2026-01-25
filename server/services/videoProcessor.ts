@@ -103,6 +103,55 @@ function cleanupTempFilesSync(paths: string[]): void {
   }
 }
 
+// Temp file tracking for cleanup on unhandled errors
+const ALL_TEMP_DIRS = [UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR];
+
+// Clean up stale temp files older than maxAgeHours
+// This should be called on server startup to prevent disk space from filling
+export async function cleanupStaleTempFiles(maxAgeHours: number = 2): Promise<{ cleaned: number; errors: number }> {
+  const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+  const now = Date.now();
+  let cleaned = 0;
+  let errors = 0;
+
+  for (const dir of ALL_TEMP_DIRS) {
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        
+        try {
+          const stat = await fs.stat(fullPath);
+          const age = now - stat.mtimeMs;
+          
+          if (age > maxAgeMs) {
+            if (entry.isDirectory()) {
+              await fs.rm(fullPath, { recursive: true });
+            } else {
+              await fs.unlink(fullPath);
+            }
+            cleaned++;
+            console.log(`[TempCleanup] Removed stale file: ${fullPath} (age: ${(age / 1000 / 60).toFixed(1)} min)`);
+          }
+        } catch (e) {
+          errors++;
+          // File may have been removed by another process
+        }
+      }
+    } catch (e) {
+      // Directory may not exist yet
+    }
+  }
+
+  if (cleaned > 0 || errors > 0) {
+    console.log(`[TempCleanup] Completed: ${cleaned} files cleaned, ${errors} errors`);
+  }
+  
+  return { cleaned, errors };
+}
+
 async function ensureDirs() {
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
   await fs.mkdir(FRAMES_DIR, { recursive: true });
@@ -858,7 +907,49 @@ export async function applyEdits(
   const outputId = outputFileName || uuidv4();
   const outputPath = path.join(OUTPUT_DIR, `${outputId}.mp4`);
   const metadata = await getVideoMetadata(videoPath);
+  
+  // Track temp files for cleanup on error
   const tempFiles: string[] = [];
+  
+  try {
+    const result = await applyEditsInternal(
+      videoPath,
+      editPlan,
+      transcript,
+      stockMedia,
+      options,
+      outputId,
+      outputPath,
+      metadata,
+      tempFiles
+    );
+    
+    // Success - internal function handles its own cleanup
+    return result;
+  } catch (error) {
+    // On error, clean up all temp files (they won't be cleaned by internal function)
+    console.log(`[TempCleanup] Error occurred, cleaning up ${tempFiles.length} temp files`);
+    for (const tempPath of tempFiles) {
+      if (tempPath !== outputPath) {
+        await fs.unlink(tempPath).catch(() => {});
+      }
+    }
+    // Re-throw the error
+    throw error;
+  }
+}
+
+async function applyEditsInternal(
+  videoPath: string,
+  editPlan: EditPlan,
+  transcript: TranscriptSegment[],
+  stockMedia: StockMediaItem[],
+  options: EditOptions,
+  outputId: string,
+  outputPath: string,
+  metadata: { duration: number; width: number; height: number; fps: number },
+  tempFiles: string[]
+): Promise<EditResult> {
 
   // Extract action types from edit plan
   const keepSegments = editPlan.actions

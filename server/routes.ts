@@ -4,8 +4,34 @@ import multer from "multer";
 import path from "path";
 import { promises as fs } from "fs";
 import { v4 as uuidv4 } from "uuid";
+import { z } from "zod";
 import { storage } from "./storage";
 import { createLogger } from "./utils/logger";
+
+// Zod schemas for query/path parameter validation
+const idParamSchema = z.object({
+  id: z.coerce.number().int().positive("ID must be a positive integer"),
+});
+
+const booleanQueryParam = (defaultValue: boolean) =>
+  z.string().optional().transform(v => {
+    if (v === undefined) return defaultValue;
+    return v === "true";
+  });
+
+const processQuerySchema = z.object({
+  prompt: z.string().min(1, "Prompt is required"),
+  addCaptions: booleanQueryParam(true),
+  addBroll: booleanQueryParam(true),
+  removeSilence: booleanQueryParam(true),
+  generateAiImages: booleanQueryParam(false),
+  addTransitions: booleanQueryParam(false),
+});
+
+// Helper to format Zod errors for user-friendly 400 responses
+function formatZodError(error: z.ZodError): string {
+  return error.errors.map(e => `${e.path.join(".")}: ${e.message}`).join(", ");
+}
 
 const routesLogger = createLogger("routes");
 import {
@@ -178,10 +204,12 @@ export async function registerRoutes(
 
   app.get("/api/videos/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const id = parseInt(req.params.id as string);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid project ID" });
+      const paramResult = idParamSchema.safeParse(req.params);
+      if (!paramResult.success) {
+        return res.status(400).json({ error: formatZodError(paramResult.error) });
       }
+      const { id } = paramResult.data;
+      
       const project = await storage.getVideoProject(id);
 
       if (!project) {
@@ -197,23 +225,28 @@ export async function registerRoutes(
   });
 
   app.get("/api/videos/:id/process", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    const id = parseInt(req.params.id as string);
-    if (isNaN(id)) {
-      return res.status(400).json({ error: "Invalid project ID" });
+    // Validate path parameters
+    const paramResult = idParamSchema.safeParse(req.params);
+    if (!paramResult.success) {
+      return res.status(400).json({ error: formatZodError(paramResult.error) });
     }
-    const prompt = req.query.prompt as string;
+    const { id } = paramResult.data;
+    
+    // Validate query parameters
+    const queryResult = processQuerySchema.safeParse(req.query);
+    if (!queryResult.success) {
+      return res.status(400).json({ error: formatZodError(queryResult.error) });
+    }
+    
+    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions } = queryResult.data;
     
     const editOptions: EditOptions = {
-      addCaptions: req.query.addCaptions !== "false",
-      addBroll: req.query.addBroll !== "false",
-      removeSilence: req.query.removeSilence !== "false",
-      generateAiImages: req.query.generateAiImages === "true",
-      addTransitions: req.query.addTransitions === "true",
+      addCaptions,
+      addBroll,
+      removeSilence,
+      generateAiImages,
+      addTransitions,
     };
-
-    if (!prompt) {
-      return res.status(400).json({ error: "Prompt is required" });
-    }
 
     const project = await storage.getVideoProject(id);
     if (!project) {

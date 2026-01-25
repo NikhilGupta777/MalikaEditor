@@ -6,6 +6,7 @@ import { sessionMiddleware } from "./middleware/auth";
 import cors from "cors";
 import helmet from "helmet";
 import { createLogger } from "./utils/logger";
+import { cleanupStaleTempFiles } from "./services/videoProcessor";
 
 const expressLogger = createLogger("express");
 
@@ -134,6 +135,16 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Clean up stale temp files from previous runs (files older than 2 hours)
+  try {
+    const cleanup = await cleanupStaleTempFiles(2);
+    if (cleanup.cleaned > 0) {
+      log(`Startup cleanup: removed ${cleanup.cleaned} stale temp files`);
+    }
+  } catch (e) {
+    expressLogger.warn("Failed to clean up stale temp files on startup:", e);
+  }
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

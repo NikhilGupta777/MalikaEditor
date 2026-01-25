@@ -21,15 +21,42 @@ export interface IStorage {
   getAllVideoProjects(): Promise<VideoProject[]>;
 }
 
+const MAX_PROJECTS = 100;
+
 export class MemStorage implements IStorage {
   private users: Map<string, User>;
   private videoProjects: Map<number, VideoProject>;
+  private projectLastAccessed: Map<number, number>;
   private nextProjectId: number;
 
   constructor() {
     this.users = new Map();
     this.videoProjects = new Map();
+    this.projectLastAccessed = new Map();
     this.nextProjectId = 1;
+  }
+
+  private evictLeastRecentlyAccessed(): void {
+    if (this.videoProjects.size < MAX_PROJECTS) return;
+
+    let oldestId: number | null = null;
+    let oldestTime = Infinity;
+
+    for (const [id, lastAccessed] of this.projectLastAccessed) {
+      if (lastAccessed < oldestTime) {
+        oldestTime = lastAccessed;
+        oldestId = id;
+      }
+    }
+
+    if (oldestId !== null) {
+      this.videoProjects.delete(oldestId);
+      this.projectLastAccessed.delete(oldestId);
+    }
+  }
+
+  private updateLastAccessed(id: number): void {
+    this.projectLastAccessed.set(id, Date.now());
   }
 
   async getUser(id: string): Promise<User | undefined> {
@@ -50,6 +77,8 @@ export class MemStorage implements IStorage {
   }
 
   async createVideoProject(project: InsertVideoProject): Promise<VideoProject> {
+    this.evictLeastRecentlyAccessed();
+    
     const id = this.nextProjectId++;
     const now = new Date();
     const videoProject: VideoProject = {
@@ -69,11 +98,16 @@ export class MemStorage implements IStorage {
       updatedAt: now,
     };
     this.videoProjects.set(id, videoProject);
+    this.updateLastAccessed(id);
     return videoProject;
   }
 
   async getVideoProject(id: number): Promise<VideoProject | undefined> {
-    return this.videoProjects.get(id);
+    const project = this.videoProjects.get(id);
+    if (project) {
+      this.updateLastAccessed(id);
+    }
+    return project;
   }
 
   async updateVideoProject(
@@ -89,6 +123,7 @@ export class MemStorage implements IStorage {
       updatedAt: new Date(),
     };
     this.videoProjects.set(id, updatedProject);
+    this.updateLastAccessed(id);
     return updatedProject;
   }
 

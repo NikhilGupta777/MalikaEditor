@@ -1061,7 +1061,7 @@ function getDefaultSemanticAnalysis(transcript: TranscriptSegment[], duration: n
 export async function generateAiImage(
   prompt: string,
   videoContext?: VideoContext
-): Promise<{ base64Data: string; mimeType: string } | null> {
+): Promise<{ base64Data: string; mimeType: string }> {
   try {
     // Enhance the prompt with video context for better relevance
     const contextualPrompt = videoContext 
@@ -1096,8 +1096,9 @@ export async function generateAiImage(
     );
 
     if (!imagePart?.inlineData?.data) {
-      aiLogger.warn("No image data in AI generation response");
-      return null;
+      const error = new Error("No image data in AI generation response - the model may have failed to generate an image");
+      aiLogger.error("AI image generation failed: no image data in response");
+      throw error;
     }
 
     const mimeType = imagePart.inlineData.mimeType || "image/png";
@@ -1109,7 +1110,7 @@ export async function generateAiImage(
     };
   } catch (error) {
     aiLogger.error("AI image generation error:", error);
-    return null;
+    throw error;
   }
 }
 
@@ -1206,27 +1207,45 @@ export async function generateAiImagesForVideo(
 
   aiLogger.debug(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${maxImages})`);
 
+  let failureCount = 0;
+  const errors: Error[] = [];
+  
   for (const candidate of aiImageCandidates) {
     try {
       // Create a specific, contextual prompt from the semantic analysis
       const imagePrompt = `${candidate.suggestedQuery}. Context: ${candidate.context}`;
       const result = await generateAiImage(imagePrompt, videoContext);
       
-      if (result) {
-        // Return complete timing info from the ACTUAL candidate (not indexed from original)
-        generatedImages.push({
-          prompt: candidate.suggestedQuery,
-          base64Data: result.base64Data,
-          mimeType: result.mimeType,
-          startTime: candidate.start,
-          endTime: candidate.end,
-          duration: Math.min(candidate.end - candidate.start, 5),
-          context: candidate.context,
-        });
-      }
+      // Return complete timing info from the ACTUAL candidate (not indexed from original)
+      generatedImages.push({
+        prompt: candidate.suggestedQuery,
+        base64Data: result.base64Data,
+        mimeType: result.mimeType,
+        startTime: candidate.start,
+        endTime: candidate.end,
+        duration: Math.min(candidate.end - candidate.start, 5),
+        context: candidate.context,
+      });
     } catch (error) {
+      failureCount++;
+      const err = error instanceof Error ? error : new Error(String(error));
+      errors.push(err);
       aiLogger.error(`Failed to generate AI image for: ${candidate.suggestedQuery}`, error);
+      // Continue processing remaining candidates - partial success is acceptable
     }
+  }
+
+  if (failureCount > 0) {
+    aiLogger.warn(`AI image generation completed with ${failureCount}/${aiImageCandidates.length} failures`);
+  }
+  
+  // If ALL attempts failed, throw an aggregate error
+  if (aiImageCandidates.length > 0 && generatedImages.length === 0) {
+    const aggregateError = new Error(
+      `All ${failureCount} AI image generation attempts failed. First error: ${errors[0]?.message || 'Unknown error'}`
+    );
+    aiLogger.error("All AI image generation attempts failed", aggregateError);
+    throw aggregateError;
   }
 
   aiLogger.info(`Generated ${generatedImages.length} AI images for video`);

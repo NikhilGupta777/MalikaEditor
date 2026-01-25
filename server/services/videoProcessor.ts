@@ -313,6 +313,41 @@ function cleanupTempFilesSync(paths: string[]): void {
 // Temp file tracking for cleanup on unhandled errors
 const ALL_TEMP_DIRS = [UPLOADS_DIR, FRAMES_DIR, OUTPUT_DIR, AUDIO_DIR, STOCK_DIR, CHAPTERS_DIR];
 
+// Proxy video dimensions for fast preview rendering
+const PROXY_HEIGHT = 480;
+
+// Generate a low-resolution proxy video for faster editing/preview
+export async function generateProxyVideo(
+  inputPath: string,
+  outputPath: string
+): Promise<{ width: number; height: number; duration: number }> {
+  await ensureDirs();
+  
+  const metadata = await getVideoMetadata(inputPath);
+  const scale = PROXY_HEIGHT / metadata.height;
+  const proxyWidth = Math.round(metadata.width * scale / 2) * 2; // Ensure even
+  
+  videoLogger.info(`Generating ${proxyWidth}x${PROXY_HEIGHT} proxy from ${metadata.width}x${metadata.height} original`);
+  
+  const cmd = ffmpeg(inputPath)
+    .outputOptions([
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "32",
+      "-vf", `scale=${proxyWidth}:${PROXY_HEIGHT}`,
+      "-c:a", "aac",
+      "-b:a", "64k",
+      "-threads", "4",
+    ])
+    .output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
+  
+  videoLogger.info(`Proxy video generated: ${outputPath}`);
+  
+  return { width: proxyWidth, height: PROXY_HEIGHT, duration: metadata.duration };
+}
+
 // Clean up stale temp files older than maxAgeHours
 // This should be called on server startup to prevent disk space from filling
 export async function cleanupStaleTempFiles(maxAgeHours: number = 2): Promise<{ cleaned: number; errors: number }> {
@@ -689,6 +724,7 @@ export interface EditOptions {
   removeSilence: boolean;
   generateAiImages?: boolean;
   addTransitions?: boolean;
+  renderQuality?: "preview" | "balanced" | "quality";
 }
 
 interface DownloadedStock {
@@ -1719,16 +1755,18 @@ async function applyEditsInternal(
     overlayedPath = path.join(OUTPUT_DIR, `overlayed_${outputId}.mp4`);
     
     try {
+      const quality = options.renderQuality || "balanced";
       await applyAllBrollOverlays(
         baseVideoPath,
         brollOverlays,
         overlayedPath,
         metadata.width,
         metadata.height,
-        tempFiles
+        tempFiles,
+        quality
       );
       tempFiles.push(overlayedPath);
-      videoLogger.info(`Applied ${brollOverlays.length} B-roll overlays successfully`);
+      videoLogger.info(`Applied ${brollOverlays.length} B-roll overlays successfully (quality: ${quality})`);
     } catch (err) {
       videoLogger.error("Failed to apply overlays, using base video:", err);
       overlayedPath = baseVideoPath;

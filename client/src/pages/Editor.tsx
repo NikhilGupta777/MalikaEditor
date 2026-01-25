@@ -275,11 +275,15 @@ export default function Editor() {
               variant: "default",
             });
           } else if (data.type === "activity") {
-            setActivities((prev) => [...prev, {
-              message: data.message,
-              timestamp: data.timestamp,
-              details: data.details,
-            }]);
+            setActivities((prev) => {
+              const newActivity = {
+                message: data.message,
+                timestamp: data.timestamp,
+                details: data.details,
+              };
+              const updated = [...prev, newActivity];
+              return updated.length > 100 ? updated.slice(-100) : updated;
+            });
           } else if (data.type === "complete") {
             setActivities((prev) => [...prev, {
               message: "Processing complete! Your video is ready.",

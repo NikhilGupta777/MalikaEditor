@@ -104,6 +104,19 @@ Preferred communication style: Simple, everyday language.
 
 ## Recent Changes (January 2026)
 
+### Real-Time AI Activity Feed (Latest)
+- **ActivityLog Component**: New terminal-style feed showing live AI operations
+- **SSE Activity Events**: Backend streams 30+ detailed activity messages during processing
+- **Live Indicators**: Pulsing animation shows current operation, timestamps for each activity
+- **Activity Examples**: "Extracting 6 key frames...", "Transcribed 24 segments", "Hook strength: 78/100"
+- **Memory Safety**: Activities capped at 100 entries to prevent unbounded growth
+
+### Enhanced Processing Status UI
+- **Step Descriptions**: Each processing step now shows what the AI is actually doing
+- **Step Icons**: Visual icons for each processing phase (Video, Brain, Mic, Wand, etc.)
+- **Live Statistics**: Shows scenes detected, transcript segments, B-roll count, edit actions
+- **Progress Visualization**: Hover tooltips on progress bar segments
+
 ### Bug Fixes
 - Fixed `hookScore` null validation error - AI responses returning `null` instead of `undefined` now handled correctly
 - Added `insert_ai_image` to editActionSchema enum - AI-generated image actions now validate properly
@@ -114,5 +127,5 @@ Preferred communication style: Simple, everyday language.
 - Added Zod validation for editPlan PUT endpoint to prevent invalid data
 
 ### SSE Event Handling
-All 10 server events now properly matched with client handlers:
-- status, transcript, editPlan, stockMedia, aiImages, aiImagesError, aiImageStats, enhancedAnalysis, complete, error
+All 11 server events now properly matched with client handlers:
+- status, transcript, editPlan, stockMedia, aiImages, aiImagesError, aiImageStats, enhancedAnalysis, activity, complete, error

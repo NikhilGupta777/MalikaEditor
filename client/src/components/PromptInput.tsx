@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Sparkles, Wand2, Scissors, Type, Image, Zap, Settings2, Film, ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -45,18 +45,18 @@ export function PromptInput({
 }: PromptInputProps) {
   const [prompt, setPrompt] = useState("Make it engaging and professional");
 
-  const handleSubmit = () => {
+  const handleSubmit = useCallback(() => {
     if (prompt.trim()) {
       onSubmit(prompt.trim());
     }
-  };
+  }, [prompt, onSubmit]);
 
-  const handleOptionChange = (key: keyof EditOptions) => {
+  const handleOptionChange = useCallback((key: keyof EditOptions) => {
     onEditOptionsChange({
       ...editOptions,
       [key]: !editOptions[key],
     });
-  };
+  }, [editOptions, onEditOptionsChange]);
 
   return (
     <div className="space-y-4">

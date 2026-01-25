@@ -269,10 +269,23 @@ export async function registerRoutes(
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
+    // Create AbortController for cancelling operations on client disconnect
+    const abortController = new AbortController();
+    const abortSignal = abortController.signal;
     let connectionClosed = false;
+    
     req.on("close", () => {
       connectionClosed = true;
+      abortController.abort();
+      routesLogger.info(`Client disconnected during video processing (project ${id}), aborting operations...`);
     });
+
+    // Helper to check if operation should be aborted
+    const checkAborted = () => {
+      if (abortSignal.aborted) {
+        throw new Error("ABORTED: Client disconnected");
+      }
+    };
 
     const sendEvent = (type: string, data: any) => {
       if (!connectionClosed) {
@@ -287,6 +300,7 @@ export async function registerRoutes(
     }, 15000);
 
     const updateStatus = async (status: string) => {
+      if (abortSignal.aborted) return; // Don't update status if aborted
       await storage.updateVideoProject(id, { status });
       sendEvent("status", { status });
     };
@@ -299,27 +313,33 @@ export async function registerRoutes(
 
       await updateStatus("analyzing");
       const metadata = await getVideoMetadata(videoPath);
+      checkAborted(); // Check after metadata extraction
 
       const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
       const framePaths = await extractFrames(videoPath, numFrames);
       tempFiles.push(path.dirname(framePaths[0]));
+      checkAborted(); // Check after frame extraction
 
       let silentSegments: { start: number; end: number }[] = [];
       if (editOptions.removeSilence) {
         silentSegments = await detectSilence(videoPath);
+        checkAborted(); // Check after silence detection
       }
 
       await updateStatus("transcribing");
       const audioPath = await extractAudio(videoPath);
       tempFiles.push(audioPath);
+      checkAborted(); // Check after audio extraction
 
       transcript = await transcribeAudio(audioPath);
+      checkAborted(); // Check after transcription (expensive AI call)
 
       const analysis = await analyzeVideoFrames(
         framePaths,
         metadata.duration,
         silentSegments
       );
+      checkAborted(); // Check after frame analysis (expensive AI call)
 
       await storage.updateVideoProject(id, {
         analysis,
@@ -357,12 +377,14 @@ export async function registerRoutes(
           }
           
           routesLogger.info("Performing semantic transcript analysis...");
+          checkAborted(); // Check before semantic analysis
           // Use translated transcript for analysis, but original timestamps are preserved
           semanticAnalysis = await analyzeTranscriptSemantics(
             transcriptForAnalysis,
             analysis.context,
             metadata.duration
           );
+          checkAborted(); // Check after semantic analysis
         } else {
           // Fallback: Generate B-roll windows from video analysis when no transcript available
           routesLogger.info("No transcript available, creating fallback semantic analysis from video context...");
@@ -408,7 +430,9 @@ User has selected these options:
 
 Please create an edit plan that follows these preferences. Do NOT include any transition effects - transitions are not supported.`;
 
+      checkAborted(); // Check before edit plan generation
       const editPlan = await generateEditPlan(enhancedPrompt, analysis, transcript, semanticAnalysis);
+      checkAborted(); // Check after edit plan generation
 
       await storage.updateVideoProject(id, { editPlan });
       sendEvent("editPlan", { editPlan });
@@ -416,8 +440,10 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       let stockMedia: StockMediaItem[] = [];
       if (editOptions.addBroll) {
         await updateStatus("fetching_stock");
+        checkAborted(); // Check before stock media fetch
         const stockQueries = editPlan.stockQueries || [];
         stockMedia = await fetchStockMedia(stockQueries);
+        checkAborted(); // Check after stock media fetch
         await storage.updateVideoProject(id, { stockMedia });
         sendEvent("stockMedia", { stockMedia });
       }
@@ -426,6 +452,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       let aiGeneratedImages: StockMediaItem[] = [];
       if (editOptions.generateAiImages && semanticAnalysis && semanticAnalysis.brollWindows.length > 0) {
         await updateStatus("generating_ai_images");
+        checkAborted(); // Check before AI image generation
         routesLogger.info("Generating AI images based on video content...");
         
         try {
@@ -441,6 +468,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
             optimalImages,
             videoDuration  // Pass video duration for distribution logic
           );
+          checkAborted(); // Check after AI image generation (expensive operation)
           
           // Convert to StockMediaItem format and save to files with timing info
           for (let i = 0; i < generatedImages.length; i++) {
@@ -479,6 +507,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       }
 
       await updateStatus("editing");
+      checkAborted(); // Check before final rendering (most expensive operation)
       await updateStatus("rendering");
 
       const editResult = await applyEdits(
@@ -488,6 +517,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         stockMedia,
         editOptions
       );
+      checkAborted(); // Check after rendering
       
       // Send SSE event with AI image placement stats
       if (editOptions.generateAiImages) {
@@ -519,16 +549,30 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
 
       await cleanupTempFiles(tempFiles);
     } catch (error) {
-      routesLogger.error("Processing error:", error);
+      const errorMessage = error instanceof Error ? error.message : "Processing failed";
+      const isAborted = errorMessage.includes("ABORTED") || abortSignal.aborted;
+      
+      if (isAborted) {
+        // Client disconnected - don't mark as failed, just clean up
+        routesLogger.info(`Processing aborted for project ${id} due to client disconnect. Cleaning up resources...`);
+        await storage.updateVideoProject(id, {
+          status: "cancelled",
+          errorMessage: "Processing cancelled: client disconnected",
+        });
+        // Don't send error event since client is gone
+      } else {
+        // Actual processing error
+        routesLogger.error("Processing error:", error);
+        
+        await storage.updateVideoProject(id, {
+          status: "failed",
+          errorMessage,
+        });
 
-      await storage.updateVideoProject(id, {
-        status: "failed",
-        errorMessage: error instanceof Error ? error.message : "Processing failed",
-      });
-
-      sendEvent("error", {
-        error: error instanceof Error ? error.message : "Processing failed",
-      });
+        sendEvent("error", {
+          error: errorMessage,
+        });
+      }
 
       await cleanupTempFiles(tempFiles);
     } finally {

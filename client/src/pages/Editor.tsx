@@ -69,6 +69,9 @@ export default function Editor() {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
+      if (xhrRef.current) {
+        xhrRef.current.abort();
+      }
     };
   }, []);
 
@@ -264,11 +267,11 @@ export default function Editor() {
     [project, editOptions, toast]
   );
 
-  const handleNewProject = () => {
+  const handleNewProject = useCallback(() => {
     setProject(null);
     setPreviewUrl(null);
     setCurrentTime(0);
-  };
+  }, []);
 
   const handleRetryProcessing = useCallback(() => {
     if (project) {

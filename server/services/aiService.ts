@@ -508,12 +508,95 @@ Respond in JSON format only (no markdown):
   };
 }
 
-// Whisper.cpp model path - using multilingual base model for non-English support
-const WHISPER_MODEL_PATH = "/tmp/whisper_models/ggml-base.bin";
+// Whisper.cpp model path - configurable via environment variable with sensible default
+// Uses multilingual base model for non-English support
+const DEFAULT_WHISPER_MODEL_PATH = "/tmp/whisper_models/ggml-base.bin";
+const WHISPER_MODEL_PATH = process.env.WHISPER_MODEL_PATH || DEFAULT_WHISPER_MODEL_PATH;
+const WHISPER_MODEL_URL = process.env.WHISPER_MODEL_URL || "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
+
+/**
+ * Fallback transcription using OpenAI API
+ * Uses gpt-4o-mini-transcribe for text, then estimates timestamps
+ */
+async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegment[]> {
+  try {
+    aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription...");
+    const audioBuffer = await fs.readFile(audioPath);
+    const file = await toFile(audioBuffer, "audio.mp3");
+
+    const response = await openaiClient.audio.transcriptions.create({
+      file,
+      model: "gpt-4o-mini-transcribe",
+      response_format: "json",
+    }) as any;
+
+    const text = response.text || "";
+    if (text.trim()) {
+      aiLogger.info("OpenAI transcription successful. Estimating timestamps based on speech pacing...");
+      const sentences = text.split(/(?<=[.!?])\s+/).filter((s: string) => s.trim());
+      
+      const charsPerSecond = 12.5;
+      let currentTime = 0;
+      
+      const segments = sentences.map((sentence: string) => {
+        const duration = Math.max(1.5, sentence.length / charsPerSecond);
+        const segment = {
+          start: currentTime,
+          end: currentTime + duration,
+          text: sentence.trim(),
+        };
+        currentTime += duration + 0.3;
+        return segment;
+      }).filter((s: TranscriptSegment) => s.text.length > 0);
+      
+      aiLogger.info(`Estimated ${segments.length} transcript segments (timing is approximate)`);
+      return segments;
+    }
+  } catch (error: any) {
+    aiLogger.error("OpenAI transcription failed:", error?.message || error);
+  }
+  
+  return [];
+}
+
+/**
+ * Ensure whisper model is available, downloading if necessary
+ * Returns true if model is ready, false if unavailable (triggers OpenAI fallback)
+ */
+async function ensureWhisperModel(execPromise: (cmd: string, options?: any) => Promise<any>): Promise<boolean> {
+  try {
+    await fs.access(WHISPER_MODEL_PATH);
+    aiLogger.debug(`Whisper model found at ${WHISPER_MODEL_PATH}`);
+    return true;
+  } catch {
+    aiLogger.warn(`Whisper model not found at ${WHISPER_MODEL_PATH}`);
+    
+    // Try to download the model
+    try {
+      const modelDir = WHISPER_MODEL_PATH.substring(0, WHISPER_MODEL_PATH.lastIndexOf("/"));
+      aiLogger.info(`Downloading whisper model from ${WHISPER_MODEL_URL}...`);
+      await fs.mkdir(modelDir, { recursive: true });
+      await execPromise(
+        `curl -L -o "${WHISPER_MODEL_PATH}" "${WHISPER_MODEL_URL}"`,
+        { timeout: 120000 }
+      );
+      
+      // Verify download succeeded
+      await fs.access(WHISPER_MODEL_PATH);
+      aiLogger.info("Whisper model downloaded successfully");
+      return true;
+    } catch (downloadError: any) {
+      aiLogger.error(`Failed to download whisper model: ${downloadError?.message || downloadError}`);
+      aiLogger.info("Will use OpenAI API fallback for transcription");
+      return false;
+    }
+  }
+}
 
 /**
  * Transcribe audio using local whisper.cpp for accurate timestamps
  * This is the single source of truth for transcription timing
+ * Falls back to OpenAI API if local whisper is unavailable
  */
 export async function transcribeAudio(
   audioPath: string
@@ -523,19 +606,15 @@ export async function transcribeAudio(
   const execPromise = promisify(exec);
   const { v4: uuidv4 } = await import("uuid");
   
-  aiLogger.info(`Transcription starting with local whisper.cpp...`);
+  aiLogger.info(`Transcription starting...`);
   
-  // Check if model exists
-  try {
-    await fs.access(WHISPER_MODEL_PATH);
-  } catch {
-    aiLogger.error(`Whisper model not found at ${WHISPER_MODEL_PATH}`);
-    aiLogger.info("Downloading multilingual whisper model...");
-    await fs.mkdir("/tmp/whisper_models", { recursive: true });
-    await execPromise(
-      `curl -L -o "${WHISPER_MODEL_PATH}" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"`,
-      { timeout: 120000 }
-    );
+  // Check if whisper model is available (downloads if missing)
+  const whisperAvailable = await ensureWhisperModel(execPromise);
+  
+  if (!whisperAvailable) {
+    // Skip directly to OpenAI fallback
+    aiLogger.info("Whisper model unavailable, using OpenAI API for transcription");
+    return await transcribeWithOpenAI(audioPath);
   }
   
   // Convert audio to 16kHz mono WAV (whisper.cpp requirement)
@@ -657,7 +736,7 @@ export async function transcribeAudio(
       return [];
     }
     
-    aiLogger.warn("Whisper.cpp returned no segments, trying fallback...");
+    aiLogger.warn("Whisper.cpp returned no segments, trying OpenAI fallback...");
   } catch (error: any) {
     aiLogger.error("Whisper.cpp transcription failed:", error?.message || error);
     // Only fallback if whisper completely failed (not if parsing failed)
@@ -667,43 +746,11 @@ export async function transcribeAudio(
     await cleanupTempFiles();
   }
   
-  // Fallback: Use OpenAI gpt-4o-mini-transcribe (text only, estimate timestamps)
+  // Fallback: Use OpenAI API for transcription
   // This only runs if whisper.cpp completely failed or returned zero segments
-  try {
-    aiLogger.info("Fallback: OpenAI gpt-4o-mini-transcribe (NOTE: timestamps will be estimated)...");
-    const audioBuffer = await fs.readFile(audioPath);
-    const file = await toFile(audioBuffer, "audio.mp3");
-
-    const response = await openaiClient.audio.transcriptions.create({
-      file,
-      model: "gpt-4o-mini-transcribe",
-      response_format: "json",
-    }) as any;
-
-    const text = response.text || "";
-    if (text.trim()) {
-      aiLogger.info("OpenAI transcription successful. Estimating timestamps based on speech pacing...");
-      const sentences = text.split(/(?<=[.!?])\s+/).filter((s: string) => s.trim());
-      
-      const charsPerSecond = 12.5;
-      let currentTime = 0;
-      
-      const segments = sentences.map((sentence: string) => {
-        const duration = Math.max(1.5, sentence.length / charsPerSecond);
-        const segment = {
-          start: currentTime,
-          end: currentTime + duration,
-          text: sentence.trim(),
-        };
-        currentTime += duration + 0.3;
-        return segment;
-      }).filter((s: TranscriptSegment) => s.text.length > 0);
-      
-      aiLogger.info(`Estimated ${segments.length} transcript segments (timing is approximate)`);
-      return segments;
-    }
-  } catch (error: any) {
-    aiLogger.error("OpenAI transcription failed:", error?.message || error);
+  const fallbackResult = await transcribeWithOpenAI(audioPath);
+  if (fallbackResult.length > 0) {
+    return fallbackResult;
   }
   
   aiLogger.error("All transcription methods failed - no transcript available");

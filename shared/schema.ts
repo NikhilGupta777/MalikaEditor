@@ -1,7 +1,21 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, timestamp, jsonb, pgEnum, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+
+export const projectStatusEnum = pgEnum("project_status", [
+  "pending",
+  "uploading",
+  "analyzing",
+  "transcribing",
+  "planning",
+  "fetching_stock",
+  "generating_ai_images",
+  "editing",
+  "rendering",
+  "completed",
+  "failed"
+]);
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -23,7 +37,7 @@ export const videoProjects = pgTable("video_projects", {
   originalPath: text("original_path").notNull(),
   outputPath: text("output_path"),
   prompt: text("prompt"),
-  status: text("status").notNull().default("pending"),
+  status: projectStatusEnum("status").notNull().default("pending"),
   duration: integer("duration"),
   analysis: jsonb("analysis"),
   editPlan: jsonb("edit_plan"),
@@ -32,7 +46,10 @@ export const videoProjects = pgTable("video_projects", {
   errorMessage: text("error_message"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => ({
+  statusIdx: index("video_projects_status_idx").on(table.status),
+  createdAtIdx: index("video_projects_created_at_idx").on(table.createdAt),
+}));
 
 export const insertVideoProjectSchema = createInsertSchema(videoProjects).omit({
   id: true,

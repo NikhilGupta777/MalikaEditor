@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import type { UppyFile } from "@uppy/core";
 
 interface UploadMetadata {
@@ -55,13 +55,22 @@ export function useUpload(options: UseUploadOptions = {}) {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [progress, setProgress] = useState(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   /**
    * Request a presigned URL from the backend.
    * IMPORTANT: Send JSON metadata, NOT the file itself.
    */
   const requestUploadUrl = useCallback(
-    async (file: File): Promise<UploadResponse> => {
+    async (file: File, signal?: AbortSignal): Promise<UploadResponse> => {
       const response = await fetch("/api/uploads/request-url", {
         method: "POST",
         headers: {
@@ -72,6 +81,7 @@ export function useUpload(options: UseUploadOptions = {}) {
           size: file.size,
           contentType: file.type || "application/octet-stream",
         }),
+        signal,
       });
 
       if (!response.ok) {
@@ -88,13 +98,14 @@ export function useUpload(options: UseUploadOptions = {}) {
    * Upload a file directly to the presigned URL.
    */
   const uploadToPresignedUrl = useCallback(
-    async (file: File, uploadURL: string): Promise<void> => {
+    async (file: File, uploadURL: string, signal?: AbortSignal): Promise<void> => {
       const response = await fetch(uploadURL, {
         method: "PUT",
         body: file,
         headers: {
           "Content-Type": file.type || "application/octet-stream",
         },
+        signal,
       });
 
       if (!response.ok) {
@@ -112,6 +123,12 @@ export function useUpload(options: UseUploadOptions = {}) {
    */
   const uploadFile = useCallback(
     async (file: File): Promise<UploadResponse | null> => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      abortControllerRef.current = new AbortController();
+      const signal = abortControllerRef.current.signal;
+
       setIsUploading(true);
       setError(null);
       setProgress(0);
@@ -119,22 +136,26 @@ export function useUpload(options: UseUploadOptions = {}) {
       try {
         // Step 1: Request presigned URL (send metadata as JSON)
         setProgress(10);
-        const uploadResponse = await requestUploadUrl(file);
+        const uploadResponse = await requestUploadUrl(file, signal);
 
         // Step 2: Upload file directly to presigned URL
         setProgress(30);
-        await uploadToPresignedUrl(file, uploadResponse.uploadURL);
+        await uploadToPresignedUrl(file, uploadResponse.uploadURL, signal);
 
         setProgress(100);
         options.onSuccess?.(uploadResponse);
         return uploadResponse;
       } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return null;
+        }
         const error = err instanceof Error ? err : new Error("Upload failed");
         setError(error);
         options.onError?.(error);
         return null;
       } finally {
         setIsUploading(false);
+        abortControllerRef.current = null;
       }
     },
     [requestUploadUrl, uploadToPresignedUrl, options]

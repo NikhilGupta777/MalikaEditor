@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -12,7 +13,7 @@ export function DownloadButton({
   isProcessing,
   isComplete,
 }: DownloadButtonProps) {
-  const handleDownload = () => {
+  const handleDownload = useCallback(() => {
     if (outputPath) {
       const link = document.createElement("a");
       link.href = outputPath;
@@ -21,7 +22,7 @@ export function DownloadButton({
       link.click();
       document.body.removeChild(link);
     }
-  };
+  }, [outputPath]);
 
   if (isProcessing) {
     return (

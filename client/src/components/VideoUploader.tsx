@@ -78,16 +78,16 @@ export function VideoUploader({
     [validateFile]
   );
 
-  const handleUpload = () => {
+  const handleUpload = useCallback(() => {
     if (selectedFile) {
       onUpload(selectedFile);
     }
-  };
+  }, [selectedFile, onUpload]);
 
-  const clearSelection = () => {
+  const clearSelection = useCallback(() => {
     setSelectedFile(null);
     setError(null);
-  };
+  }, []);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024 * 1024) {

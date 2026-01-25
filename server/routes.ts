@@ -909,6 +909,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     req.on("close", () => {
       connectionClosed = true;
       abortController.abort();
+      routesLogger.info(`Client disconnected during render (project ${id}), aborting operations...`);
     });
 
     const sendEvent = (type: string, data: Record<string, unknown>) => {
@@ -1083,20 +1084,34 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Rendering failed";
-      routesLogger.error("Render error:", error);
+      const isAborted = abortController.signal.aborted || 
+                        (error instanceof Error && error.message.includes("ABORTED"));
       
-      const friendlyError = formatErrorForSSE(error instanceof Error ? error : new Error(errorMessage));
-      
-      await storage.updateVideoProject(id, {
-        status: "failed" as ProcessingStatus,
-        errorMessage: friendlyError.error,
-      });
+      if (isAborted) {
+        // Client disconnected - clean up and mark as cancelled
+        routesLogger.info(`Render aborted for project ${id} due to client disconnect. Cleaning up resources...`);
+        await storage.updateVideoProject(id, {
+          status: "cancelled" as ProcessingStatus,
+          errorMessage: "Rendering cancelled: client disconnected",
+        });
+        // Don't send error event since client is gone
+      } else {
+        // Actual rendering error
+        routesLogger.error("Render error:", error);
+        
+        const friendlyError = formatErrorForSSE(error instanceof Error ? error : new Error(errorMessage));
+        
+        await storage.updateVideoProject(id, {
+          status: "failed" as ProcessingStatus,
+          errorMessage: friendlyError.error,
+        });
 
-      sendEvent("error", {
-        error: friendlyError.error,
-        suggestion: friendlyError.suggestion,
-        errorType: friendlyError.errorType,
-      });
+        sendEvent("error", {
+          error: friendlyError.error,
+          suggestion: friendlyError.suggestion,
+          errorType: friendlyError.errorType,
+        });
+      }
     } finally {
       clearInterval(heartbeatInterval);
       if (!connectionClosed) {

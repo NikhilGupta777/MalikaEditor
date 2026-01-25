@@ -901,7 +901,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     try {
       // Get stored data from project
       const editPlan = project.editPlan as { actions?: any[]; estimatedDuration?: number } | null;
-      const transcript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
+      let transcript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
       const reviewData = project.reviewData as ReviewData | null;
       let stockMedia = project.stockMedia as StockMediaItem[] || [];
       
@@ -911,6 +911,25 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         const approvedActions = reviewData.editPlan.actions.filter(a => a.approved);
         const approvedStockMedia = reviewData.stockMedia.filter(m => m.approved);
         const approvedAiImages = reviewData.aiImages.filter(m => m.approved);
+        
+        // Apply transcript edits from user (approved segments with updated text)
+        const approvedTranscriptIds = new Set(
+          reviewData.transcript.filter(t => t.approved).map(t => t.id)
+        );
+        const transcriptEditsMap = new Map(
+          reviewData.transcript.map(t => [t.id, t])
+        );
+        
+        // Update transcript with user edits
+        transcript = transcript.map((seg, idx) => {
+          const reviewSeg = transcriptEditsMap.get(`transcript_${idx}`);
+          if (reviewSeg && reviewSeg.edited) {
+            return { ...seg, text: reviewSeg.text };
+          }
+          return seg;
+        }).filter((_, idx) => approvedTranscriptIds.has(`transcript_${idx}`));
+        
+        sendActivity(`Applied transcript edits: ${reviewData.transcript.filter(t => t.edited).length} segments modified`);
         
         // Update edit plan with only approved actions
         if (editPlan) {

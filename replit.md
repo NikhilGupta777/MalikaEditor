@@ -40,11 +40,25 @@ The AI services are modularized into focused modules for transcription, video an
 ### Video Processing Pipeline
 1.  **Upload**: Video stored temporarily.
 2.  **Analysis**: Frames extracted, analyzed with Gemini Vision.
-3.  **Transcription**: Audio extracted and transcribed.
-4.  **Planning**: AI generates edit plan.
+3.  **Transcription**: Audio extracted and transcribed with synthesized word-level timing.
+4.  **Planning**: AI generates edit plan using multi-pass system.
 5.  **Stock Media**: Fetches media from Pexels.
 6.  **AI Images**: Generates custom AI images.
-7.  **Rendering**: FFmpeg applies edits and outputs the final video.
+7.  **User Review** (NEW): Processing pauses with status `awaiting_review`. User can:
+    - Review and edit the transcript
+    - Approve or reject individual edit actions (cuts, keeps, b-roll insertions)
+    - Select which stock media and AI images to include
+    - Approve and proceed to rendering, or cancel and re-process
+8.  **Rendering**: FFmpeg applies approved edits and outputs the final video.
+
+#### User Review System
+- **ReviewPanel Component**: Shows transcript, edit plan, and media selections in tabbed interface
+- **Approval Flow**: User reviews AI decisions before any cuts are made
+- **Modification Support**: Users can uncheck items to exclude them from the final video
+- **API Endpoints**:
+  - `GET /api/videos/:id/review` - Get review data
+  - `POST /api/videos/:id/approve-review` - Approve and save modifications
+  - `GET /api/videos/:id/render` - Start rendering after approval (SSE)
 
 #### B-Roll and Transitions
 - **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, fade transitions, Ken Burns effect for images, and smart AI image placement with overlap detection.

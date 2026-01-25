@@ -12,6 +12,7 @@ import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TranscriptEditor } from "@/components/TranscriptEditor";
 import { ActivityLog } from "@/components/ActivityLog";
+import { ReviewPanel } from "@/components/ReviewPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ import type {
   StockMediaItem,
   TranscriptSegment,
   SemanticAnalysis,
+  ReviewData,
 } from "@shared/schema";
 
 interface AiImageStats {
@@ -120,6 +122,8 @@ export default function Editor() {
     generateAiImages: false,
     addTransitions: false,
   });
+  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
+  const [isRendering, setIsRendering] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -313,6 +317,19 @@ export default function Editor() {
               const updated = [...prev, newActivity];
               return updated.length > 100 ? updated.slice(-100) : updated;
             });
+          } else if (data.type === "reviewReady") {
+            setReviewData(data.reviewData);
+            setProject((prev) =>
+              prev ? { ...prev, status: "awaiting_review" } : null
+            );
+            setIsProcessing(false);
+            eventSource.close();
+            eventSourceRef.current = null;
+            
+            toast({
+              title: "Review Your Edit Plan",
+              description: "Analysis complete! Review and approve before rendering.",
+            });
           } else if (data.type === "complete") {
             setActivities((prev) => [...prev, {
               message: "Processing complete! Your video is ready.",
@@ -397,7 +414,113 @@ export default function Editor() {
     setPreviewUrl(null);
     setCurrentTime(0);
     setEditMode("ai");
+    setReviewData(null);
   }, []);
+
+  const handleReviewApprove = useCallback(async (updatedReviewData: ReviewData) => {
+    if (!project) return;
+    
+    setIsRendering(true);
+    
+    try {
+      // First, approve the review with any user modifications
+      await apiRequest("POST", `/api/videos/${project.id}/approve-review`, {
+        reviewData: updatedReviewData,
+      });
+      
+      // Then start the render process
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+      
+      const eventSource = new EventSource(`/api/videos/${project.id}/render`);
+      eventSourceRef.current = eventSource;
+      
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === "status") {
+          setProject((prev) => prev ? { ...prev, status: data.status } : null);
+        } else if (data.type === "activity") {
+          setActivities((prev) => {
+            const newActivity = {
+              message: data.message,
+              timestamp: data.timestamp,
+              details: data.details,
+            };
+            const updated = [...prev, newActivity];
+            return updated.length > 100 ? updated.slice(-100) : updated;
+          });
+        } else if (data.type === "complete") {
+          setProject((prev) =>
+            prev ? {
+              ...prev,
+              status: "completed",
+              outputPath: data.outputPath,
+              duration: data.duration,
+              aiImageStats: data.aiImageStats || prev.aiImageStats,
+            } : null
+          );
+          setPreviewUrl(data.outputPath);
+          setIsRendering(false);
+          setReviewData(null);
+          eventSource.close();
+          eventSourceRef.current = null;
+          
+          toast({
+            title: "Your video is ready!",
+            description: "Download your edited video below",
+          });
+        } else if (data.type === "error") {
+          setProject((prev) =>
+            prev ? {
+              ...prev,
+              status: "failed",
+              errorMessage: data.error,
+              errorSuggestion: data.suggestion,
+            } : null
+          );
+          setIsRendering(false);
+          eventSource.close();
+          eventSourceRef.current = null;
+          
+          toast({
+            title: "Rendering failed",
+            description: data.error || "Please try again",
+            variant: "destructive",
+          });
+        }
+      };
+      
+      eventSource.onerror = () => {
+        setIsRendering(false);
+        eventSource.close();
+        eventSourceRef.current = null;
+        
+        toast({
+          title: "Connection lost",
+          description: "The server connection was interrupted. Please try again.",
+          variant: "destructive",
+        });
+      };
+    } catch (error) {
+      setIsRendering(false);
+      toast({
+        title: "Rendering failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  }, [project, toast]);
+
+  const handleReviewCancel = useCallback(() => {
+    setReviewData(null);
+    setProject((prev) => prev ? { ...prev, status: "pending" } : null);
+    toast({
+      title: "Review cancelled",
+      description: "You can re-process the video with different settings",
+    });
+  }, [toast]);
 
   const updateEditPlanMutation = useMutation({
     mutationFn: async ({ projectId, editPlan }: { projectId: number; editPlan: EditPlan }) => {
@@ -544,7 +667,7 @@ export default function Editor() {
               )}
 
               {/* Processing Status */}
-              {project && project.status !== "pending" && project.status !== "completed" && (
+              {project && project.status !== "pending" && project.status !== "completed" && project.status !== "awaiting_review" && (
                 <ProcessingStatus
                   status={project.status}
                   error={project.errorMessage ?? undefined}
@@ -560,8 +683,18 @@ export default function Editor() {
               )}
 
               {/* AI Activity Log */}
-              {(isProcessing || activities.length > 0) && project?.status !== "completed" && (
-                <ActivityLog activities={activities} isProcessing={isProcessing} />
+              {(isProcessing || isRendering || activities.length > 0) && project?.status !== "completed" && project?.status !== "awaiting_review" && (
+                <ActivityLog activities={activities} isProcessing={isProcessing || isRendering} />
+              )}
+
+              {/* Review Panel - User approval step */}
+              {project?.status === "awaiting_review" && reviewData && (
+                <ReviewPanel
+                  reviewData={reviewData}
+                  onApprove={handleReviewApprove}
+                  onCancel={handleReviewCancel}
+                  isLoading={isRendering}
+                />
               )}
 
               {/* Completed */}

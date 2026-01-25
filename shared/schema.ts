@@ -76,7 +76,8 @@ export const processingStatusEnum = z.enum([
   "editing",
   "rendering",
   "completed",
-  "failed"
+  "failed",
+  "cancelled"
 ]);
 
 export type ProcessingStatus = z.infer<typeof processingStatusEnum>;

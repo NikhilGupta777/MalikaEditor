@@ -58,7 +58,7 @@ import {
   generateSmartEditPlan,
   detectFillerWords,
 } from "./services/aiService";
-import type { SemanticAnalysis, StockMediaItem } from "@shared/schema";
+import type { SemanticAnalysis, StockMediaItem, ProcessingStatus } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
 import { registerAuthRoutes } from "./routes/auth";
@@ -344,7 +344,7 @@ export async function registerRoutes(
       }
     }, 15000);
 
-    const updateStatus = async (status: "pending" | "uploading" | "analyzing" | "transcribing" | "planning" | "fetching_stock" | "generating_ai_images" | "editing" | "rendering" | "completed" | "failed" | "cancelled") => {
+    const updateStatus = async (status: ProcessingStatus) => {
       if (abortSignal.aborted) return; // Don't update status if aborted
       await storage.updateVideoProject(id, { status });
       sendEvent("status", { status });

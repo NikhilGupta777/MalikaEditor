@@ -1,4 +1,4 @@
-import { Check, Loader2, AlertCircle, RotateCcw } from "lucide-react";
+import { Check, Loader2, AlertCircle, RotateCcw, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,36 @@ const STEPS = [
 
 export function ProcessingStatus({ status, error, onRetry, aiImageStats }: ProcessingStatusProps) {
   if (status === "pending" || status === "completed") return null;
+
+  if (status === "cancelled") {
+    return (
+      <Card className="border-muted">
+        <CardContent className="p-4">
+          <div className="flex items-start gap-3">
+            <XCircle className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+            <div className="flex-1">
+              <p className="font-medium text-muted-foreground">Processing cancelled</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                The video processing was cancelled. You can start a new processing request.
+              </p>
+              {onRetry && (
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={onRetry}
+                  className="mt-3"
+                  data-testid="button-retry-cancelled"
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Start Again
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const currentIndex = STEPS.findIndex(s => s.id === status);
   const progress = currentIndex >= 0 

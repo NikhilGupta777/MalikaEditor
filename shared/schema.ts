@@ -610,6 +610,7 @@ export const reviewDataSchema = z.object({
   }),
   userApproved: z.boolean().default(false),
   userNotes: z.string().optional(),
+  editOptions: editOptionsSchema.optional(),
 });
 
 export type ReviewData = z.infer<typeof reviewDataSchema>;

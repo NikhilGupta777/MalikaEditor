@@ -1553,12 +1553,16 @@ async function applyEditsInternal(
       start: s.start || 0,
       end: s.end || metadata.duration
     }));
+    videoLogger.info(`[Segments] Using ${keepSegments.length} explicit KEEP segments from edit plan`);
   } else if (cutSegments.length > 0 && options.removeSilence) {
-    // Derive keeps from cuts
+    // Derive keeps from cuts - only if removeSilence is enabled
     const cuts = cutSegments.map(c => ({
       start: c.start || 0,
       end: c.end || 0
     })).filter(c => c.end > c.start);
+    
+    videoLogger.info(`[Segments] Deriving keeps from ${cuts.length} CUT segments (removeSilence: ${options.removeSilence})`);
+    cuts.forEach((c, i) => videoLogger.debug(`  [CUT ${i}] ${c.start.toFixed(2)}s - ${c.end.toFixed(2)}s`));
     
     let currentTime = 0;
     for (const cut of cuts) {
@@ -1571,8 +1575,13 @@ async function applyEditsInternal(
       segmentsToKeep.push({ start: currentTime, end: metadata.duration });
     }
   } else {
-    // Keep entire video
+    // Keep entire video - either no cuts defined OR removeSilence is false
     segmentsToKeep = [{ start: 0, end: metadata.duration }];
+    if (cutSegments.length > 0 && !options.removeSilence) {
+      videoLogger.info(`[Segments] KEEPING ENTIRE VIDEO: removeSilence is disabled (${cutSegments.length} cut segments ignored)`);
+    } else {
+      videoLogger.info(`[Segments] KEEPING ENTIRE VIDEO: No cut/keep segments defined`);
+    }
   }
 
   videoLogger.debug(`Segments to keep: ${segmentsToKeep.length}`);

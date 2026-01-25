@@ -61,7 +61,7 @@ import {
   generateSmartEditPlan,
   detectFillerWords,
 } from "./services/aiService";
-import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment } from "@shared/schema";
+import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment, EditOptionsType } from "@shared/schema";
 import { editPlanSchema, reviewDataSchema } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
@@ -127,7 +127,8 @@ function prepareReviewData(
   transcript: Array<{ start: number; end: number; text: string; words?: Array<{ word: string; start: number; end: number }> }>,
   editPlan: { actions?: Array<any>; estimatedDuration?: number },
   stockMedia: StockMediaItem[],
-  originalDuration: number
+  originalDuration: number,
+  editOptions?: EditOptions
 ): ReviewData {
   // Convert transcript to review format with IDs
   const reviewTranscript: ReviewTranscriptSegment[] = transcript.map((seg, idx) => ({
@@ -206,6 +207,13 @@ function prepareReviewData(
       totalAiImages: reviewAiImages.length,
     },
     userApproved: false,
+    editOptions: editOptions ? {
+      addCaptions: editOptions.addCaptions ?? true,
+      addBroll: editOptions.addBroll ?? true,
+      removeSilence: editOptions.removeSilence ?? true,
+      generateAiImages: editOptions.generateAiImages ?? false,
+      addTransitions: editOptions.addTransitions ?? false,
+    } : undefined,
   };
 }
 
@@ -730,7 +738,8 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
           transcript,
           editPlan,
           stockMedia,
-          metadata.duration
+          metadata.duration,
+          editOptions
         );
         
         // Store review data and update status
@@ -1072,15 +1081,33 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       sendActivity("Starting FFmpeg rendering engine...");
       sendActivity("Cutting segments, adding overlays, and encoding video...");
 
-      // Use stored edit options or defaults
+      // Get original editOptions from review data, or use defaults
+      const storedOptions: Partial<EditOptionsType> = reviewData?.editOptions || {};
+      
+      // CRITICAL: Only apply cuts if there are explicitly approved cut actions
+      // If user rejected all cut actions, we keep the entire video
+      const hasApprovedCuts = finalEditPlan.actions?.some(a => a.type === 'cut') ?? false;
+      const hasApprovedKeeps = finalEditPlan.actions?.some(a => a.type === 'keep') ?? false;
+      
+      routesLogger.info(`[Render] Cut decisions - hasApprovedCuts: ${hasApprovedCuts}, hasApprovedKeeps: ${hasApprovedKeeps}, totalActions: ${finalEditPlan.actions?.length || 0}`);
+      if (hasApprovedCuts) {
+        const cutActions = finalEditPlan.actions?.filter(a => a.type === 'cut') || [];
+        routesLogger.info(`[Render] Applying ${cutActions.length} cut actions:`);
+        cutActions.forEach((c, i) => routesLogger.info(`  [${i}] Cut ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s: ${c.reason || 'no reason'}`));
+      } else {
+        routesLogger.info(`[Render] No cut actions approved - keeping entire video`);
+      }
+      
       const editOptions: EditOptions = {
-        addCaptions: true,
+        addCaptions: storedOptions.addCaptions ?? true,
         addBroll: stockMedia.length > 0,
-        removeSilence: true,
+        removeSilence: hasApprovedCuts, // Only remove silence if user approved cut actions
         generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
-        addTransitions: false,
+        addTransitions: storedOptions.addTransitions ?? false,
         renderQuality,
       };
+      
+      routesLogger.info(`[Render] Final editOptions: ${JSON.stringify(editOptions)}`);
 
       const editResult = await applyEdits(
         videoPath,

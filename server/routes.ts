@@ -405,6 +405,9 @@ export async function registerRoutes(
         duration: Math.round(metadata.duration),
       });
 
+      // Send transcript to frontend for interactive editing
+      sendEvent("transcript", { transcript });
+
       // Send enhanced analysis data to frontend including filler segments and quality insights
       sendEvent("enhancedAnalysis", {
         fillerSegments,

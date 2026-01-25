@@ -18,7 +18,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
   
   if (hasOpenAIKey) {
-    aiLogger.info("Primary: OpenAI gpt-4o-mini-transcribe (via AI Integrations)");
+    aiLogger.info("Primary: OpenAI whisper-1 (word-level timestamps)");
   }
   
   if (hasGeminiKey) {
@@ -90,7 +90,9 @@ function createSegmentsFromText(text: string): TranscriptSegment[] {
 }
 
 async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegment[]> {
-  aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription...");
+  // whisper-1 is required for verbose_json with word-level timestamps
+  // gpt-4o-mini-transcribe does NOT support verbose_json format
+  aiLogger.info("Using OpenAI whisper-1 for transcription (with word timestamps)...");
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -98,9 +100,10 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
       const file = await toFile(audioBuffer, "audio.mp3");
 
       // Use verbose_json to get word-level timestamps for karaoke captions
+      // CRITICAL: whisper-1 is the only model that supports verbose_json + timestamp_granularities
       const response = await getOpenAIClient().audio.transcriptions.create({
         file,
-        model: "gpt-4o-mini-transcribe",
+        model: "whisper-1",
         response_format: "verbose_json",
         timestamp_granularities: ["word", "segment"],
       }) as any;

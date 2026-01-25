@@ -27,12 +27,62 @@ const FrameAnalysisSchema = z.object({
   speakingPace: z.enum(["slow", "normal", "fast"]).optional(),
 });
 
+// All valid genres - add new ones here as AI suggests them
+const VALID_GENRES = [
+  "tutorial", "vlog", "interview", "presentation", "documentary",
+  "spiritual", "educational", "entertainment", "tech", "lifestyle",
+  "gaming", "music", "news", "review", "motivational", "advertisement",
+  "promotional", "commercial", "product", "finance", "business", 
+  "cooking", "fitness", "travel", "comedy", "drama", "other"
+] as const;
+
+// Normalize genre to a valid value (handles AI variations)
+function normalizeGenre(genre: string): typeof VALID_GENRES[number] {
+  const normalized = genre.toLowerCase().trim();
+  
+  // Check if already valid
+  if (VALID_GENRES.includes(normalized as any)) {
+    return normalized as typeof VALID_GENRES[number];
+  }
+  
+  // Map common variations
+  const genreMap: Record<string, typeof VALID_GENRES[number]> = {
+    "ad": "advertisement",
+    "ads": "advertisement",
+    "promo": "promotional",
+    "commercial": "advertisement",
+    "infomercial": "advertisement",
+    "financial": "finance",
+    "investing": "finance",
+    "money": "finance",
+    "how-to": "tutorial",
+    "howto": "tutorial",
+    "guide": "tutorial",
+    "explainer": "educational",
+    "informational": "educational",
+    "fun": "entertainment",
+    "funny": "comedy",
+    "humorous": "comedy",
+    "sports": "lifestyle",
+    "health": "fitness",
+    "food": "cooking",
+    "recipe": "cooking",
+    "blog": "vlog",
+    "podcast": "interview",
+    "talk": "interview",
+    "chat": "vlog",
+  };
+  
+  if (genreMap[normalized]) {
+    return genreMap[normalized];
+  }
+  
+  // Default to "other" for truly unknown genres
+  return "other";
+}
+
 const VideoContextSchema = z.object({
-  genre: z.enum([
-    "tutorial", "vlog", "interview", "presentation", "documentary",
-    "spiritual", "educational", "entertainment", "tech", "lifestyle",
-    "gaming", "music", "news", "review", "motivational", "other"
-  ]),
+  genre: z.enum(VALID_GENRES).or(z.string().transform(normalizeGenre)),
   subGenre: z.string().optional(),
   targetAudience: z.string().optional(),
   tone: z.enum(["serious", "casual", "professional", "humorous", "inspirational", "dramatic", "calm"]),
@@ -148,7 +198,7 @@ PERFORM A COMPREHENSIVE DEEP ANALYSIS:
 
 1. VIDEO CONTEXT CLASSIFICATION
 Determine the video's genre, tone, target audience, and optimal editing approach:
-- Genre: tutorial, vlog, interview, presentation, documentary, spiritual, educational, entertainment, tech, lifestyle, gaming, music, news, review, motivational, or other
+- Genre: tutorial, vlog, interview, presentation, documentary, spiritual, educational, entertainment, tech, lifestyle, gaming, music, news, review, motivational, advertisement, promotional, finance, business, cooking, fitness, travel, comedy, drama, or other
 - Tone: serious, casual, professional, humorous, inspirational, dramatic, or calm
 - Pacing: slow, moderate, fast, or dynamic
 - Regional/cultural context if apparent

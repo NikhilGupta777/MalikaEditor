@@ -2,11 +2,12 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import { sessionMiddleware } from "./middleware/auth";
+import { sessionMiddleware, hashPassword } from "./middleware/auth";
 import cors from "cors";
 import helmet from "helmet";
 import { createLogger } from "./utils/logger";
 import { cleanupStaleTempFiles } from "./services/videoProcessor";
+import { storage } from "./storage";
 
 const expressLogger = createLogger("express");
 
@@ -143,6 +144,22 @@ app.use((req, res, next) => {
     }
   } catch (e) {
     expressLogger.warn("Failed to clean up stale temp files on startup:", e);
+  }
+
+  // Create default user if not exists
+  try {
+    const defaultUsername = "Malikaeditor";
+    const defaultPassword = "Malikaeditor#123";
+    const existingUser = await storage.getUserByUsername(defaultUsername);
+    if (!existingUser) {
+      const hashedPassword = await hashPassword(defaultPassword);
+      await storage.createUser({ username: defaultUsername, password: hashedPassword });
+      log(`Default user '${defaultUsername}' created`);
+    } else {
+      log(`Default user '${defaultUsername}' already exists`);
+    }
+  } catch (e) {
+    expressLogger.warn("Failed to create default user:", e);
   }
 
   await registerRoutes(httpServer, app);

@@ -171,9 +171,38 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
     onApprove({ ...localReviewData, userApproved: true });
   };
 
+  // Convenience function to disable all cuts at once
+  const disableAllCuts = useCallback(() => {
+    resetTimer();
+    setLocalReviewData(prev => ({
+      ...prev,
+      editPlan: {
+        ...prev.editPlan,
+        actions: prev.editPlan.actions.map(action =>
+          action.type === 'cut' ? { ...action, approved: false } : action
+        ),
+      },
+    }));
+  }, [resetTimer]);
+
+  // Convenience function to enable all cuts
+  const enableAllCuts = useCallback(() => {
+    resetTimer();
+    setLocalReviewData(prev => ({
+      ...prev,
+      editPlan: {
+        ...prev.editPlan,
+        actions: prev.editPlan.actions.map(action =>
+          action.type === 'cut' ? { ...action, approved: true } : action
+        ),
+      },
+    }));
+  }, [resetTimer]);
+
   const approvedActions = localReviewData.editPlan.actions.filter(a => a.approved);
   const approvedCuts = approvedActions.filter(a => a.type === 'cut');
   const approvedKeeps = approvedActions.filter(a => a.type === 'keep');
+  const allCutActions = localReviewData.editPlan.actions.filter(a => a.type === 'cut');
   const totalCutDuration = approvedCuts.reduce((sum, c) => sum + ((c.end || 0) - (c.start || 0)), 0);
   const estimatedDuration = (localReviewData.summary.originalDuration - totalCutDuration);
 
@@ -231,6 +260,46 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
             <p className="text-xs text-muted-foreground mt-2">
               The video will auto-approve with your current settings when the timer ends. Making changes resets the 2-minute timer.
             </p>
+          </div>
+        )}
+
+        {/* PROMINENT WARNING when cuts are approved */}
+        {approvedCuts.length > 0 && (
+          <div className="mt-4 p-3 rounded-lg bg-destructive/10 border border-destructive/30" data-testid="warning-cuts-approved">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-destructive mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-destructive" data-testid="text-cuts-warning-title">
+                    {approvedCuts.length} cuts will shorten your video
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1" data-testid="text-cuts-warning-details">
+                    These cuts will remove {formatTime(totalCutDuration)} from your {formatTime(localReviewData.summary.originalDuration)} video, 
+                    resulting in a ~{formatTime(Math.max(0, estimatedDuration))} final video.
+                  </p>
+                  <ul className="text-xs text-muted-foreground mt-2 space-y-0.5 max-h-20 overflow-y-auto" data-testid="list-approved-cuts">
+                    {approvedCuts.slice(0, 5).map((cut, i) => (
+                      <li key={cut.id} data-testid={`text-cut-item-${cut.id}`}>
+                        Cut #{i+1}: {formatTime(cut.start || 0)} - {formatTime(cut.end || 0)} 
+                        <span className="opacity-70"> ({((cut.end || 0) - (cut.start || 0)).toFixed(1)}s{cut.reason ? ` - ${cut.reason}` : ''})</span>
+                      </li>
+                    ))}
+                    {approvedCuts.length > 5 && (
+                      <li className="opacity-70">...and {approvedCuts.length - 5} more cuts</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={disableAllCuts}
+                data-testid="button-disable-all-cuts"
+              >
+                <X className="h-3 w-3 mr-1" />
+                Keep Full Video
+              </Button>
+            </div>
           </div>
         )}
 
@@ -363,18 +432,39 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
                   <div>
                     <CardTitle className="text-sm font-medium">Edit Actions</CardTitle>
                     <CardDescription className="text-xs">
-                      Review what the AI plans to do. Uncheck actions to skip them.
+                      Review what the AI plans to do. Uncheck cuts to keep full video.
                     </CardDescription>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Badge variant="outline" className="gap-1">
                       <Scissors className="h-3 w-3" />
-                      {approvedCuts.length} cuts
+                      {approvedCuts.length}/{allCutActions.length} cuts
                     </Badge>
                     <Badge variant="outline" className="gap-1">
                       <Check className="h-3 w-3" />
                       {approvedKeeps.length} keeps
                     </Badge>
+                    {allCutActions.length > 0 && (
+                      approvedCuts.length > 0 ? (
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={disableAllCuts}
+                          data-testid="button-uncheck-all-cuts"
+                        >
+                          Uncheck All Cuts
+                        </Button>
+                      ) : (
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={enableAllCuts}
+                          data-testid="button-check-all-cuts"
+                        >
+                          Check All Cuts
+                        </Button>
+                      )
+                    )}
                   </div>
                 </div>
               </CardHeader>

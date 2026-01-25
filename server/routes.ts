@@ -881,6 +881,25 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         return res.status(400).json({ error: "Invalid review data", details: parseResult.error });
       }
       
+      // DETAILED LOGGING: Track what user approved
+      const validatedData = parseResult.data;
+      const allActions = validatedData.editPlan.actions;
+      const cutActions = allActions.filter(a => a.type === 'cut');
+      const approvedCuts = cutActions.filter(a => a.approved);
+      
+      routesLogger.info(`[Approve-Review] ========== STORING REVIEW DATA ==========`);
+      routesLogger.info(`[Approve-Review] Project ID: ${id}`);
+      routesLogger.info(`[Approve-Review] Total actions: ${allActions.length}`);
+      routesLogger.info(`[Approve-Review] Cut actions: ${cutActions.length} total`);
+      routesLogger.info(`[Approve-Review] Approved cuts: ${approvedCuts.length}`);
+      if (approvedCuts.length > 0) {
+        approvedCuts.forEach((c, i) => 
+          routesLogger.info(`  [Approved Cut ${i}] ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s`)
+        );
+      } else {
+        routesLogger.info(`[Approve-Review] NO CUTS APPROVED - Video will remain at original length`);
+      }
+      
       // Store the updated review data
       await storage.updateVideoProject(id, { 
         reviewData: { ...parseResult.data, userApproved: true },
@@ -979,6 +998,29 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       
       // If we have review data, apply user modifications
       if (reviewData && reviewData.userApproved) {
+        // DETAILED LOGGING: Track exactly what we received
+        const allActions = reviewData.editPlan.actions;
+        const cutActions = allActions.filter(a => a.type === 'cut');
+        const approvedCutActions = cutActions.filter(a => a.approved);
+        const rejectedCutActions = cutActions.filter(a => !a.approved);
+        
+        routesLogger.info(`[Render] ========== REVIEW DATA RECEIVED ==========`);
+        routesLogger.info(`[Render] Total actions: ${allActions.length}`);
+        routesLogger.info(`[Render] Cut actions: ${cutActions.length} (${approvedCutActions.length} approved, ${rejectedCutActions.length} rejected)`);
+        if (approvedCutActions.length > 0) {
+          routesLogger.info(`[Render] APPROVED CUTS that WILL be applied:`);
+          approvedCutActions.forEach((c, i) => 
+            routesLogger.info(`  [${i}] ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s: ${c.reason || 'no reason'}`)
+          );
+        }
+        if (rejectedCutActions.length > 0) {
+          routesLogger.info(`[Render] REJECTED cuts that will be IGNORED:`);
+          rejectedCutActions.forEach((c, i) => 
+            routesLogger.info(`  [${i}] ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s: ${c.reason || 'no reason'}`)
+          );
+        }
+        sendActivity(`Review data: ${approvedCutActions.length}/${cutActions.length} cuts approved`);
+        
         // Filter out rejected items
         const approvedActions = reviewData.editPlan.actions.filter(a => a.approved);
         const approvedStockMedia = reviewData.stockMedia.filter(m => m.approved);

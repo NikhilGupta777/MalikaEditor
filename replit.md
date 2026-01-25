@@ -124,6 +124,14 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - Added SSE reconnection hook for frontend with exponential backoff (client/src/hooks/useSSE.ts)
 - Health check endpoint available at `/api/health`
 - Improved SSE disconnect handling with proper abort controllers and resource cleanup
+- **2-minute auto-accept timer**: Review stage now has a countdown timer that auto-approves after 2 minutes of inactivity. Timer resets when user makes changes, giving them another 2-minute window.
+- **Pre-render summary**: ReviewPanel now shows a clear summary of what will happen (approved cuts, keeps, B-roll, AI images, captions) before rendering.
+
+### User Review Flow Improvements
+- Fixed unauthorized cutting issue: Backend now only applies cuts when user explicitly approves them
+- Original `editOptions` (captions, remove silence, etc.) are now stored in `reviewData` and used during rendering
+- Detailed activity logging shows exactly what edit actions are being applied during rendering
+- Summary shows excluded transcript segments and no-cuts messaging when user unchecks all cuts
 
 ## Environment Variables
 

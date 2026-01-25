@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Film, Sparkles, Upload, CheckCircle2, RotateCcw } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
@@ -8,15 +10,20 @@ import { EditPlanPreview } from "@/components/EditPlanPreview";
 import { StockMediaPreview } from "@/components/StockMediaPreview";
 import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { TranscriptEditor } from "@/components/TranscriptEditor";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type {
   ProcessingStatus as ProcessingStatusType,
   EditPlan,
   StockMediaItem,
+  TranscriptSegment,
+  SemanticAnalysis,
 } from "@shared/schema";
 
 interface AiImageStats {
@@ -24,6 +31,26 @@ interface AiImageStats {
   skipped: number;
   stockApplied?: number;
   totalOverlays?: number;
+}
+
+interface QualityInsights {
+  hookStrength: number;
+  pacingScore: number;
+  engagementPrediction: number;
+  recommendations: string[];
+}
+
+interface FillerSegment {
+  start: number;
+  end: number;
+  word: string;
+}
+
+interface StructureAnalysis {
+  introEnd?: number;
+  mainStart?: number;
+  mainEnd?: number;
+  outroStart?: number;
 }
 
 interface VideoProject {
@@ -37,6 +64,11 @@ interface VideoProject {
   stockMedia?: StockMediaItem[];
   errorMessage?: string;
   aiImageStats?: AiImageStats;
+  transcript?: TranscriptSegment[];
+  semanticAnalysis?: SemanticAnalysis;
+  fillerSegments?: FillerSegment[];
+  qualityInsights?: QualityInsights;
+  structureAnalysis?: StructureAnalysis;
 }
 
 export interface EditOptions {
@@ -47,6 +79,8 @@ export interface EditOptions {
   addTransitions: boolean;
 }
 
+type EditMode = "ai" | "manual";
+
 export default function Editor() {
   const { toast } = useToast();
   const [project, setProject] = useState<VideoProject | null>(null);
@@ -55,6 +89,7 @@ export default function Editor() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState<EditMode>("ai");
   const [editOptions, setEditOptions] = useState<EditOptions>({
     addCaptions: true,
     addBroll: true,
@@ -198,6 +233,28 @@ export default function Editor() {
             setProject((prev) =>
               prev ? { ...prev, aiImageStats: data } : null
             );
+          } else if (data.type === "enhancedAnalysis") {
+            setProject((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    fillerSegments: data.fillerSegments,
+                    qualityInsights: data.qualityInsights,
+                    structureAnalysis: data.structureAnalysis,
+                    semanticAnalysis: {
+                      ...(prev.semanticAnalysis || {}),
+                      hookMoments: data.hookMoments,
+                      topicFlow: data.topicFlow,
+                      structureAnalysis: data.structureAnalysis,
+                      keyMoments: data.keyMoments,
+                    } as SemanticAnalysis,
+                  }
+                : null
+            );
+          } else if (data.type === "transcript") {
+            setProject((prev) =>
+              prev ? { ...prev, transcript: data.transcript } : null
+            );
           } else if (data.type === "complete") {
             setProject((prev) =>
               prev
@@ -271,7 +328,29 @@ export default function Editor() {
     setProject(null);
     setPreviewUrl(null);
     setCurrentTime(0);
+    setEditMode("ai");
   }, []);
+
+  const updateEditPlanMutation = useMutation({
+    mutationFn: async ({ projectId, editPlan }: { projectId: number; editPlan: EditPlan }) => {
+      const response = await apiRequest("PUT", `/api/videos/${projectId}/editplan`, { editPlan });
+      return response.json();
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to save changes",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleEditPlanChange = useCallback((updatedPlan: EditPlan) => {
+    setProject((prev) => prev ? { ...prev, editPlan: updatedPlan } : null);
+    if (project?.id) {
+      updateEditPlanMutation.mutate({ projectId: project.id, editPlan: updatedPlan });
+    }
+  }, [project?.id, updateEditPlanMutation]);
 
   const handleRetryProcessing = useCallback(() => {
     if (project) {
@@ -363,7 +442,7 @@ export default function Editor() {
         </div>
 
         {/* Control Panel - Right/Bottom */}
-        <div className="w-full lg:w-[380px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto h-[50vh] lg:h-[calc(100vh-56px)]">
+        <div className="w-full lg:w-[480px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto h-[50vh] lg:h-[calc(100vh-56px)]">
             <div className="p-4 space-y-4">
               
               {/* Step 1: Upload */}
@@ -424,16 +503,112 @@ export default function Editor() {
                 </Card>
               )}
 
-              {/* Edit Plan Summary */}
-              {project?.editPlan && (
-                <EditPlanPreview
-                  editPlan={project.editPlan}
-                  isLoading={project.status === "planning"}
-                />
+              {/* Quality Insights Card */}
+              {project?.qualityInsights && (
+                <Card data-testid="quality-insights-card">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <TrendingUp className="h-4 w-4" />
+                      Quality Insights
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">Hook Strength</span>
+                        <span className="font-medium">{project.qualityInsights.hookStrength}%</span>
+                      </div>
+                      <Progress 
+                        value={project.qualityInsights.hookStrength} 
+                        className="h-2"
+                        data-testid="progress-hook-strength"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">Pacing Score</span>
+                        <span className="font-medium">{project.qualityInsights.pacingScore}%</span>
+                      </div>
+                      <Progress 
+                        value={project.qualityInsights.pacingScore} 
+                        className="h-2"
+                        data-testid="progress-pacing-score"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">Engagement Prediction</span>
+                        <span className="font-medium">{project.qualityInsights.engagementPrediction}%</span>
+                      </div>
+                      <Progress 
+                        value={project.qualityInsights.engagementPrediction} 
+                        className="h-2"
+                        data-testid="progress-engagement"
+                      />
+                    </div>
+                    {project.fillerSegments && project.fillerSegments.length > 0 && (
+                      <div className="flex items-center gap-2 pt-2">
+                        <Badge variant="outline" className="border-yellow-500/60 text-yellow-700 dark:text-yellow-400">
+                          <AlertCircle className="h-3 w-3 mr-1" />
+                          {project.fillerSegments.length} filler words detected
+                        </Badge>
+                      </div>
+                    )}
+                    {project.qualityInsights.recommendations.length > 0 && (
+                      <div className="pt-2 space-y-1">
+                        <span className="text-xs text-muted-foreground">Recommendations:</span>
+                        {project.qualityInsights.recommendations.slice(0, 3).map((rec, idx) => (
+                          <p key={idx} className="text-xs text-muted-foreground flex items-start gap-1">
+                            <Zap className="h-3 w-3 text-primary shrink-0 mt-0.5" />
+                            {rec}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               )}
 
-              {/* Stock Media */}
-              {project?.stockMedia && project.stockMedia.length > 0 && (
+              {/* Edit Mode Tabs */}
+              {project?.editPlan && (
+                <Tabs value={editMode} onValueChange={(v) => setEditMode(v as EditMode)}>
+                  <TabsList className="grid w-full grid-cols-2" data-testid="edit-mode-tabs">
+                    <TabsTrigger value="ai" className="gap-2" data-testid="tab-ai-mode">
+                      <Wand2 className="h-3.5 w-3.5" />
+                      AI Edit
+                    </TabsTrigger>
+                    <TabsTrigger value="manual" className="gap-2" data-testid="tab-manual-mode">
+                      <Edit3 className="h-3.5 w-3.5" />
+                      Manual Edit
+                    </TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="ai" className="space-y-4 mt-4">
+                    <EditPlanPreview
+                      editPlan={project.editPlan}
+                      isLoading={project.status === "planning"}
+                    />
+                    {project.stockMedia && project.stockMedia.length > 0 && (
+                      <StockMediaPreview
+                        stockMedia={project.stockMedia}
+                        isLoading={project.status === "fetching_stock"}
+                      />
+                    )}
+                  </TabsContent>
+                  <TabsContent value="manual" className="mt-4">
+                    <TranscriptEditor
+                      transcript={project.transcript || []}
+                      editPlan={project.editPlan}
+                      onEditPlanChange={handleEditPlanChange}
+                      semanticAnalysis={project.semanticAnalysis}
+                      isLoading={project.status === "analyzing"}
+                    />
+                  </TabsContent>
+                </Tabs>
+              )}
+
+
+              {/* Stock Media (when no tabs visible) */}
+              {!project?.editPlan && project?.stockMedia && project.stockMedia.length > 0 && (
                 <StockMediaPreview
                   stockMedia={project.stockMedia}
                   isLoading={project.status === "fetching_stock"}

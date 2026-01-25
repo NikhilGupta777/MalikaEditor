@@ -31,12 +31,43 @@ Preferred communication style: Simple, everyday language.
 - **In-Memory Storage**: `MemStorage` for fallback/temporary storage.
 
 ### AI Services
-- **Video Analysis**: Gemini API for genre, tone, pacing, narrative structure, and topic segmentation.
+
+#### Layer 1: Deep Video Understanding
+- **Enhanced Video Analysis**: Gemini API with multi-layer analysis including:
+  - Scene Detection: Identifies distinct scenes with type (intro/main/outro/transition)
+  - Emotion Flow: Tracks emotional journey throughout the video
+  - Speaker Detection: Identifies and labels different speakers
+  - Visual Importance Scoring: Rates segments HIGH (must see), MEDIUM, or LOW (can be covered with B-roll)
+  - Key Moment Detection: Identifies hooks, climaxes, call-to-actions, key points
+
+#### Layer 2: Smart Transcript Analysis
 - **Audio Transcription**: Local whisper.cpp for multilingual speech-to-text with word-level timing, supporting 90+ languages and automatic translation to English for semantic analysis. Fallback to OpenAI.
-- **Karaoke-Style Captions**: Generates professional word-by-word animated captions in ASS format using whisper.cpp timings.
-- **Semantic Transcript Analysis**: Deep analysis of transcripts to extract topics, tone, keywords, and identify B-roll opportunities with contextual search queries.
-- **Edit Plan Generation**: AI-driven context-aware editing plans incorporating genre-specific guidelines, intelligent B-roll placement, and quality heuristics.
-- **AI Image Generation**: Uses Gemini 2.5-flash-image to generate custom images based on transcript content, distributed dynamically across the video timeline.
+- **Filler Word Detection**: Automatically detects "um", "uh", "like", "you know", "basically", etc.
+- **Hook Analysis**: Scores the first 3-10 seconds for attention-grabbing strength (0-100)
+- **Structure Analysis**: Detects intro/main/outro section boundaries
+- **Topic Flow Mapping**: Creates timeline of topics with unique IDs
+- **Ultra-Specific B-Roll Queries**: Generates contextual queries like "peaceful sunrise over mountain lake with morning mist" instead of generic "nature"
+
+#### Layer 3: Multi-Pass Edit Planning
+- **4-Pass Intelligent Edit System**:
+  1. **Structure Pass**: Analyzes intro/body/outro narrative structure
+  2. **Quality Pass**: Scores segments for engagement, identifies boring vs engaging content
+  3. **B-Roll Optimization Pass**: Places B-roll based on visual importance, transcript context, even distribution
+  4. **Quality Review Pass**: Validates no overlaps, proper spacing, scores each action (0-100)
+- **Quality Metrics**: Pacing, B-roll relevance, narrative flow, overall score
+- **AI Recommendations**: Actionable suggestions for improvement
+
+#### Layer 4: Transcript-Based Editing
+- **Interactive Transcript Editor**: Users can edit video by manipulating transcript text
+- **Color-Coded Actions**: Green (keep), Red (cut), Blue (B-roll), Yellow (filler), Purple (key moments)
+- **Auto-Remove Fillers**: One-click to mark all filler words for cutting
+- **Manual Override**: Accept, reject, or modify AI suggestions
+- **Real-Time Preview**: See changes reflected before rendering
+
+#### Additional AI Features
+- **Karaoke-Style Captions**: Professional word-by-word animated captions in ASS format
+- **AI Image Generation**: Uses Gemini 2.5-flash-image to generate custom images based on transcript content
+- **Quality Insights Dashboard**: Displays hook strength, pacing score, engagement prediction
 
 ### Video Processing Pipeline
 1.  **Upload**: Video stored temporarily.

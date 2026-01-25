@@ -54,6 +54,9 @@ import {
   generateAiImagesForVideo,
   detectTranscriptLanguage,
   translateTranscriptToEnglish,
+  analyzeVideoDeep,
+  generateSmartEditPlan,
+  detectFillerWords,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
@@ -236,6 +239,36 @@ export async function registerRoutes(
     }
   });
 
+  app.put("/api/videos/:id/editplan", async (req: Request, res: Response) => {
+    try {
+      const paramResult = idParamSchema.safeParse(req.params);
+      if (!paramResult.success) {
+        return res.status(400).json({ error: formatZodError(paramResult.error) });
+      }
+      const { id } = paramResult.data;
+
+      const { editPlan } = req.body;
+      if (!editPlan) {
+        return res.status(400).json({ error: "editPlan is required" });
+      }
+
+      const project = await storage.getVideoProject(id);
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      await storage.updateVideoProject(id, { editPlan });
+      
+      const updatedProject = await storage.getVideoProject(id);
+      res.json({ editPlan: updatedProject?.editPlan });
+    } catch (error) {
+      routesLogger.error("Edit plan update error:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to update edit plan",
+      });
+    }
+  });
+
   app.get("/api/videos/:id/process", async (req: Request, res: Response) => {
     // Validate path parameters
     const paramResult = idParamSchema.safeParse(req.params);
@@ -346,91 +379,51 @@ export async function registerRoutes(
       transcript = await transcribeAudio(audioPath);
       checkAborted(); // Check after transcription (expensive AI call)
 
-      const analysis = await analyzeVideoFrames(
+      // Use deep video analysis for comprehensive AI-powered insights
+      routesLogger.info("Performing deep video analysis...");
+      const deepAnalysisResult = await analyzeVideoDeep(
         framePaths,
         metadata.duration,
-        silentSegments
+        silentSegments,
+        transcript
       );
-      checkAborted(); // Check after frame analysis (expensive AI call)
+      checkAborted(); // Check after deep analysis (expensive AI call)
+
+      const { videoAnalysis: analysis, semanticAnalysis, fillerSegments, qualityInsights } = deepAnalysisResult;
+
+      // Detect language and translate if needed for non-English content
+      if (transcript.length > 0) {
+        const detectedLanguage = detectTranscriptLanguage(transcript);
+        if (analysis.context) {
+          analysis.context.languageDetected = detectedLanguage;
+        }
+      }
 
       await storage.updateVideoProject(id, {
-        analysis,
+        analysis: { ...analysis, semanticAnalysis },
         transcript,
         duration: Math.round(metadata.duration),
       });
 
+      // Send enhanced analysis data to frontend including filler segments and quality insights
+      sendEvent("enhancedAnalysis", {
+        fillerSegments,
+        qualityInsights,
+        hookScore: qualityInsights.hookStrength,
+        structureAnalysis: semanticAnalysis.structureAnalysis,
+        topicFlow: semanticAnalysis.topicFlow,
+        hookMoments: semanticAnalysis.hookMoments,
+        keyMoments: semanticAnalysis.keyMoments,
+      });
+
       await updateStatus("planning");
       
-      // Perform semantic transcript analysis for context-aware B-roll and AI images
-      let semanticAnalysis: SemanticAnalysis | undefined;
-      const needsSemanticAnalysis = editOptions.addBroll || editOptions.generateAiImages;
-      
-      if (needsSemanticAnalysis) {
-        if (transcript.length > 0) {
-          // Detect transcript language
-          const detectedLanguage = detectTranscriptLanguage(transcript);
-          
-          // Persist detected language in video context
-          if (analysis.context) {
-            analysis.context.languageDetected = detectedLanguage;
-          }
-          
-          // Translate to English if non-English (for Gemini semantic analysis)
-          let transcriptForAnalysis = transcript;
-          if (detectedLanguage !== "en") {
-            routesLogger.info(`Transcript is in ${detectedLanguage}, translating to English for semantic analysis...`);
-            transcriptForAnalysis = await translateTranscriptToEnglish(transcript, detectedLanguage);
-            
-            // Verify translation produced English text
-            const translatedLanguage = detectTranscriptLanguage(transcriptForAnalysis);
-            if (translatedLanguage !== "en") {
-              routesLogger.warn(`Translation may have failed: detected ${translatedLanguage} instead of English`);
-            }
-          }
-          
-          routesLogger.info("Performing semantic transcript analysis...");
-          checkAborted(); // Check before semantic analysis
-          // Use translated transcript for analysis, but original timestamps are preserved
-          semanticAnalysis = await analyzeTranscriptSemantics(
-            transcriptForAnalysis,
-            analysis.context,
-            metadata.duration
-          );
-          checkAborted(); // Check after semantic analysis
-        } else {
-          // Fallback: Generate B-roll windows from video analysis when no transcript available
-          routesLogger.info("No transcript available, creating fallback semantic analysis from video context...");
-          const videoContext = analysis.context;
-          const toneMap: { [key: string]: "serious" | "inspirational" | "educational" | "casual" | "professional" | "entertaining" } = {
-            "serious": "serious", "calm": "casual", "inspirational": "inspirational",
-            "casual": "casual", "professional": "professional", "humorous": "entertaining", "dramatic": "serious"
-          };
-          semanticAnalysis = {
-            mainTopics: ["video content"],
-            overallTone: toneMap[videoContext?.tone || "casual"] || "casual",
-            keyMoments: [],
-            brollWindows: [
-              // Create evenly-spaced B-roll opportunities based on video duration
-              { start: Math.min(5, metadata.duration * 0.1), end: Math.min(10, metadata.duration * 0.15), priority: "high" as const, suggestedQuery: videoContext?.genre || "professional footage", context: "Opening visual", reason: "Visual enhancement" },
-              { start: metadata.duration * 0.3, end: metadata.duration * 0.35, priority: "medium" as const, suggestedQuery: videoContext?.suggestedEditStyle || "dynamic scene", context: "Mid-video visual", reason: "Content support" },
-              { start: metadata.duration * 0.6, end: metadata.duration * 0.65, priority: "medium" as const, suggestedQuery: videoContext?.tone || "engaging content", context: "Later section visual", reason: "Engagement boost" },
-            ],
-            extractedKeywords: [],
-            contentSummary: analysis.summary || "Video content analysis",
-          };
-        }
-        
-        routesLogger.info("Semantic analysis complete:", {
-          topics: semanticAnalysis!.mainTopics,
-          brollWindows: semanticAnalysis!.brollWindows.length,
-          keywords: semanticAnalysis!.extractedKeywords.length,
-        });
-        
-        // Store semantic analysis in the video analysis
-        await storage.updateVideoProject(id, {
-          analysis: { ...analysis, semanticAnalysis }
-        });
-      }
+      routesLogger.info("Deep analysis complete:", {
+        topics: semanticAnalysis.mainTopics,
+        brollWindows: semanticAnalysis.brollWindows.length,
+        fillerCount: fillerSegments.length,
+        hookStrength: qualityInsights.hookStrength,
+      });
       
       const enhancedPrompt = `${prompt}
       
@@ -443,7 +436,14 @@ User has selected these options:
 Please create an edit plan that follows these preferences. Do NOT include any transition effects - transitions are not supported.`;
 
       checkAborted(); // Check before edit plan generation
-      const editPlan = await generateEditPlan(enhancedPrompt, analysis, transcript, semanticAnalysis);
+      // Use smart multi-pass edit planning for better results
+      const editPlan = await generateSmartEditPlan(
+        enhancedPrompt,
+        analysis,
+        transcript,
+        semanticAnalysis,
+        fillerSegments
+      );
       checkAborted(); // Check after edit plan generation
 
       await storage.updateVideoProject(id, { editPlan });
@@ -592,6 +592,116 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       if (!connectionClosed) {
         res.end();
       }
+    }
+  });
+
+  // Enhanced analysis endpoint - returns full analysis data
+  app.get("/api/videos/:id/analysis", async (req: Request, res: Response) => {
+    try {
+      const paramResult = idParamSchema.safeParse(req.params);
+      if (!paramResult.success) {
+        return res.status(400).json({ error: formatZodError(paramResult.error) });
+      }
+      const { id } = paramResult.data;
+
+      const project = await storage.getVideoProject(id);
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      const analysis = project.analysis as {
+        scenes?: unknown[];
+        emotionFlow?: unknown[];
+        speakers?: unknown[];
+        keyMoments?: unknown[];
+        semanticAnalysis?: {
+          fillerSegments?: unknown[];
+          hookMoments?: unknown[];
+          structureAnalysis?: unknown;
+          topicFlow?: unknown[];
+          mainTopics?: string[];
+          overallTone?: string;
+          keyMoments?: unknown[];
+          brollWindows?: unknown[];
+          extractedKeywords?: string[];
+          contentSummary?: string;
+        };
+        context?: unknown;
+        frames?: unknown[];
+        summary?: string;
+        narrativeStructure?: unknown;
+        brollOpportunities?: unknown[];
+      } | null;
+
+      if (!analysis) {
+        return res.status(404).json({ error: "Analysis not available. Process the video first." });
+      }
+
+      const semanticAnalysis = analysis.semanticAnalysis;
+
+      // Compute filler segments from semantic analysis or detect them
+      let fillerSegments: { start: number; end: number; word: string }[] = [];
+      if (semanticAnalysis?.fillerSegments) {
+        fillerSegments = semanticAnalysis.fillerSegments as { start: number; end: number; word: string }[];
+      } else if (project.transcript) {
+        // Re-detect filler words from transcript if not stored
+        fillerSegments = detectFillerWords(project.transcript as { start: number; end: number; text: string }[]);
+      }
+
+      // Compute quality insights
+      const hookMoments = semanticAnalysis?.hookMoments as { timestamp: number; score: number; reason: string }[] || [];
+      const hookStrength = hookMoments.length > 0 
+        ? Math.max(...hookMoments.map(h => h.score)) 
+        : 50;
+
+      const qualityInsights = {
+        hookStrength,
+        fillerCount: fillerSegments.length,
+        topicsCount: semanticAnalysis?.mainTopics?.length || 0,
+        brollWindowsCount: semanticAnalysis?.brollWindows?.length || 0,
+        recommendations: [] as string[],
+      };
+
+      // Add recommendations based on analysis
+      if (hookStrength < 60) {
+        qualityInsights.recommendations.push("Consider adding a stronger hook in the first 3-5 seconds");
+      }
+      if (fillerSegments.length > 5) {
+        qualityInsights.recommendations.push("Consider removing filler words for smoother delivery");
+      }
+
+      res.json({
+        videoAnalysis: {
+          scenes: analysis.scenes || [],
+          emotionFlow: analysis.emotionFlow || [],
+          speakers: analysis.speakers || [],
+          keyMoments: analysis.keyMoments || [],
+          context: analysis.context,
+          frames: analysis.frames || [],
+          summary: analysis.summary,
+          narrativeStructure: analysis.narrativeStructure,
+          brollOpportunities: analysis.brollOpportunities || [],
+        },
+        semanticAnalysis: {
+          fillerSegments,
+          hookMoments: semanticAnalysis?.hookMoments || [],
+          structureAnalysis: semanticAnalysis?.structureAnalysis || null,
+          topicFlow: semanticAnalysis?.topicFlow || [],
+          mainTopics: semanticAnalysis?.mainTopics || [],
+          overallTone: semanticAnalysis?.overallTone || "casual",
+          keyMoments: semanticAnalysis?.keyMoments || [],
+          brollWindows: semanticAnalysis?.brollWindows || [],
+          extractedKeywords: semanticAnalysis?.extractedKeywords || [],
+          contentSummary: semanticAnalysis?.contentSummary || "",
+        },
+        qualityInsights,
+        transcript: project.transcript || [],
+      });
+    } catch (error) {
+      routesLogger.error("Analysis fetch error:", error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to get analysis",
+      });
     }
   });
 

@@ -99,9 +99,58 @@ export const transcriptSegmentSchema = z.object({
   isBrollWindow: z.boolean().optional(),
   suggestedBrollQuery: z.string().optional(),
   topic: z.string().optional(),
+  // Enhanced AI video editing fields
+  isFiller: z.boolean().optional(),
+  hookScore: z.number().min(0).max(100).optional(),
+  topicId: z.string().optional(),
+  emotionalTone: z.string().optional(),
+  isKeyMoment: z.boolean().optional(),
 });
 
 export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>;
+
+// Scene detection segment
+export const sceneSegmentSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  sceneType: z.string(),
+  visualDescription: z.string(),
+  emotionalTone: z.string(),
+  speakerId: z.string().optional(),
+  visualImportance: z.enum(["high", "medium", "low"]),
+});
+
+export type SceneSegment = z.infer<typeof sceneSegmentSchema>;
+
+// Emotion flow tracking point
+export const emotionFlowPointSchema = z.object({
+  timestamp: z.number(),
+  emotion: z.string(),
+  intensity: z.number().min(0).max(100),
+});
+
+export type EmotionFlowPoint = z.infer<typeof emotionFlowPointSchema>;
+
+// Speaker diarization segment
+export const speakerSegmentSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  speakerId: z.string(),
+  speakerLabel: z.string().optional(),
+});
+
+export type SpeakerSegment = z.infer<typeof speakerSegmentSchema>;
+
+// Key moment in the video
+export const keyMomentSchema = z.object({
+  timestamp: z.number(),
+  type: z.enum(["hook", "climax", "callToAction", "keyPoint", "transition"]),
+  description: z.string(),
+  importance: z.enum(["high", "medium", "low"]),
+  hookScore: z.number().min(0).max(100).optional(),
+});
+
+export type KeyMoment = z.infer<typeof keyMomentSchema>;
 
 // Semantic transcript analysis result
 export const semanticAnalysisSchema = z.object({
@@ -122,6 +171,29 @@ export const semanticAnalysisSchema = z.object({
   })),
   extractedKeywords: z.array(z.string()),
   contentSummary: z.string(),
+  // Enhanced AI video editing fields
+  fillerSegments: z.array(z.object({
+    start: z.number(),
+    end: z.number(),
+    word: z.string(),
+  })).optional(),
+  hookMoments: z.array(z.object({
+    timestamp: z.number(),
+    score: z.number(),
+    reason: z.string(),
+  })).optional(),
+  structureAnalysis: z.object({
+    introEnd: z.number().optional(),
+    mainStart: z.number().optional(),
+    mainEnd: z.number().optional(),
+    outroStart: z.number().optional(),
+  }).optional(),
+  topicFlow: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    start: z.number(),
+    end: z.number(),
+  })).optional(),
 });
 
 export type SemanticAnalysis = z.infer<typeof semanticAnalysisSchema>;
@@ -199,9 +271,24 @@ export const videoAnalysisSchema = z.object({
   })).optional(),
   // New semantic analysis from transcript
   semanticAnalysis: semanticAnalysisSchema.optional(),
+  // Enhanced AI video editing fields
+  scenes: z.array(sceneSegmentSchema).optional(),
+  emotionFlow: z.array(emotionFlowPointSchema).optional(),
+  speakers: z.array(speakerSegmentSchema).optional(),
+  keyMoments: z.array(keyMomentSchema).optional(),
 });
 
 export type VideoAnalysis = z.infer<typeof videoAnalysisSchema>;
+
+// Quality score for edit plan quality assessment
+export const qualityScoreSchema = z.object({
+  pacing: z.enum(["slow", "moderate", "fast"]),
+  brollRelevance: z.enum(["high", "medium", "low"]),
+  narrativeFlow: z.enum(["high", "medium", "low"]),
+  overallScore: z.number().min(0).max(100),
+});
+
+export type QualityScore = z.infer<typeof qualityScoreSchema>;
 
 export const editActionSchema = z.object({
   // Note: AI images are auto-placed from semantic analysis (not in edit plan)
@@ -219,6 +306,8 @@ export const editActionSchema = z.object({
   confidence: z.number().optional(),
   // Context from transcript for better matching
   transcriptContext: z.string().optional(),
+  // Enhanced AI video editing field
+  qualityScore: z.number().min(0).max(100).optional(),
 });
 
 export type EditAction = z.infer<typeof editActionSchema>;
@@ -234,6 +323,8 @@ export const editPlanSchema = z.object({
     avoidAreas: z.array(z.string()).optional(),
   }).optional(),
   qualityScore: z.number().optional(),
+  // Enhanced AI video editing field
+  qualityMetrics: qualityScoreSchema.optional(),
 });
 
 export type EditPlan = z.infer<typeof editPlanSchema>;

@@ -13,6 +13,10 @@ import type {
   VideoContext,
   TopicSegment,
   SemanticAnalysis,
+  SceneSegment,
+  EmotionFlowPoint,
+  SpeakerSegment,
+  KeyMoment,
 } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
@@ -112,6 +116,38 @@ const BrollOpportunitySchema = z.object({
   reason: z.string(),
 });
 
+// Enhanced video analysis schemas for deeper analysis
+const SceneSegmentResponseSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  sceneType: z.string(),
+  visualDescription: z.string().optional().default(""),
+  emotionalTone: z.string(),
+  speakerId: z.string().optional(),
+  visualImportance: z.enum(["high", "medium", "low"]),
+});
+
+const EmotionFlowPointResponseSchema = z.object({
+  timestamp: z.number(),
+  emotion: z.string(),
+  intensity: z.number().min(0).max(100),
+});
+
+const SpeakerSegmentResponseSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+  speakerId: z.string(),
+  speakerLabel: z.string().optional(),
+});
+
+const KeyMomentResponseSchema = z.object({
+  timestamp: z.number(),
+  type: z.enum(["hook", "climax", "callToAction", "keyPoint", "transition"]),
+  description: z.string(),
+  importance: z.enum(["high", "medium", "low"]),
+  hookScore: z.number().min(0).max(100).optional(),
+});
+
 const VideoAnalysisResponseSchema = z.object({
   frames: z.array(FrameAnalysisSchema),
   summary: z.string().optional().default(""),
@@ -127,12 +163,21 @@ const VideoAnalysisResponseSchema = z.object({
     peakMoments: z.array(z.number()).nullish(),
   }).optional(),
   brollOpportunities: z.array(BrollOpportunitySchema).optional(),
+  // Enhanced deep analysis fields
+  scenes: z.array(SceneSegmentResponseSchema).optional(),
+  emotionFlow: z.array(EmotionFlowPointResponseSchema).optional(),
+  speakers: z.array(SpeakerSegmentResponseSchema).optional(),
+  keyMoments: z.array(KeyMomentResponseSchema).optional(),
 });
 
 // Inferred types from Zod schemas for type-safe parsing
 type RawFrameAnalysis = z.infer<typeof FrameAnalysisSchema>;
 type RawTopicSegment = z.infer<typeof TopicSegmentSchema>;
 type RawBrollOpportunity = z.infer<typeof BrollOpportunitySchema>;
+type RawSceneSegment = z.infer<typeof SceneSegmentResponseSchema>;
+type RawEmotionFlowPoint = z.infer<typeof EmotionFlowPointResponseSchema>;
+type RawSpeakerSegment = z.infer<typeof SpeakerSegmentResponseSchema>;
+type RawKeyMomentResponse = z.infer<typeof KeyMomentResponseSchema>;
 type VideoAnalysisResponse = z.infer<typeof VideoAnalysisResponseSchema>;
 
 // Raw JSON types for semantic analysis parsing
@@ -314,7 +359,7 @@ export async function analyzeVideoFrames(
 
   const prompt = `You are an expert video analyst and professional video editor. Analyze these ${framePaths.length} frames from a video that is ${duration.toFixed(1)} seconds long.
 
-PERFORM A COMPREHENSIVE ANALYSIS:
+PERFORM A COMPREHENSIVE DEEP ANALYSIS:
 
 1. VIDEO CONTEXT CLASSIFICATION
 Determine the video's genre, tone, target audience, and optimal editing approach:
@@ -331,25 +376,62 @@ For each frame:
 - Energy level (low/medium/high)
 - Stock media search query that would enhance this moment (be specific and contextually relevant)
 
-3. NARRATIVE STRUCTURE
+3. SCENE DETECTION (NEW - CRITICAL)
+Group consecutive frames into DISTINCT SCENES. A scene changes when:
+- Location/background changes significantly
+- Topic/activity shifts
+- Speaker changes
+- Visual mood/lighting changes dramatically
+
+For each scene, identify:
+- Start/end timestamps
+- Scene type (talking_head, demonstration, b_roll, text_slide, transition, intro, outro)
+- Visual description of the scene
+- Emotional tone (calm, excited, serious, thoughtful, humorous, inspirational, tense, relaxed)
+- Speaker ID if visible (speaker_1, speaker_2, etc.)
+- Visual Importance: HIGH = viewer MUST see this (demonstrations, key expressions, important visuals), MEDIUM = adds value but not critical, LOW = can be covered with B-roll without losing content
+
+4. EMOTION FLOW TRACKING (NEW)
+Track how the emotional energy changes throughout the video. Create data points at key emotional shifts:
+- Timestamp
+- Emotion (calm, excited, serious, thoughtful, humorous, inspirational, tense, curious, satisfied)
+- Intensity (0-100 scale)
+
+This helps identify pacing and engagement patterns like: calm intro → building excitement → peak climax → satisfying conclusion
+
+5. SPEAKER DETECTION (NEW)
+Identify distinct speakers and when they appear:
+- Speaker ID (speaker_1, speaker_2, etc.)
+- Start/end times for each speaking segment
+- Optional label if identifiable (host, guest, narrator, etc.)
+
+6. KEY MOMENTS IDENTIFICATION (NEW - CRITICAL)
+Identify special moments that are crucial for editing:
+- HOOKS (first 3-10 seconds): Do they grab attention? Score 0-100 for hook strength
+- CLIMAXES: Peak engagement/emotional moments
+- CALL-TO-ACTIONS: When the speaker asks viewers to do something
+- KEY POINTS: Important statements, revelations, or demonstrations
+- TRANSITIONS: Natural break points between topics
+
+7. NARRATIVE STRUCTURE
 Identify:
 - Introduction section (if any) and when it ends
 - Main content boundaries
 - Outro/conclusion section (if any) and when it starts
 - Peak moments of interest/engagement (timestamps)
 
-4. TOPIC SEGMENTATION
+8. TOPIC SEGMENTATION
 Break the video into distinct topic/subject segments with:
 - Start and end times
 - Topic description
 - Importance level (low/medium/high)
 - Whether it's a good B-roll window
 
-5. B-ROLL OPPORTUNITIES
+9. B-ROLL OPPORTUNITIES
 Identify specific moments where stock footage/images would enhance the content:
 - Exact timestamp ranges
 - Optimal duration (2-6 seconds typically)
-- Specific, descriptive search query matching the content's context
+- ULTRA-SPECIFIC search query (not "nature" but "peaceful sunrise over mountain lake with morning mist")
 - Priority (high = essential, medium = enhances, low = optional)
 - Reason why B-roll would help here
 
@@ -362,6 +444,7 @@ IMPORTANT GUIDELINES:
 - For interviews: suggest contextual B-roll related to discussion topics
 - B-roll should NEVER distract from important visual moments (face expressions, demonstrations)
 - Place B-roll during explanatory speech, NOT during key visual moments
+- HIGH visual importance = never cover with B-roll
 
 Respond in JSON format only (no markdown):
 {
@@ -387,6 +470,41 @@ Respond in JSON format only (no markdown):
     "regionalContext": "string or null - cultural/regional context if apparent",
     "languageDetected": "string - detected language"
   },
+  "scenes": [
+    {
+      "start": number,
+      "end": number,
+      "sceneType": "talking_head" | "demonstration" | "b_roll" | "text_slide" | "transition" | "intro" | "outro",
+      "visualDescription": "string - what's visually happening in this scene",
+      "emotionalTone": "calm" | "excited" | "serious" | "thoughtful" | "humorous" | "inspirational" | "tense" | "relaxed",
+      "speakerId": "speaker_1" | "speaker_2" | null,
+      "visualImportance": "high" | "medium" | "low"
+    }
+  ],
+  "emotionFlow": [
+    {
+      "timestamp": number,
+      "emotion": "calm" | "excited" | "serious" | "thoughtful" | "humorous" | "inspirational" | "tense" | "curious" | "satisfied",
+      "intensity": number (0-100)
+    }
+  ],
+  "speakers": [
+    {
+      "start": number,
+      "end": number,
+      "speakerId": "speaker_1" | "speaker_2" | etc,
+      "speakerLabel": "host" | "guest" | "narrator" | null
+    }
+  ],
+  "keyMoments": [
+    {
+      "timestamp": number,
+      "type": "hook" | "climax" | "callToAction" | "keyPoint" | "transition",
+      "description": "string - what makes this moment important",
+      "importance": "high" | "medium" | "low",
+      "hookScore": number (0-100, only for hook type moments)
+    }
+  ],
   "topicSegments": [
     {
       "start": number,
@@ -410,7 +528,7 @@ Respond in JSON format only (no markdown):
       "start": number,
       "end": number,
       "suggestedDuration": number (2-6 seconds recommended),
-      "query": "string - specific, contextual search query",
+      "query": "string - ULTRA-SPECIFIC contextual search query (e.g., 'professional businessman walking through modern glass office building' not just 'office')",
       "priority": "low" | "medium" | "high",
       "reason": "string - why B-roll would enhance this moment"
     }
@@ -529,6 +647,38 @@ Respond in JSON format only (no markdown):
     peakMoments: parsed.narrativeStructure.peakMoments ?? undefined,
   } : undefined;
 
+  // Parse enhanced analysis fields (scenes, emotionFlow, speakers, keyMoments)
+  const scenes: SceneSegment[] | undefined = parsed.scenes?.map((s: RawSceneSegment) => ({
+    start: s.start || 0,
+    end: s.end || duration,
+    sceneType: s.sceneType || "talking_head",
+    visualDescription: s.visualDescription || "",
+    emotionalTone: s.emotionalTone || "calm",
+    speakerId: s.speakerId,
+    visualImportance: s.visualImportance || "medium",
+  }));
+
+  const emotionFlow: EmotionFlowPoint[] | undefined = parsed.emotionFlow?.map((e: RawEmotionFlowPoint) => ({
+    timestamp: e.timestamp || 0,
+    emotion: e.emotion || "calm",
+    intensity: Math.min(100, Math.max(0, e.intensity || 50)),
+  }));
+
+  const speakers: SpeakerSegment[] | undefined = parsed.speakers?.map((s: RawSpeakerSegment) => ({
+    start: s.start || 0,
+    end: s.end || duration,
+    speakerId: s.speakerId || "speaker_1",
+    speakerLabel: s.speakerLabel,
+  }));
+
+  const keyMoments: KeyMoment[] | undefined = parsed.keyMoments?.map((k: RawKeyMomentResponse) => ({
+    timestamp: k.timestamp || 0,
+    type: k.type || "keyPoint",
+    description: k.description || "",
+    importance: k.importance || "medium",
+    hookScore: k.hookScore,
+  }));
+
   return {
     duration,
     frames,
@@ -538,6 +688,10 @@ Respond in JSON format only (no markdown):
     topicSegments,
     narrativeStructure,
     brollOpportunities,
+    scenes,
+    emotionFlow,
+    speakers,
+    keyMoments,
   };
 }
 
@@ -964,6 +1118,77 @@ function parseWhisperTimestamp(timestamp: string): number | null {
   return (hours * 3600 + minutes * 60 + seconds) * 1000 + ms;
 }
 
+// Common filler words to detect in transcripts
+const FILLER_WORDS = [
+  "um", "uh", "erm", "er", "ah", "uhh", "umm",
+  "like", "you know", "so", "basically", "actually", "literally",
+  "i mean", "you see", "right", "okay", "well", "just",
+  "kind of", "sort of", "you know what i mean", "at the end of the day"
+];
+
+/**
+ * Detect filler words in transcript segments
+ * Returns array of { start, end, word } for each filler detected
+ */
+export function detectFillerWords(
+  transcript: TranscriptSegment[]
+): { start: number; end: number; word: string }[] {
+  const fillerSegments: { start: number; end: number; word: string }[] = [];
+  
+  for (const segment of transcript) {
+    const text = segment.text.toLowerCase();
+    const segmentDuration = segment.end - segment.start;
+    const words = text.split(/\s+/);
+    const wordsPerSecond = words.length / Math.max(segmentDuration, 0.1);
+    
+    // Check for single-word fillers
+    for (const filler of FILLER_WORDS) {
+      const fillerLower = filler.toLowerCase();
+      
+      if (filler.includes(" ")) {
+        // Multi-word filler phrase
+        if (text.includes(fillerLower)) {
+          // Estimate timing based on position in segment
+          const index = text.indexOf(fillerLower);
+          const position = index / text.length;
+          const estimatedStart = segment.start + (position * segmentDuration);
+          const fillerWordCount = filler.split(" ").length;
+          const estimatedDuration = fillerWordCount / wordsPerSecond;
+          
+          fillerSegments.push({
+            start: estimatedStart,
+            end: estimatedStart + estimatedDuration,
+            word: filler,
+          });
+        }
+      } else {
+        // Single word filler - check each word
+        for (let i = 0; i < words.length; i++) {
+          const word = words[i].replace(/[^a-z]/g, ""); // Remove punctuation
+          if (word === fillerLower) {
+            // Estimate timing based on word position
+            const wordPosition = i / words.length;
+            const estimatedStart = segment.start + (wordPosition * segmentDuration);
+            const estimatedDuration = 1 / wordsPerSecond;
+            
+            fillerSegments.push({
+              start: estimatedStart,
+              end: estimatedStart + estimatedDuration,
+              word: filler,
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  // Sort by start time
+  fillerSegments.sort((a, b) => a.start - b.start);
+  
+  aiLogger.debug(`Detected ${fillerSegments.length} filler word instances`);
+  return fillerSegments;
+}
+
 /**
  * Semantic Transcript Analysis - Core Intelligence Engine
  * Analyzes transcript to extract keywords, emotions, topics, and B-roll windows
@@ -1000,7 +1225,7 @@ VIDEO CONTEXT:
 TRANSCRIPT:
 ${fullTranscript}
 
-PERFORM COMPREHENSIVE ANALYSIS:
+PERFORM COMPREHENSIVE DEEP ANALYSIS:
 
 1. **MAIN TOPICS** - What are the core subjects discussed? List 3-7 main topics.
 
@@ -1011,7 +1236,27 @@ PERFORM COMPREHENSIVE ANALYSIS:
    - Emotional emphasis occurs
    - Key information is delivered
 
-4. **B-ROLL WINDOWS** - CRITICAL: Identify specific moments where visual support would ENHANCE the content:
+4. **HOOK ANALYSIS** (NEW - CRITICAL)
+Analyze the first 3-10 seconds of content. Score the hook strength (0-100):
+- Does it grab attention immediately? (strong opening statement, question, or visual)
+- Is there a promise or question that creates curiosity?
+- Does it make viewers want to keep watching?
+Identify specific hook moments with timestamps, scores, and reasons.
+
+5. **STRUCTURE ANALYSIS** (NEW)
+Detect the video structure:
+- introEnd: timestamp where introduction ends and main content begins
+- mainStart: when the core content starts
+- mainEnd: when the core content wraps up
+- outroStart: when outro/conclusion begins (if any)
+
+6. **TOPIC FLOW** (NEW)
+Create a timeline of topics discussed throughout the video:
+- Each topic should have a unique ID (topic_1, topic_2, etc.)
+- Name of the topic/subject
+- Start and end timestamps
+
+7. **B-ROLL WINDOWS** - CRITICAL: Identify specific moments where visual support would ENHANCE the content:
    - When speaker discusses abstract concepts
    - When examples/illustrations are mentioned
    - During transitions between topics
@@ -1020,21 +1265,21 @@ PERFORM COMPREHENSIVE ANALYSIS:
    For each B-roll window, provide:
    - Exact start/end timestamps (must align with transcript segments)
    - Context (what's being discussed)
-   - Specific, contextual search query that matches the ACTUAL content being discussed
+   - ULTRA-SPECIFIC search query (not "nature" but "peaceful sunrise over mountain lake with morning mist")
    - Priority (high = essential visual support, medium = enhances understanding, low = optional decoration)
    - Reason why B-roll helps here
 
-5. **EXTRACTED KEYWORDS** - List 10-20 important keywords/phrases from the content
+8. **EXTRACTED KEYWORDS** - List 10-20 important keywords/phrases from the content
 
-6. **CONTENT SUMMARY** - 2-3 sentence summary of the video content
+9. **CONTENT SUMMARY** - 2-3 sentence summary of the video content
 
-CRITICAL B-ROLL QUERY GUIDELINES:
-- Queries must be SPECIFIC to what's being discussed in the transcript
-- DO NOT use generic queries like "nature" or "business" 
-- If speaker says "meditation brings peace of mind" → query: "peaceful meditation mindfulness calm person meditating"
-- If speaker discusses "technology trends" → query: "modern technology innovation digital devices"
-- If speaker mentions "cooking healthy meals" → query: "healthy cooking vegetables kitchen preparation"
-- Match the genre and tone: ${videoContext?.genre || "general"} content should have ${videoContext?.tone || "appropriate"} imagery
+CRITICAL ULTRA-SPECIFIC B-ROLL QUERY GUIDELINES:
+- Queries must describe EXACTLY what would visually represent the speaker's words
+- BAD: "nature" or "business" or "technology"
+- GOOD: "peaceful meditation mindfulness calm person meditating in serene garden"
+- GOOD: "modern office workers collaborating around glass table in bright startup space"
+- GOOD: "golden sunrise over misty mountain lake with pine trees reflecting in water"
+- Match the visual exactly to the SPOKEN CONTENT, not generic concepts
 
 B-ROLL TIMING RULES:
 - Duration: 3-5 seconds per B-roll (optimal for visual impact)
@@ -1053,12 +1298,24 @@ Respond in JSON format only (no markdown):
   "keyMoments": [
     {"timestamp": number, "description": "string", "importance": "low|medium|high"}
   ],
+  "hookMoments": [
+    {"timestamp": number, "score": number (0-100), "reason": "why this is/isn't a strong hook"}
+  ],
+  "structureAnalysis": {
+    "introEnd": number or null,
+    "mainStart": number or null,
+    "mainEnd": number or null,
+    "outroStart": number or null
+  },
+  "topicFlow": [
+    {"id": "topic_1", "name": "topic name", "start": number, "end": number}
+  ],
   "brollWindows": [
     {
       "start": number,
       "end": number,
       "context": "what is being discussed",
-      "suggestedQuery": "specific contextual search query",
+      "suggestedQuery": "ULTRA-SPECIFIC contextual search query (e.g., 'professional businessman walking through modern glass office with city skyline visible')",
       "priority": "low|medium|high",
       "reason": "why B-roll enhances this moment"
     }
@@ -1085,14 +1342,24 @@ Respond in JSON format only (no markdown):
       return getDefaultSemanticAnalysis(transcript, duration);
     }
 
-    const parsed = JSON.parse(jsonMatch[0]) as {
+    interface ParsedSemanticResponse {
       brollWindows?: RawBrollWindow[];
       mainTopics?: string[];
       overallTone?: "educational" | "entertaining" | "inspirational" | "professional" | "casual" | "serious";
       keyMoments?: RawKeyMoment[];
       extractedKeywords?: string[];
       contentSummary?: string;
-    };
+      hookMoments?: { timestamp?: number; score?: number; reason?: string }[];
+      structureAnalysis?: {
+        introEnd?: number | null;
+        mainStart?: number | null;
+        mainEnd?: number | null;
+        outroStart?: number | null;
+      };
+      topicFlow?: { id?: string; name?: string; start?: number; end?: number }[];
+    }
+    
+    const parsed = JSON.parse(jsonMatch[0]) as ParsedSemanticResponse;
     
     // Validate and clamp B-roll windows
     const validatedBrollWindows = (parsed.brollWindows || [])
@@ -1107,6 +1374,27 @@ Respond in JSON format only (no markdown):
       }))
       .slice(0, 15); // Maximum 15 B-roll windows (1 per ~5-6 seconds of video)
 
+    // Parse enhanced fields
+    const hookMoments = parsed.hookMoments?.map(h => ({
+      timestamp: h.timestamp || 0,
+      score: Math.min(100, Math.max(0, h.score || 0)),
+      reason: h.reason || "",
+    }));
+
+    const structureAnalysis = parsed.structureAnalysis ? {
+      introEnd: parsed.structureAnalysis.introEnd ?? undefined,
+      mainStart: parsed.structureAnalysis.mainStart ?? undefined,
+      mainEnd: parsed.structureAnalysis.mainEnd ?? undefined,
+      outroStart: parsed.structureAnalysis.outroStart ?? undefined,
+    } : undefined;
+
+    const topicFlow = parsed.topicFlow?.map((t, i) => ({
+      id: t.id || `topic_${i + 1}`,
+      name: t.name || "Unknown topic",
+      start: t.start || 0,
+      end: t.end || duration,
+    }));
+
     return {
       mainTopics: parsed.mainTopics || [],
       overallTone: parsed.overallTone || "casual",
@@ -1118,6 +1406,10 @@ Respond in JSON format only (no markdown):
       brollWindows: validatedBrollWindows,
       extractedKeywords: parsed.extractedKeywords || [],
       contentSummary: parsed.contentSummary || "",
+      // Enhanced analysis fields
+      hookMoments,
+      structureAnalysis,
+      topicFlow,
     };
   } catch (error) {
     aiLogger.error("Semantic analysis error:", error);
@@ -1631,5 +1923,1101 @@ Respond with a JSON object only (no markdown):
     keyPoints: parsed.keyPoints || [],
     estimatedDuration: parsed.estimatedDuration || analysis.duration,
     editingStrategy: parsed.editingStrategy || undefined,
+  };
+}
+
+// ============================================================================
+// MULTI-PASS SMART EDIT PLANNING SYSTEM
+// ============================================================================
+
+// Interface for Pass 1: Structure Analysis output
+interface StructuredPlan {
+  introSection: { start: number; end: number } | null;
+  mainContentSection: { start: number; end: number };
+  outroSection: { start: number; end: number } | null;
+  sectionMarkers: Array<{
+    timestamp: number;
+    type: "intro_end" | "section_change" | "climax" | "outro_start" | "transition";
+    description: string;
+  }>;
+  narrativeArc: "linear" | "problem_solution" | "story" | "tutorial" | "listicle" | "conversational";
+}
+
+// Interface for Pass 2: Quality Assessment output
+interface QualityMap {
+  segmentScores: Array<{
+    start: number;
+    end: number;
+    engagementScore: number; // 0-100
+    valueLevel: "must_keep" | "high" | "medium" | "low" | "cut_candidate";
+    reason: string;
+  }>;
+  hookStrength: number; // 0-100
+  overallEngagement: number; // 0-100
+  lowValueSegments: Array<{ start: number; end: number; reason: string }>;
+  mustKeepSegments: Array<{ start: number; end: number; reason: string }>;
+}
+
+// Interface for Pass 3: B-Roll Optimization output
+interface OptimizedBrollPlan {
+  brollPlacements: Array<{
+    start: number;
+    duration: number;
+    query: string;
+    transcriptContext: string;
+    priority: "high" | "medium" | "low";
+    reason: string;
+  }>;
+  fillerActions: Array<{
+    start: number;
+    end: number;
+    word: string;
+    action: "cut" | "overlay";
+  }>;
+  cutActions: Array<{
+    start: number;
+    end: number;
+    reason: string;
+  }>;
+}
+
+// Interface for Pass 4: Quality Review output
+interface ReviewedEditPlan {
+  actions: EditAction[];
+  qualityMetrics: {
+    pacing: "slow" | "moderate" | "fast";
+    brollRelevance: "high" | "medium" | "low";
+    narrativeFlow: "high" | "medium" | "low";
+    overallScore: number;
+  };
+  recommendations: string[];
+  warnings: string[];
+}
+
+/**
+ * Pass 1: Structure Analysis
+ * Identifies intro, main content, and outro sections
+ * Determines overall video structure and narrative arc
+ */
+async function executePass1StructureAnalysis(
+  analysis: VideoAnalysis,
+  transcript: TranscriptSegment[],
+  semanticAnalysis: SemanticAnalysis
+): Promise<StructuredPlan> {
+  const duration = analysis.duration;
+  const transcriptText = transcript.slice(0, 30).map(t => 
+    `[${t.start.toFixed(1)}s]: ${t.text}`
+  ).join("\n");
+
+  const prompt = `You are an expert video structure analyst. Analyze this video to identify its structural components.
+
+VIDEO ANALYSIS:
+- Duration: ${duration.toFixed(1)} seconds
+- Genre: ${analysis.context?.genre || "general"}
+- Tone: ${analysis.context?.tone || "casual"}
+- Existing narrative structure: ${JSON.stringify(analysis.narrativeStructure || {})}
+
+SEMANTIC ANALYSIS:
+- Main topics: ${semanticAnalysis.mainTopics.join(", ")}
+- Structure hints: ${JSON.stringify(semanticAnalysis.structureAnalysis || {})}
+- Topic flow: ${JSON.stringify(semanticAnalysis.topicFlow?.slice(0, 5) || [])}
+
+TRANSCRIPT (first 30 segments):
+${transcriptText}
+
+ANALYZE THE VIDEO STRUCTURE:
+
+1. INTRO SECTION: Identify where the introduction ends (typically 5-30 seconds)
+   - Look for: greetings, channel plugs, video previews, hook statements
+   - Mark null if no distinct intro
+
+2. MAIN CONTENT SECTION: Core content that delivers value
+   - This is the "meat" of the video
+   - Should be the majority of the video
+
+3. OUTRO SECTION: Identify where conclusion begins (typically last 10-60 seconds)
+   - Look for: summary statements, CTAs, "thanks for watching", subscribe reminders
+   - Mark null if no distinct outro
+
+4. SECTION MARKERS: Key structural points where topics change or transitions occur
+   - intro_end: Where intro concludes
+   - section_change: Topic or activity transitions
+   - climax: Peak engagement/important reveal
+   - outro_start: Beginning of conclusion
+   - transition: Natural pause or shift points
+
+5. NARRATIVE ARC: Classify the overall structure
+   - linear: Straightforward progression
+   - problem_solution: Presents problem, then solution
+   - story: Beginning, middle, end narrative
+   - tutorial: Step-by-step instruction
+   - listicle: List of items/points
+   - conversational: Casual, flowing discussion
+
+Respond in JSON format only (no markdown):
+{
+  "introSection": {"start": 0, "end": number} | null,
+  "mainContentSection": {"start": number, "end": number},
+  "outroSection": {"start": number, "end": ${duration.toFixed(1)}} | null,
+  "sectionMarkers": [
+    {"timestamp": number, "type": "intro_end|section_change|climax|outro_start|transition", "description": "string"}
+  ],
+  "narrativeArc": "linear|problem_solution|story|tutorial|listicle|conversational"
+}`;
+
+  try {
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+      "pass1StructureAnalysis",
+      AI_RETRY_OPTIONS
+    );
+
+    const text = response.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      aiLogger.warn("Pass 1: Failed to parse structure analysis, using defaults");
+      return getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    return {
+      introSection: parsed.introSection || null,
+      mainContentSection: parsed.mainContentSection || { start: 0, end: duration },
+      outroSection: parsed.outroSection || null,
+      sectionMarkers: (parsed.sectionMarkers || []).map((m: { timestamp?: number; type?: string; description?: string }) => ({
+        timestamp: m.timestamp || 0,
+        type: m.type || "transition",
+        description: m.description || "",
+      })),
+      narrativeArc: parsed.narrativeArc || "linear",
+    };
+  } catch (error) {
+    aiLogger.error("Pass 1 error:", error);
+    return getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
+  }
+}
+
+function getDefaultStructuredPlan(
+  duration: number, 
+  analysis: VideoAnalysis, 
+  semanticAnalysis: SemanticAnalysis
+): StructuredPlan {
+  const introEnd = semanticAnalysis.structureAnalysis?.introEnd || 
+                   analysis.narrativeStructure?.introEnd || 
+                   Math.min(10, duration * 0.1);
+  const outroStart = semanticAnalysis.structureAnalysis?.outroStart || 
+                     analysis.narrativeStructure?.outroStart || 
+                     Math.max(duration - 15, duration * 0.9);
+  
+  return {
+    introSection: introEnd > 3 ? { start: 0, end: introEnd } : null,
+    mainContentSection: { start: introEnd || 0, end: outroStart || duration },
+    outroSection: outroStart < duration - 5 ? { start: outroStart, end: duration } : null,
+    sectionMarkers: [],
+    narrativeArc: "linear",
+  };
+}
+
+/**
+ * Pass 2: Quality Assessment
+ * Scores each segment for engagement potential
+ */
+async function executePass2QualityAssessment(
+  analysis: VideoAnalysis,
+  transcript: TranscriptSegment[],
+  semanticAnalysis: SemanticAnalysis,
+  structuredPlan: StructuredPlan,
+  fillerSegments: { start: number; end: number; word: string }[]
+): Promise<QualityMap> {
+  const duration = analysis.duration;
+  
+  const keyMomentsSummary = [
+    ...(analysis.keyMoments || []).map(k => `[${k.timestamp.toFixed(1)}s] ${k.type}: ${k.description} (${k.importance})`),
+    ...(semanticAnalysis.keyMoments || []).map(k => `[${k.timestamp.toFixed(1)}s] ${k.description} (${k.importance})`),
+  ].slice(0, 15).join("\n");
+
+  const scenesSummary = (analysis.scenes || []).slice(0, 10).map(s => 
+    `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${s.sceneType} - ${s.emotionalTone}, visual importance: ${s.visualImportance}`
+  ).join("\n");
+
+  const emotionFlowSummary = (analysis.emotionFlow || []).slice(0, 10).map(e =>
+    `[${e.timestamp.toFixed(1)}s] ${e.emotion} (intensity: ${e.intensity})`
+  ).join("\n");
+
+  const prompt = `You are an expert video quality analyst. Score each segment of this video for engagement potential.
+
+VIDEO INFO:
+- Duration: ${duration.toFixed(1)} seconds
+- Genre: ${analysis.context?.genre || "general"}
+- Hook moments detected: ${JSON.stringify(semanticAnalysis.hookMoments?.slice(0, 3) || [])}
+- Filler words count: ${fillerSegments.length}
+
+STRUCTURE (from Pass 1):
+- Intro: ${structuredPlan.introSection ? `${structuredPlan.introSection.start}s-${structuredPlan.introSection.end}s` : "None"}
+- Main content: ${structuredPlan.mainContentSection.start}s-${structuredPlan.mainContentSection.end}s
+- Outro: ${structuredPlan.outroSection ? `${structuredPlan.outroSection.start}s-${structuredPlan.outroSection.end}s` : "None"}
+- Narrative arc: ${structuredPlan.narrativeArc}
+
+KEY MOMENTS DETECTED:
+${keyMomentsSummary || "None"}
+
+SCENES DETECTED:
+${scenesSummary || "None"}
+
+EMOTION FLOW:
+${emotionFlowSummary || "None"}
+
+FILLER SEGMENTS (partial):
+${fillerSegments.slice(0, 10).map(f => `[${f.start.toFixed(1)}s] "${f.word}"`).join(", ")}
+
+SCORING GUIDELINES:
+- 80-100: MUST KEEP - Key moments, climaxes, important reveals, strong hooks
+- 60-79: HIGH VALUE - Good content, engaging, contributes to narrative
+- 40-59: MEDIUM VALUE - Acceptable but not essential, could be trimmed
+- 20-39: LOW VALUE - Filler, tangents, low energy sections
+- 0-19: CUT CANDIDATE - Dead air, mistakes, very low value content
+
+Break the video into 5-15 segments based on content quality shifts.
+Identify segments that MUST be kept and segments that are candidates for cutting.
+
+Respond in JSON format only (no markdown):
+{
+  "segmentScores": [
+    {
+      "start": number,
+      "end": number,
+      "engagementScore": number (0-100),
+      "valueLevel": "must_keep|high|medium|low|cut_candidate",
+      "reason": "why this score"
+    }
+  ],
+  "hookStrength": number (0-100),
+  "overallEngagement": number (0-100),
+  "lowValueSegments": [{"start": number, "end": number, "reason": "string"}],
+  "mustKeepSegments": [{"start": number, "end": number, "reason": "string"}]
+}`;
+
+  try {
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+      "pass2QualityAssessment",
+      AI_RETRY_OPTIONS
+    );
+
+    const text = response.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      aiLogger.warn("Pass 2: Failed to parse quality assessment, using defaults");
+      return getDefaultQualityMap(duration, analysis, semanticAnalysis);
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    return {
+      segmentScores: (parsed.segmentScores || []).map((s: { start?: number; end?: number; engagementScore?: number; valueLevel?: string; reason?: string }) => ({
+        start: s.start || 0,
+        end: s.end || duration,
+        engagementScore: Math.min(100, Math.max(0, s.engagementScore || 50)),
+        valueLevel: s.valueLevel || "medium",
+        reason: s.reason || "",
+      })),
+      hookStrength: Math.min(100, Math.max(0, parsed.hookStrength || 50)),
+      overallEngagement: Math.min(100, Math.max(0, parsed.overallEngagement || 60)),
+      lowValueSegments: parsed.lowValueSegments || [],
+      mustKeepSegments: parsed.mustKeepSegments || [],
+    };
+  } catch (error) {
+    aiLogger.error("Pass 2 error:", error);
+    return getDefaultQualityMap(duration, analysis, semanticAnalysis);
+  }
+}
+
+function getDefaultQualityMap(
+  duration: number,
+  analysis: VideoAnalysis,
+  semanticAnalysis: SemanticAnalysis
+): QualityMap {
+  const hookStrength = semanticAnalysis.hookMoments?.[0]?.score || 50;
+  
+  return {
+    segmentScores: [{ start: 0, end: duration, engagementScore: 60, valueLevel: "medium", reason: "Default assessment" }],
+    hookStrength,
+    overallEngagement: 60,
+    lowValueSegments: [],
+    mustKeepSegments: [],
+  };
+}
+
+/**
+ * Pass 3: B-Roll Optimization
+ * Creates intelligent B-roll placement based on semantic analysis
+ */
+async function executePass3BrollOptimization(
+  analysis: VideoAnalysis,
+  transcript: TranscriptSegment[],
+  semanticAnalysis: SemanticAnalysis,
+  structuredPlan: StructuredPlan,
+  qualityMap: QualityMap,
+  fillerSegments: { start: number; end: number; word: string }[]
+): Promise<OptimizedBrollPlan> {
+  const duration = analysis.duration;
+  const genre = analysis.context?.genre || "general";
+  const tone = analysis.context?.tone || "casual";
+  
+  // Get low visual importance scenes (safe for B-roll)
+  const lowImportanceScenes = (analysis.scenes || [])
+    .filter(s => s.visualImportance === "low" || s.visualImportance === "medium")
+    .map(s => `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${s.visualDescription || s.sceneType}`);
+
+  // Get B-roll windows from semantic analysis
+  const brollWindowsSummary = semanticAnalysis.brollWindows.slice(0, 12).map(b =>
+    `[${b.start.toFixed(1)}s-${b.end.toFixed(1)}s] Context: "${b.context}" - Query: "${b.suggestedQuery}" (${b.priority})`
+  ).join("\n");
+
+  // Get low-value segments from quality assessment
+  const lowValueSummary = qualityMap.lowValueSegments.map(s =>
+    `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${s.reason}`
+  ).join("\n");
+
+  // Transcript context for B-roll queries
+  const transcriptContext = transcript.slice(0, 25).map(t =>
+    `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`
+  ).join("\n");
+
+  const prompt = `You are an expert B-roll optimization specialist. Create an intelligent B-roll placement plan.
+
+VIDEO CONTEXT:
+- Duration: ${duration.toFixed(1)} seconds
+- Genre: ${genre}
+- Tone: ${tone}
+- B-roll style hint: ${getBrollStyleHint(genre)}
+
+STRUCTURE:
+- Main content: ${structuredPlan.mainContentSection.start}s-${structuredPlan.mainContentSection.end}s
+- Narrative arc: ${structuredPlan.narrativeArc}
+
+LOW VISUAL IMPORTANCE SCENES (safe for B-roll overlay):
+${lowImportanceScenes.slice(0, 10).join("\n") || "None identified"}
+
+SEMANTIC B-ROLL WINDOWS (from transcript analysis):
+${brollWindowsSummary || "None identified"}
+
+LOW VALUE SEGMENTS (from quality assessment):
+${lowValueSummary || "None identified"}
+
+FILLER WORDS DETECTED:
+${fillerSegments.slice(0, 15).map(f => `[${f.start.toFixed(1)}s-${f.end.toFixed(1)}s] "${f.word}"`).join("\n")}
+
+TRANSCRIPT CONTEXT:
+${transcriptContext}
+
+B-ROLL OPTIMIZATION RULES:
+1. NEVER place B-roll during "high" visual importance segments
+2. Use ULTRA-SPECIFIC queries based on exact transcript context:
+   - BAD: "business", "nature", "technology"
+   - GOOD: "peaceful morning meditation routine person meditating with sunrise"
+   - GOOD: "excited team celebrating business success high-five in modern office"
+3. Match genre/tone: ${genre} content should get ${tone} imagery
+4. DISTRIBUTE EVENLY across the entire video - no clustering
+5. Minimum 3-5 second spacing between B-roll clips
+6. Each B-roll should be 3-5 seconds duration
+7. Target ${Math.min(12, Math.max(4, Math.ceil(duration / 8)))} B-roll placements for this ${duration.toFixed(0)}s video
+
+FILLER WORD HANDLING:
+- Prefer CUTTING filler words when possible (cleaner audio)
+- Only use B-roll overlay on fillers when cutting would break flow
+- Short fillers (<0.5s): usually cut
+- Longer fillers in middle of sentence: consider overlay
+
+CREATE OPTIMIZED B-ROLL PLAN:
+1. B-roll placements with ultra-specific queries
+2. Actions for filler words (cut or overlay)
+3. Low-value segments to cut
+
+Respond in JSON format only (no markdown):
+{
+  "brollPlacements": [
+    {
+      "start": number,
+      "duration": number (3-5 seconds),
+      "query": "ULTRA-SPECIFIC search query matching transcript context",
+      "transcriptContext": "what speaker is saying at this moment",
+      "priority": "high|medium|low",
+      "reason": "why B-roll here"
+    }
+  ],
+  "fillerActions": [
+    {
+      "start": number,
+      "end": number,
+      "word": "the filler word",
+      "action": "cut|overlay"
+    }
+  ],
+  "cutActions": [
+    {
+      "start": number,
+      "end": number,
+      "reason": "why to cut this segment"
+    }
+  ]
+}`;
+
+  try {
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+      "pass3BrollOptimization",
+      AI_RETRY_OPTIONS
+    );
+
+    const text = response.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      aiLogger.warn("Pass 3: Failed to parse B-roll optimization, using defaults");
+      return getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Validate and ensure B-roll spacing
+    const brollPlacements = validateBrollSpacing(
+      (parsed.brollPlacements || []).map((b: { start?: number; duration?: number; query?: string; transcriptContext?: string; priority?: string; reason?: string }) => ({
+        start: Math.max(0, b.start || 0),
+        duration: Math.min(6, Math.max(2, b.duration || 4)),
+        query: b.query || "background footage",
+        transcriptContext: b.transcriptContext || "",
+        priority: b.priority || "medium",
+        reason: b.reason || "",
+      })),
+      duration
+    );
+
+    return {
+      brollPlacements,
+      fillerActions: (parsed.fillerActions || []).map((f: { start?: number; end?: number; word?: string; action?: string }) => ({
+        start: f.start || 0,
+        end: f.end || (f.start || 0) + 0.5,
+        word: f.word || "",
+        action: f.action || "cut",
+      })),
+      cutActions: (parsed.cutActions || []).map((c: { start?: number; end?: number; reason?: string }) => ({
+        start: c.start || 0,
+        end: c.end || (c.start || 0) + 1,
+        reason: c.reason || "",
+      })),
+    };
+  } catch (error) {
+    aiLogger.error("Pass 3 error:", error);
+    return getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
+  }
+}
+
+function validateBrollSpacing(
+  placements: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: string; reason: string }>,
+  duration: number
+): Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> {
+  // Sort by start time
+  const sorted = [...placements].sort((a, b) => a.start - b.start);
+  const validated: typeof placements = [];
+  let lastEnd = -5; // Allow first B-roll at 0
+
+  for (const placement of sorted) {
+    // Ensure minimum 3 second spacing
+    if (placement.start >= lastEnd + 3 && placement.start < duration - 1) {
+      validated.push({
+        ...placement,
+        priority: placement.priority as "high" | "medium" | "low",
+      });
+      lastEnd = placement.start + placement.duration;
+    } else {
+      aiLogger.debug(`Pass 3: Skipping overlapping B-roll at ${placement.start}s (previous ended at ${lastEnd}s)`);
+    }
+  }
+
+  return validated;
+}
+
+function getDefaultBrollPlan(
+  duration: number,
+  semanticAnalysis: SemanticAnalysis,
+  fillerSegments: { start: number; end: number; word: string }[]
+): OptimizedBrollPlan {
+  // Use semantic B-roll windows as default placements
+  const brollPlacements = semanticAnalysis.brollWindows
+    .filter(b => b.start !== undefined && b.suggestedQuery)
+    .slice(0, 8)
+    .map(b => ({
+      start: b.start,
+      duration: Math.min(5, b.end - b.start),
+      query: b.suggestedQuery,
+      transcriptContext: b.context,
+      priority: b.priority,
+      reason: b.reason,
+    }));
+
+  // Default: cut short fillers
+  const fillerActions = fillerSegments
+    .filter(f => (f.end - f.start) < 1)
+    .slice(0, 10)
+    .map(f => ({
+      start: f.start,
+      end: f.end,
+      word: f.word,
+      action: "cut" as const,
+    }));
+
+  return {
+    brollPlacements,
+    fillerActions,
+    cutActions: [],
+  };
+}
+
+/**
+ * Pass 4: Quality Review & Refinement
+ * Reviews the combined edit plan for quality and consistency
+ */
+async function executePass4QualityReview(
+  analysis: VideoAnalysis,
+  structuredPlan: StructuredPlan,
+  qualityMap: QualityMap,
+  brollPlan: OptimizedBrollPlan,
+  prompt: string
+): Promise<ReviewedEditPlan> {
+  const duration = analysis.duration;
+  const genre = analysis.context?.genre || "general";
+
+  // Build preliminary actions list
+  const preliminaryActions: EditAction[] = [];
+
+  // Add keep actions for must-keep segments
+  for (const segment of qualityMap.mustKeepSegments) {
+    preliminaryActions.push({
+      type: "keep",
+      start: segment.start,
+      end: segment.end,
+      reason: segment.reason,
+      priority: "high",
+    });
+  }
+
+  // Add cut actions
+  for (const cut of brollPlan.cutActions) {
+    preliminaryActions.push({
+      type: "cut",
+      start: cut.start,
+      end: cut.end,
+      reason: cut.reason,
+    });
+  }
+
+  // Add filler cuts
+  for (const filler of brollPlan.fillerActions.filter(f => f.action === "cut")) {
+    preliminaryActions.push({
+      type: "cut",
+      start: filler.start,
+      end: filler.end,
+      reason: `Cut filler word: "${filler.word}"`,
+    });
+  }
+
+  // Add B-roll insert actions
+  for (const broll of brollPlan.brollPlacements) {
+    preliminaryActions.push({
+      type: "insert_stock",
+      start: broll.start,
+      duration: broll.duration,
+      stockQuery: broll.query,
+      transcriptContext: broll.transcriptContext,
+      reason: broll.reason,
+      priority: broll.priority,
+    });
+  }
+
+  const actionsSummary = preliminaryActions.slice(0, 20).map(a => {
+    if (a.type === "insert_stock") {
+      return `[${a.start?.toFixed(1)}s] insert_stock: "${a.stockQuery}" (${a.duration}s)`;
+    } else if (a.type === "cut") {
+      return `[${a.start?.toFixed(1)}s-${a.end?.toFixed(1)}s] cut: ${a.reason}`;
+    } else if (a.type === "keep") {
+      return `[${a.start?.toFixed(1)}s-${a.end?.toFixed(1)}s] keep: ${a.reason}`;
+    }
+    return `[${a.start?.toFixed(1)}s] ${a.type}`;
+  }).join("\n");
+
+  const reviewPrompt = `You are a senior video editor performing quality review. Review this edit plan for consistency and quality.
+
+USER'S EDITING INSTRUCTIONS: "${prompt}"
+
+VIDEO INFO:
+- Duration: ${duration.toFixed(1)} seconds
+- Genre: ${genre}
+- Quality map overall engagement: ${qualityMap.overallEngagement}
+- Hook strength: ${qualityMap.hookStrength}
+
+STRUCTURE:
+- Intro: ${structuredPlan.introSection ? `${structuredPlan.introSection.start}s-${structuredPlan.introSection.end}s` : "None"}
+- Main content: ${structuredPlan.mainContentSection.start}s-${structuredPlan.mainContentSection.end}s
+- Outro: ${structuredPlan.outroSection ? `${structuredPlan.outroSection.start}s-${structuredPlan.outroSection.end}s` : "None"}
+
+PRELIMINARY ACTIONS (${preliminaryActions.length} total):
+${actionsSummary}
+
+REVIEW CHECKLIST:
+1. NO OVERLAPPING EDITS - cuts/B-roll should not conflict
+2. PROPER B-ROLL SPACING - minimum 3 seconds between B-roll clips
+3. NARRATIVE FLOW - edits should preserve story arc
+4. PACING - matches content type (${genre})
+5. B-ROLL RELEVANCE - queries match transcript context
+
+SCORE EACH ACTION (0-100):
+- 90-100: Excellent, essential edit
+- 70-89: Good, adds value
+- 50-69: Acceptable
+- 30-49: Marginal, could skip
+- 0-29: Remove this action
+
+QUALITY METRICS:
+- Pacing: Does edit pacing match content type?
+- B-roll Relevance: How well do B-roll queries match spoken content?
+- Narrative Flow: Do edits preserve the story/message?
+
+Generate the FINAL reviewed and refined edit plan.
+- Keep only valuable actions
+- Add any missing keep segments
+- Ensure complete video coverage
+- Score each action
+
+Respond in JSON format only (no markdown):
+{
+  "actions": [
+    {
+      "type": "keep|cut|insert_stock|add_caption|transition",
+      "start": number,
+      "end": number (for keep/cut),
+      "duration": number (for insert_stock),
+      "stockQuery": "string (for insert_stock)",
+      "transcriptContext": "string (for insert_stock)",
+      "reason": "string",
+      "priority": "high|medium|low",
+      "qualityScore": number (0-100)
+    }
+  ],
+  "qualityMetrics": {
+    "pacing": "slow|moderate|fast",
+    "brollRelevance": "high|medium|low",
+    "narrativeFlow": "high|medium|low",
+    "overallScore": number (0-100)
+  },
+  "recommendations": ["improvement suggestions"],
+  "warnings": ["potential issues detected"]
+}`;
+
+  try {
+    const response = await withRetry(
+      () => geminiClient.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: reviewPrompt }] }],
+      }),
+      "pass4QualityReview",
+      AI_RETRY_OPTIONS
+    );
+
+    const text = response.text || "";
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      aiLogger.warn("Pass 4: Failed to parse quality review, using preliminary actions");
+      return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    
+    // Parse and validate actions
+    const reviewedActions: EditAction[] = [];
+    for (const a of (parsed.actions || [])) {
+      const action: EditAction = {
+        type: a.type || "keep",
+        start: a.start,
+        end: a.end,
+        duration: a.duration,
+        stockQuery: a.stockQuery,
+        transcriptContext: a.transcriptContext,
+        reason: a.reason,
+        priority: a.priority,
+        qualityScore: Math.min(100, Math.max(0, a.qualityScore || 50)),
+      };
+      
+      // Validate timing
+      if (action.start !== undefined && action.start < 0) action.start = 0;
+      if (action.end !== undefined && action.end > duration) action.end = duration;
+      
+      reviewedActions.push(action);
+    }
+
+    // Ensure there's at least one keep action
+    const hasKeepActions = reviewedActions.some(a => a.type === "keep");
+    if (!hasKeepActions) {
+      reviewedActions.push({
+        type: "keep",
+        start: 0,
+        end: duration,
+        reason: "Default keep - entire video",
+        priority: "medium",
+        qualityScore: 60,
+      });
+    }
+
+    return {
+      actions: reviewedActions,
+      qualityMetrics: {
+        pacing: parsed.qualityMetrics?.pacing || "moderate",
+        brollRelevance: parsed.qualityMetrics?.brollRelevance || "medium",
+        narrativeFlow: parsed.qualityMetrics?.narrativeFlow || "medium",
+        overallScore: Math.min(100, Math.max(0, parsed.qualityMetrics?.overallScore || 60)),
+      },
+      recommendations: parsed.recommendations || [],
+      warnings: parsed.warnings || [],
+    };
+  } catch (error) {
+    aiLogger.error("Pass 4 error:", error);
+    return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
+  }
+}
+
+function getDefaultReviewedPlan(
+  preliminaryActions: EditAction[],
+  qualityMap: QualityMap,
+  duration: number
+): ReviewedEditPlan {
+  // Add default quality scores
+  const scoredActions = preliminaryActions.map(a => ({
+    ...a,
+    qualityScore: a.type === "keep" ? 70 : a.type === "insert_stock" ? 60 : 50,
+  }));
+
+  // Ensure keep coverage
+  const hasKeepActions = scoredActions.some(a => a.type === "keep");
+  if (!hasKeepActions) {
+    scoredActions.push({
+      type: "keep",
+      start: 0,
+      end: duration,
+      reason: "Default keep - entire video",
+      priority: "medium",
+      qualityScore: 60,
+    });
+  }
+
+  return {
+    actions: scoredActions,
+    qualityMetrics: {
+      pacing: "moderate",
+      brollRelevance: "medium",
+      narrativeFlow: "medium",
+      overallScore: qualityMap.overallEngagement,
+    },
+    recommendations: [],
+    warnings: [],
+  };
+}
+
+/**
+ * Generate Smart Edit Plan - Multi-Pass Intelligent Edit Planning System
+ * 
+ * Orchestrates 4 passes to create a high-quality, context-aware edit plan:
+ * 1. Structure Analysis - Identify video sections and narrative arc
+ * 2. Quality Assessment - Score segments for engagement potential
+ * 3. B-Roll Optimization - Intelligent B-roll placement with ultra-specific queries
+ * 4. Quality Review - Review and refine the final edit plan
+ * 
+ * @param prompt - User's editing instructions
+ * @param analysis - Video analysis with frames, scenes, emotions, etc.
+ * @param transcript - Array of transcript segments with timing
+ * @param semanticAnalysis - Semantic analysis with topics, B-roll windows, etc.
+ * @param fillerSegments - Detected filler word segments
+ * @returns EditPlan with quality metrics and scored actions
+ */
+export async function generateSmartEditPlan(
+  prompt: string,
+  analysis: VideoAnalysis,
+  transcript: TranscriptSegment[],
+  semanticAnalysis: SemanticAnalysis,
+  fillerSegments: { start: number; end: number; word: string }[]
+): Promise<EditPlan> {
+  aiLogger.info("Starting multi-pass smart edit planning...");
+  const startTime = Date.now();
+
+  // Pass 1: Structure Analysis
+  aiLogger.info("Pass 1: Analyzing video structure...");
+  const structuredPlan = await executePass1StructureAnalysis(analysis, transcript, semanticAnalysis);
+  aiLogger.debug(`Pass 1 complete: ${structuredPlan.narrativeArc} structure with ${structuredPlan.sectionMarkers.length} markers`);
+
+  // Pass 2: Quality Assessment
+  aiLogger.info("Pass 2: Assessing segment quality...");
+  const qualityMap = await executePass2QualityAssessment(
+    analysis, transcript, semanticAnalysis, structuredPlan, fillerSegments
+  );
+  aiLogger.debug(`Pass 2 complete: ${qualityMap.segmentScores.length} segments scored, hook strength: ${qualityMap.hookStrength}`);
+
+  // Pass 3: B-Roll Optimization
+  aiLogger.info("Pass 3: Optimizing B-roll placement...");
+  const brollPlan = await executePass3BrollOptimization(
+    analysis, transcript, semanticAnalysis, structuredPlan, qualityMap, fillerSegments
+  );
+  aiLogger.debug(`Pass 3 complete: ${brollPlan.brollPlacements.length} B-roll placements, ${brollPlan.fillerActions.length} filler actions`);
+
+  // Pass 4: Quality Review & Refinement
+  aiLogger.info("Pass 4: Quality review and refinement...");
+  const reviewedPlan = await executePass4QualityReview(
+    analysis, structuredPlan, qualityMap, brollPlan, prompt
+  );
+  aiLogger.debug(`Pass 4 complete: ${reviewedPlan.actions.length} final actions, overall score: ${reviewedPlan.qualityMetrics.overallScore}`);
+
+  // Validate and fix B-roll spacing one final time
+  const validatedActions = validateAndFixBrollActions(reviewedPlan.actions, analysis.duration);
+
+  // Build final edit plan
+  const elapsedTime = Date.now() - startTime;
+  aiLogger.info(`Multi-pass smart edit planning complete in ${elapsedTime}ms`);
+
+  // Extract unique stock queries
+  const stockQueries = [...new Set(
+    validatedActions
+      .filter(a => a.type === "insert_stock" && a.stockQuery)
+      .map(a => a.stockQuery!)
+  )];
+
+  // Extract key points from structure analysis
+  const keyPoints = [
+    ...(structuredPlan.sectionMarkers.filter(m => m.type === "climax" || m.type === "section_change").map(m => m.description)),
+    ...(qualityMap.mustKeepSegments.map(s => s.reason)),
+  ].slice(0, 10);
+
+  // Estimate final duration after cuts
+  const cutDuration = validatedActions
+    .filter(a => a.type === "cut" && a.start !== undefined && a.end !== undefined)
+    .reduce((total, a) => total + ((a.end || 0) - (a.start || 0)), 0);
+  const estimatedDuration = Math.max(1, analysis.duration - cutDuration);
+
+  return {
+    actions: validatedActions,
+    stockQueries,
+    keyPoints,
+    estimatedDuration,
+    editingStrategy: {
+      approach: `Multi-pass ${structuredPlan.narrativeArc} editing with ${brollPlan.brollPlacements.length} B-roll placements`,
+      focusAreas: ["Narrative flow preservation", "Engagement optimization", "Context-aware B-roll"],
+      avoidAreas: reviewedPlan.warnings.slice(0, 3),
+    },
+    qualityMetrics: reviewedPlan.qualityMetrics,
+  };
+}
+
+/**
+ * Deep Video Analysis - Comprehensive analysis combining multiple AI capabilities
+ * 
+ * This function performs a thorough analysis of a video by:
+ * 1. Analyzing video frames for visual content, scenes, emotions, speakers
+ * 2. Analyzing transcript for semantics, topics, hooks, and structure
+ * 3. Detecting filler words in the transcript
+ * 4. Computing quality insights and recommendations
+ * 
+ * @param framePaths - Array of paths to extracted video frames
+ * @param duration - Total video duration in seconds
+ * @param silentSegments - Array of detected silent segments
+ * @param transcript - Array of transcript segments with timing
+ * @returns Comprehensive analysis with video, semantic, filler, and quality data
+ */
+export async function analyzeVideoDeep(
+  framePaths: string[],
+  duration: number,
+  silentSegments: { start: number; end: number }[],
+  transcript: TranscriptSegment[]
+): Promise<{
+  videoAnalysis: VideoAnalysis;
+  semanticAnalysis: SemanticAnalysis;
+  fillerSegments: { start: number; end: number; word: string }[];
+  qualityInsights: {
+    hookStrength: number;
+    pacingScore: number;
+    engagementPrediction: number;
+    recommendations: string[];
+  };
+}> {
+  aiLogger.info("Starting deep video analysis...");
+  
+  // Run frame analysis and transcript analysis in parallel for efficiency
+  const [videoAnalysis, semanticAnalysisResult] = await Promise.all([
+    analyzeVideoFrames(framePaths, duration, silentSegments),
+    analyzeTranscriptSemantics(transcript, undefined, duration),
+  ]);
+  
+  // Update semantic analysis with video context if available
+  let semanticAnalysis = semanticAnalysisResult;
+  if (videoAnalysis.context) {
+    // Re-run semantic analysis with video context for better B-roll queries
+    semanticAnalysis = await analyzeTranscriptSemantics(
+      transcript,
+      videoAnalysis.context,
+      duration
+    );
+  }
+  
+  // Run filler word detection
+  const fillerSegments = detectFillerWords(transcript);
+  
+  // Compute quality insights
+  const qualityInsights = computeQualityInsights(
+    videoAnalysis,
+    semanticAnalysis,
+    fillerSegments,
+    transcript,
+    duration
+  );
+  
+  aiLogger.info(`Deep analysis complete: ${videoAnalysis.scenes?.length || 0} scenes, ${semanticAnalysis.topicFlow?.length || 0} topics, ${fillerSegments.length} fillers detected`);
+  
+  return {
+    videoAnalysis,
+    semanticAnalysis,
+    fillerSegments,
+    qualityInsights,
+  };
+}
+
+/**
+ * Compute quality insights from analysis results
+ */
+function computeQualityInsights(
+  videoAnalysis: VideoAnalysis,
+  semanticAnalysis: SemanticAnalysis,
+  fillerSegments: { start: number; end: number; word: string }[],
+  transcript: TranscriptSegment[],
+  duration: number
+): {
+  hookStrength: number;
+  pacingScore: number;
+  engagementPrediction: number;
+  recommendations: string[];
+} {
+  const recommendations: string[] = [];
+  
+  // Calculate hook strength (0-100)
+  let hookStrength = 50; // Default baseline
+  
+  // Check for hooks in video analysis keyMoments
+  const hooks = videoAnalysis.keyMoments?.filter(k => k.type === "hook") || [];
+  if (hooks.length > 0) {
+    const maxHookScore = Math.max(...hooks.map(h => h.hookScore || 50));
+    hookStrength = maxHookScore;
+  }
+  
+  // Also check semantic analysis hook moments
+  if (semanticAnalysis.hookMoments && semanticAnalysis.hookMoments.length > 0) {
+    const maxSemanticHook = Math.max(...semanticAnalysis.hookMoments.map(h => h.score));
+    hookStrength = Math.max(hookStrength, maxSemanticHook);
+  }
+  
+  // Low hook strength recommendation
+  if (hookStrength < 60) {
+    recommendations.push("Consider adding a stronger hook in the first 3-5 seconds to grab viewer attention");
+  }
+  
+  // Calculate pacing score based on scene changes and topic flow
+  let pacingScore = 70; // Default baseline
+  
+  const sceneCount = videoAnalysis.scenes?.length || 1;
+  const topicCount = semanticAnalysis.topicFlow?.length || 1;
+  const averageSceneDuration = duration / sceneCount;
+  const averageTopicDuration = duration / topicCount;
+  
+  // Optimal scene duration is 10-30 seconds for most content
+  if (averageSceneDuration < 5) {
+    pacingScore = Math.max(40, pacingScore - 20);
+    recommendations.push("Pacing may be too fast - scenes change very quickly");
+  } else if (averageSceneDuration > 60) {
+    pacingScore = Math.max(40, pacingScore - 15);
+    recommendations.push("Consider adding more visual variety - scenes are quite long");
+  } else if (averageSceneDuration >= 10 && averageSceneDuration <= 30) {
+    pacingScore = Math.min(100, pacingScore + 15);
+  }
+  
+  // Topic flow affects pacing perception
+  if (averageTopicDuration > 90) {
+    recommendations.push("Topics could be broken into smaller segments for better engagement");
+  }
+  
+  // Calculate engagement prediction
+  let engagementPrediction = 60; // Default baseline
+  
+  // High visual importance segments increase engagement
+  const highImportanceScenes = videoAnalysis.scenes?.filter(s => s.visualImportance === "high") || [];
+  if (highImportanceScenes.length > 0) {
+    const highImportanceRatio = highImportanceScenes.length / (sceneCount || 1);
+    engagementPrediction += highImportanceRatio * 20;
+  }
+  
+  // Key moments increase engagement
+  const keyMomentCount = (videoAnalysis.keyMoments?.length || 0) + (semanticAnalysis.keyMoments?.length || 0);
+  if (keyMomentCount >= 3) {
+    engagementPrediction += 10;
+  }
+  
+  // Filler words decrease engagement prediction
+  const fillerRatio = fillerSegments.length / Math.max(transcript.length, 1);
+  if (fillerRatio > 0.2) {
+    engagementPrediction -= 15;
+    recommendations.push("High number of filler words detected - consider editing them out for smoother delivery");
+  } else if (fillerRatio > 0.1) {
+    engagementPrediction -= 5;
+    recommendations.push("Some filler words detected - minor edits could improve flow");
+  }
+  
+  // Hook strength affects engagement
+  engagementPrediction += (hookStrength - 50) * 0.3;
+  
+  // Emotion variety increases engagement
+  const uniqueEmotions = new Set(videoAnalysis.emotionFlow?.map(e => e.emotion) || []);
+  if (uniqueEmotions.size >= 3) {
+    engagementPrediction += 10;
+  } else if (uniqueEmotions.size === 1) {
+    recommendations.push("Consider varying emotional tone throughout the video for better engagement");
+  }
+  
+  // Check for climax/call-to-action
+  const hasClimax = videoAnalysis.keyMoments?.some(k => k.type === "climax");
+  const hasCallToAction = videoAnalysis.keyMoments?.some(k => k.type === "callToAction");
+  
+  if (!hasClimax) {
+    recommendations.push("Consider adding a clear climax or peak moment to maintain viewer interest");
+  }
+  if (!hasCallToAction) {
+    recommendations.push("Consider adding a call-to-action to improve viewer engagement and retention");
+  }
+  
+  // Clamp values
+  hookStrength = Math.min(100, Math.max(0, Math.round(hookStrength)));
+  pacingScore = Math.min(100, Math.max(0, Math.round(pacingScore)));
+  engagementPrediction = Math.min(100, Math.max(0, Math.round(engagementPrediction)));
+  
+  return {
+    hookStrength,
+    pacingScore,
+    engagementPrediction,
+    recommendations,
   };
 }

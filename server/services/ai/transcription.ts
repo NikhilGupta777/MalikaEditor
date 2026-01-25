@@ -97,10 +97,12 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
       const audioBuffer = await fs.readFile(audioPath);
       const file = await toFile(audioBuffer, "audio.mp3");
 
+      // Use verbose_json to get word-level timestamps for karaoke captions
       const response = await getOpenAIClient().audio.transcriptions.create({
         file,
         model: "gpt-4o-mini-transcribe",
-        response_format: "json",
+        response_format: "verbose_json",
+        timestamp_granularities: ["word", "segment"],
       }) as any;
 
       const text = response.text || "";
@@ -112,9 +114,38 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
 
       aiLogger.info(`OpenAI transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
-      const segments = createSegmentsFromText(text);
-      aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
-      return segments;
+      // Extract word-level timing from verbose_json response
+      const words = response.words || [];
+      const segments = response.segments || [];
+      
+      if (segments.length > 0) {
+        // Use OpenAI's native segments with word-level timing
+        const transcriptSegments: TranscriptSegment[] = segments.map((seg: any) => {
+          // Find words that belong to this segment
+          const segmentWords = words.filter((w: any) => 
+            w.start >= seg.start && w.end <= seg.end
+          ).map((w: any) => ({
+            word: w.word.trim(),
+            start: w.start,
+            end: w.end,
+          }));
+          
+          return {
+            start: seg.start,
+            end: seg.end,
+            text: seg.text.trim(),
+            words: segmentWords.length > 0 ? segmentWords : undefined,
+          };
+        });
+        
+        aiLogger.info(`Created ${transcriptSegments.length} segments with ${words.length} word-level timestamps`);
+        return transcriptSegments;
+      }
+      
+      // Fallback: Create segments from text if no segments returned
+      const fallbackSegments = createSegmentsFromText(text);
+      aiLogger.info(`Created ${fallbackSegments.length} transcript segments with estimated timestamps (no word-level timing)`);
+      return fallbackSegments;
       
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);

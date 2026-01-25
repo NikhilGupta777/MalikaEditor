@@ -43,6 +43,25 @@ function normalizePriority(value: string): "high" | "medium" | "low" {
   return "medium";
 }
 
+function normalizeActionType(value: string): "cut" | "keep" | "insert_stock" | "insert_ai_image" | "add_caption" | "add_text_overlay" | "transition" | "speed_change" {
+  const normalized = value?.toLowerCase()?.trim()?.replace(/-/g, "_") || "keep";
+  
+  // Map variations to standard types
+  if (normalized === "cut" || normalized === "remove" || normalized === "delete" || 
+      normalized === "remove_silent_parts" || normalized === "remove_silence" ||
+      normalized === "trim" || normalized === "skip") return "cut";
+  if (normalized === "keep" || normalized === "preserve" || normalized === "retain") return "keep";
+  if (normalized === "insert_stock" || normalized === "stock" || normalized === "broll" || 
+      normalized === "b_roll" || normalized === "stock_video" || normalized === "stock_image") return "insert_stock";
+  if (normalized === "insert_ai_image" || normalized === "ai_image" || normalized === "generate_image") return "insert_ai_image";
+  if (normalized === "add_caption" || normalized === "caption" || normalized === "subtitle") return "add_caption";
+  if (normalized === "add_text_overlay" || normalized === "text_overlay" || normalized === "text") return "add_text_overlay";
+  if (normalized === "transition" || normalized === "fade" || normalized === "crossfade") return "transition";
+  if (normalized === "speed_change" || normalized === "speed" || normalized === "slow_motion" || normalized === "fast_forward") return "speed_change";
+  
+  return "keep"; // Default to keep if unknown
+}
+
 // Pre-process AI responses to normalize enum values before validation
 function normalizeQualityMapResponse(parsed: any): any {
   if (!parsed) return parsed;
@@ -73,6 +92,7 @@ function normalizeReviewedPlanResponse(parsed: any): any {
   if (parsed.actions && Array.isArray(parsed.actions)) {
     parsed.actions = parsed.actions.map((a: any) => ({
       ...a,
+      type: normalizeActionType(a.type),
       priority: a.priority ? normalizePriority(a.priority) : undefined,
     }));
   }

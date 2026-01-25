@@ -3,6 +3,8 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { sessionMiddleware } from "./middleware/auth";
+import cors from "cors";
+import helmet from "helmet";
 
 const app = express();
 const httpServer = createServer(app);
@@ -12,6 +14,78 @@ declare module "http" {
     rawBody: unknown;
   }
 }
+
+// CORS configuration
+const allowedOrigins = [
+  // Development origins
+  "http://localhost:5000",
+  "http://localhost:3000",
+  "http://127.0.0.1:5000",
+  // Replit preview domains
+  /\.replit\.dev$/,
+  /\.repl\.co$/,
+  /\.replit\.app$/,
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // Check if origin is in allowed list (string or regex)
+      const isAllowed = allowedOrigins.some((allowed) => {
+        if (typeof allowed === "string") {
+          return origin === allowed;
+        }
+        return allowed.test(origin);
+      });
+
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  })
+);
+
+// Security headers with helmet
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+        imgSrc: ["'self'", "data:", "blob:", "https:", "http:"],
+        mediaSrc: ["'self'", "data:", "blob:", "https:", "http:"],
+        connectSrc: ["'self'", "wss:", "ws:", "https:", "http:"],
+        frameSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        upgradeInsecureRequests: [],
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Required for loading cross-origin resources
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    xFrameOptions: { action: "sameorigin" },
+    xContentTypeOptions: true,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    hsts: {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true,
+    },
+  })
+);
 
 app.use(
   express.json({

@@ -54,18 +54,59 @@ const upload = multer({
   },
 });
 
+function getSecurePath(baseDir: string, requestedPath: string): string | null {
+  try {
+    const decodedPath = decodeURIComponent(requestedPath);
+    if (decodedPath.includes('\x00')) {
+      return null;
+    }
+    if (decodedPath.includes('..')) {
+      return null;
+    }
+    const normalizedPath = path.normalize(decodedPath);
+    if (normalizedPath.includes('..')) {
+      return null;
+    }
+    const cleanPath = normalizedPath.replace(/^[\/\\]+/, '');
+    if (cleanPath.includes('..')) {
+      return null;
+    }
+    const resolvedBase = path.resolve(baseDir);
+    const resolvedFile = path.resolve(baseDir, cleanPath);
+    const finalResolved = path.resolve(resolvedFile);
+    if (finalResolved.includes('..')) {
+      return null;
+    }
+    if (!finalResolved.startsWith(resolvedBase + path.sep) && finalResolved !== resolvedBase) {
+      return null;
+    }
+    return finalResolved;
+  } catch {
+    return null;
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
   await ensureDirs();
   
+  // Health check endpoint - no authentication required for load balancer checks
+  app.get("/api/health", (req, res) => {
+    res.json({
+      status: "healthy",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      version: "1.0.0",
+    });
+  });
+  
   registerAuthRoutes(app);
 
   app.use("/uploads", async (req, res, next) => {
-    const requestedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
-    const filePath = path.join(UPLOADS_DIR, requestedPath);
-    if (!filePath.startsWith(UPLOADS_DIR)) {
+    const filePath = getSecurePath(UPLOADS_DIR, req.path);
+    if (!filePath) {
       return res.status(403).json({ error: "Access denied" });
     }
     try {
@@ -85,9 +126,8 @@ export async function registerRoutes(
   });
 
   app.use("/output", async (req, res, next) => {
-    const requestedPath = path.normalize(req.path).replace(/^(\.\.[\/\\])+/, '');
-    const filePath = path.join(OUTPUT_DIR, requestedPath);
-    if (!filePath.startsWith(OUTPUT_DIR)) {
+    const filePath = getSecurePath(OUTPUT_DIR, req.path);
+    if (!filePath) {
       return res.status(403).json({ error: "Access denied" });
     }
     try {

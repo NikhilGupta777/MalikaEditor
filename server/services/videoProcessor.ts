@@ -11,6 +11,97 @@ const OUTPUT_DIR = "/tmp/output";
 const AUDIO_DIR = "/tmp/audio";
 const STOCK_DIR = "/tmp/stock";
 
+const FFPROBE_TIMEOUT_MS = 30000;
+const FFMPEG_SHORT_TIMEOUT_MS = 2 * 60 * 1000;
+const FFMPEG_LONG_TIMEOUT_MS = 10 * 60 * 1000;
+
+class FFmpegTimeoutError extends Error {
+  constructor(message: string, public tempFiles?: string[]) {
+    super(message);
+    this.name = "FFmpegTimeoutError";
+  }
+}
+
+function runFfmpegWithTimeout(
+  command: ffmpeg.FfmpegCommand,
+  timeoutMs: number,
+  tempFiles: string[] = []
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let completed = false;
+    let ffmpegProcess: any = null;
+
+    const timeoutId = setTimeout(() => {
+      if (!completed) {
+        completed = true;
+        if (ffmpegProcess) {
+          try {
+            ffmpegProcess.kill("SIGKILL");
+          } catch {}
+        }
+        cleanupTempFilesSync(tempFiles);
+        reject(new FFmpegTimeoutError(`FFmpeg process timed out after ${timeoutMs}ms`, tempFiles));
+      }
+    }, timeoutMs);
+
+    command
+      .on("start", (cmdline: string) => {
+        ffmpegProcess = (command as any).ffmpegProc;
+      })
+      .on("end", () => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeoutId);
+          resolve();
+        }
+      })
+      .on("error", (err: Error) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeoutId);
+          reject(err);
+        }
+      })
+      .run();
+  });
+}
+
+function runFfprobeWithTimeout(
+  filePath: string,
+  timeoutMs: number = FFPROBE_TIMEOUT_MS
+): Promise<ffmpeg.FfprobeData> {
+  return new Promise((resolve, reject) => {
+    let completed = false;
+
+    const timeoutId = setTimeout(() => {
+      if (!completed) {
+        completed = true;
+        reject(new FFmpegTimeoutError(`FFprobe timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timeoutId);
+        if (err) {
+          reject(err);
+        } else {
+          resolve(metadata);
+        }
+      }
+    });
+  });
+}
+
+function cleanupTempFilesSync(paths: string[]): void {
+  for (const p of paths) {
+    try {
+      fs.unlink(p).catch(() => {});
+    } catch {}
+  }
+}
+
 async function ensureDirs() {
   await fs.mkdir(UPLOADS_DIR, { recursive: true });
   await fs.mkdir(FRAMES_DIR, { recursive: true });
@@ -22,41 +113,34 @@ async function ensureDirs() {
 export async function getVideoMetadata(
   filePath: string
 ): Promise<{ duration: number; width: number; height: number; fps: number }> {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        reject(err);
-        return;
+  const metadata = await runFfprobeWithTimeout(filePath, FFPROBE_TIMEOUT_MS);
+  
+  const videoStream = metadata.streams.find((s) => s.codec_type === "video");
+  const duration = metadata.format.duration || 0;
+
+  let fps = 30;
+  if (videoStream?.r_frame_rate) {
+    const parts = videoStream.r_frame_rate.split("/");
+    if (parts.length === 2) {
+      const num = parseFloat(parts[0]);
+      const den = parseFloat(parts[1]);
+      if (den !== 0 && !isNaN(num) && !isNaN(den)) {
+        fps = num / den;
       }
-
-      const videoStream = metadata.streams.find((s) => s.codec_type === "video");
-      const duration = metadata.format.duration || 0;
-
-      let fps = 30;
-      if (videoStream?.r_frame_rate) {
-        const parts = videoStream.r_frame_rate.split("/");
-        if (parts.length === 2) {
-          const num = parseFloat(parts[0]);
-          const den = parseFloat(parts[1]);
-          if (den !== 0 && !isNaN(num) && !isNaN(den)) {
-            fps = num / den;
-          }
-        } else {
-          const parsed = parseFloat(videoStream.r_frame_rate);
-          if (!isNaN(parsed)) {
-            fps = parsed;
-          }
-        }
+    } else {
+      const parsed = parseFloat(videoStream.r_frame_rate);
+      if (!isNaN(parsed)) {
+        fps = parsed;
       }
+    }
+  }
 
-      resolve({
-        duration,
-        width: videoStream?.width || 1920,
-        height: videoStream?.height || 1080,
-        fps,
-      });
-    });
-  });
+  return {
+    duration,
+    width: videoStream?.width || 1920,
+    height: videoStream?.height || 1080,
+    fps,
+  };
 }
 
 export async function extractFrames(
@@ -78,16 +162,13 @@ export async function extractFrames(
     const timestamp = interval * i;
     const framePath = path.join(frameDir, `frame_${String(i).padStart(3, "0")}.jpg`);
 
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(videoPath)
-        .seekInput(timestamp)
-        .frames(1)
-        .output(framePath)
-        .outputOptions(["-q:v 2"])
-        .on("end", () => resolve())
-        .on("error", reject)
-        .run();
-    });
+    const cmd = ffmpeg(videoPath)
+      .seekInput(timestamp)
+      .frames(1)
+      .output(framePath)
+      .outputOptions(["-q:v 2"]);
+    
+    await runFfmpegWithTimeout(cmd, FFMPEG_SHORT_TIMEOUT_MS, [framePath]);
 
     framePaths.push(framePath);
   }
@@ -101,18 +182,15 @@ export async function extractAudio(videoPath: string): Promise<string> {
   const audioId = uuidv4();
   const audioPath = path.join(AUDIO_DIR, `${audioId}.mp3`);
 
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg(videoPath)
-      .noVideo()
-      .audioCodec("libmp3lame")
-      .audioBitrate("64k")
-      .audioChannels(1)
-      .audioFrequency(16000)
-      .output(audioPath)
-      .on("end", () => resolve())
-      .on("error", reject)
-      .run();
-  });
+  const cmd = ffmpeg(videoPath)
+    .noVideo()
+    .audioCodec("libmp3lame")
+    .audioBitrate("64k")
+    .audioChannels(1)
+    .audioFrequency(16000)
+    .output(audioPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_SHORT_TIMEOUT_MS, [audioPath]);
 
   return audioPath;
 }
@@ -125,13 +203,30 @@ export async function detectSilence(
   return new Promise((resolve, reject) => {
     const silentSegments: { start: number; end: number }[] = [];
     let silenceStart: number | null = null;
+    let completed = false;
+    let ffmpegProcess: any = null;
 
-    ffmpeg(videoPath)
+    const timeoutId = setTimeout(() => {
+      if (!completed) {
+        completed = true;
+        if (ffmpegProcess) {
+          try {
+            ffmpegProcess.kill("SIGKILL");
+          } catch {}
+        }
+        reject(new FFmpegTimeoutError(`Silence detection timed out after ${FFMPEG_SHORT_TIMEOUT_MS}ms`));
+      }
+    }, FFMPEG_SHORT_TIMEOUT_MS);
+
+    const cmd = ffmpeg(videoPath)
       .audioFilters([
         `silencedetect=noise=${silenceThreshold}dB:d=${silenceDuration}`,
       ])
       .format("null")
       .output("-")
+      .on("start", () => {
+        ffmpegProcess = (cmd as any).ffmpegProc;
+      })
       .on("stderr", (line: string) => {
         const startMatch = line.match(/silence_start: ([\d.]+)/);
         const endMatch = line.match(/silence_end: ([\d.]+)/);
@@ -147,9 +242,22 @@ export async function detectSilence(
           silenceStart = null;
         }
       })
-      .on("end", () => resolve(silentSegments))
-      .on("error", reject)
-      .run();
+      .on("end", () => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeoutId);
+          resolve(silentSegments);
+        }
+      })
+      .on("error", (err) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeoutId);
+          reject(err);
+        }
+      });
+    
+    cmd.run();
   });
 }
 
@@ -342,28 +450,25 @@ async function createImageBroll(
     filters.push(`drawtext=text='${escapedText}':fontcolor=white:fontsize=36:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-th-40`);
   }
 
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg()
-      .input(imagePath)
-      .inputOptions(["-loop", "1"])
-      .input("anullsrc=channel_layout=stereo:sample_rate=44100")
-      .inputOptions(["-f", "lavfi"])
-      .outputOptions([
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-t", String(duration),
-        "-vf", filters.join(","),
-        "-shortest",
-        "-threads", "2",
-      ])
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(err))
-      .run();
-  });
+  const cmd = ffmpeg()
+    .input(imagePath)
+    .inputOptions(["-loop", "1"])
+    .input("anullsrc=channel_layout=stereo:sample_rate=44100")
+    .inputOptions(["-f", "lavfi"])
+    .outputOptions([
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "28",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-t", String(duration),
+      "-vf", filters.join(","),
+      "-shortest",
+      "-threads", "2",
+    ])
+    .output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
 }
 
 async function createVideoBroll(
@@ -384,24 +489,21 @@ async function createVideoBroll(
     filters.push(`drawtext=text='${escapedText}':fontcolor=white:fontsize=36:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-th-40`);
   }
 
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg(videoPath)
-      .setDuration(duration)
-      .outputOptions([
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "96k",
-        "-vf", filters.join(","),
-        "-threads", "2",
-      ])
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(err))
-      .run();
-  });
+  const cmd = ffmpeg(videoPath)
+    .setDuration(duration)
+    .outputOptions([
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "28",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-b:a", "96k",
+      "-vf", filters.join(","),
+      "-threads", "2",
+    ])
+    .output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
 }
 
 async function createVideoSegment(
@@ -422,44 +524,32 @@ async function createVideoSegment(
     }
   }
 
-  await new Promise<void>((resolve, reject) => {
-    let cmd = ffmpeg(sourcePath)
-      .setStartTime(start)
-      .setDuration(duration);
+  let cmd = ffmpeg(sourcePath)
+    .setStartTime(start)
+    .setDuration(duration);
 
-    const outputOptions = [
-      "-c:v", "libx264",
-      "-preset", "ultrafast",
-      "-crf", "28",
-      "-c:a", "aac",
-      "-b:a", "96k",
-      "-max_muxing_queue_size", "1024",
-      "-threads", "2",
-    ];
+  const outputOptions = [
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "28",
+    "-c:a", "aac",
+    "-b:a", "96k",
+    "-max_muxing_queue_size", "1024",
+    "-threads", "2",
+  ];
 
-    if (filters.length > 0) {
-      cmd = cmd.videoFilters(filters);
-    }
+  if (filters.length > 0) {
+    cmd = cmd.videoFilters(filters);
+  }
 
-    cmd
-      .outputOptions(outputOptions)
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(err))
-      .run();
-  });
+  cmd.outputOptions(outputOptions).output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
 }
 
 async function getFileDuration(filePath: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(metadata.format.duration || 0);
-    });
-  });
+  const metadata = await runFfprobeWithTimeout(filePath, FFPROBE_TIMEOUT_MS);
+  return metadata.format.duration || 0;
 }
 
 async function concatSegmentsSimple(
@@ -471,24 +561,21 @@ async function concatSegmentsSimple(
   await fs.writeFile(concatListPath, concatContent);
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg()
-        .input(concatListPath)
-        .inputOptions(["-f", "concat", "-safe", "0"])
-        .outputOptions([
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "28",
-          "-c:a", "aac",
-          "-b:a", "96k",
-          "-max_muxing_queue_size", "1024",
-          "-threads", "2",
-        ])
-        .output(outputPath)
-        .on("end", () => resolve())
-        .on("error", (err) => reject(err))
-        .run();
-    });
+    const cmd = ffmpeg()
+      .input(concatListPath)
+      .inputOptions(["-f", "concat", "-safe", "0"])
+      .outputOptions([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-max_muxing_queue_size", "1024",
+        "-threads", "2",
+      ])
+      .output(outputPath);
+    
+    await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath, concatListPath]);
   } finally {
     await fs.unlink(concatListPath).catch(() => {});
   }
@@ -502,44 +589,36 @@ async function burnSubtitles(
   const escapedPath = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\''");
   const isAss = subtitlePath.endsWith('.ass');
   
-  await new Promise<void>((resolve, reject) => {
-    const cmd = ffmpeg(inputPath);
-    
-    if (isAss) {
-      // ASS subtitles use the ass filter which preserves all styling
-      cmd.videoFilters([`ass='${escapedPath}'`]);
-    } else {
-      // SRT fallback with basic styling
-      cmd.videoFilters([
-        `subtitles='${escapedPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1'`
-      ]);
-    }
-    
-    cmd.outputOptions([
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-c:a", "copy",
-        "-threads", "2",
-      ])
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(err))
-      .run();
-  });
+  const cmd = ffmpeg(inputPath);
+  
+  if (isAss) {
+    cmd.videoFilters([`ass='${escapedPath}'`]);
+  } else {
+    cmd.videoFilters([
+      `subtitles='${escapedPath}':force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,BorderStyle=3,Outline=2,Shadow=1'`
+    ]);
+  }
+  
+  cmd.outputOptions([
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-crf", "28",
+      "-c:a", "copy",
+      "-threads", "2",
+    ])
+    .output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
 }
 
 async function hasAudioStream(filePath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        resolve(false);
-        return;
-      }
-      const audioStream = metadata.streams.find((s) => s.codec_type === "audio");
-      resolve(!!audioStream);
-    });
-  });
+  try {
+    const metadata = await runFfprobeWithTimeout(filePath, FFPROBE_TIMEOUT_MS);
+    const audioStream = metadata.streams.find((s) => s.codec_type === "audio");
+    return !!audioStream;
+  } catch {
+    return false;
+  }
 }
 
 async function concatTwoWithTransition(
@@ -587,17 +666,14 @@ async function concatTwoWithTransition(
     outputOptions.push("-an");
   }
 
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg()
-      .input(segment1Path)
-      .input(segment2Path)
-      .complexFilter(complexFilterArray)
-      .outputOptions(outputOptions)
-      .output(outputPath)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(err))
-      .run();
-  });
+  const cmd = ffmpeg()
+    .input(segment1Path)
+    .input(segment2Path)
+    .complexFilter(complexFilterArray)
+    .outputOptions(outputOptions)
+    .output(outputPath);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
   
   return transitionDuration;
 }
@@ -622,45 +698,37 @@ async function prepareOverlayMedia(
   outputPath: string
 ): Promise<void> {
   if (stock.item.type === "video") {
-    // Scale video to match main video dimensions
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(stock.localPath)
-        .setDuration(duration)
-        .outputOptions([
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "28",
-          "-an", // No audio for overlay - original audio continues
-          "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
-          "-pix_fmt", "yuv420p",
-          "-threads", "2",
-        ])
-        .output(outputPath)
-        .on("end", () => resolve())
-        .on("error", (err) => reject(err))
-        .run();
-    });
+    const cmd = ffmpeg(stock.localPath)
+      .setDuration(duration)
+      .outputOptions([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-an",
+        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+        "-pix_fmt", "yuv420p",
+        "-threads", "2",
+      ])
+      .output(outputPath);
+    
+    await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
   } else {
-    // Convert image to video with Ken Burns effect
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg()
-        .input(stock.localPath)
-        .inputOptions(["-loop", "1"])
-        .outputOptions([
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "28",
-          "-an",
-          "-t", String(duration),
-          "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.001,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 25)}:s=${width}x${height}:fps=25`,
-          "-pix_fmt", "yuv420p",
-          "-threads", "2",
-        ])
-        .output(outputPath)
-        .on("end", () => resolve())
-        .on("error", (err) => reject(err))
-        .run();
-    });
+    const cmd = ffmpeg()
+      .input(stock.localPath)
+      .inputOptions(["-loop", "1"])
+      .outputOptions([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-an",
+        "-t", String(duration),
+        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.001,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 25)}:s=${width}x${height}:fps=25`,
+        "-pix_fmt", "yuv420p",
+        "-threads", "2",
+      ])
+      .output(outputPath);
+    
+    await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
   }
 }
 
@@ -735,26 +803,23 @@ async function applyAllBrollOverlays(
       `[0:v][ov]overlay=0:0:eof_action=pass[outv]`
     ].join(";");
     
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg()
-        .input(currentPath)
-        .input(overlay.path)
-        .complexFilter(filterComplex)
-        .outputOptions([
-          "-map", "[outv]",
-          "-map", "0:a?",
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "28",
-          "-c:a", "copy", // Keep original audio untouched during overlay phase
-          "-threads", "2",
-          "-max_muxing_queue_size", "2048",
-        ])
-        .output(intermediatePath)
-        .on("end", () => resolve())
-        .on("error", (err) => reject(err))
-        .run();
-    });
+    const overlayCmd = ffmpeg()
+      .input(currentPath)
+      .input(overlay.path)
+      .complexFilter(filterComplex)
+      .outputOptions([
+        "-map", "[outv]",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-c:a", "copy",
+        "-threads", "2",
+        "-max_muxing_queue_size", "2048",
+      ])
+      .output(intermediatePath);
+    
+    await runFfmpegWithTimeout(overlayCmd, FFMPEG_LONG_TIMEOUT_MS, [intermediatePath]);
     
     tempFiles.push(intermediatePath);
     currentPath = intermediatePath;
@@ -951,24 +1016,21 @@ export async function applyEdits(
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
     const seg = segmentsToKeep[0];
     
-    await new Promise<void>((resolve, reject) => {
-      ffmpeg(videoPath)
-        .setStartTime(seg.start)
-        .setDuration(seg.end - seg.start)
-        .outputOptions([
-          "-c:v", "libx264",
-          "-preset", "ultrafast",
-          "-crf", "28",
-          "-c:a", "aac",
-          "-b:a", "96k",
-          "-max_muxing_queue_size", "1024",
-          "-threads", "2",
-        ])
-        .output(baseVideoPath)
-        .on("end", () => resolve())
-        .on("error", (err) => reject(err))
-        .run();
-    });
+    const trimCmd = ffmpeg(videoPath)
+      .setStartTime(seg.start)
+      .setDuration(seg.end - seg.start)
+      .outputOptions([
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-max_muxing_queue_size", "1024",
+        "-threads", "2",
+      ])
+      .output(baseVideoPath);
+    
+    await runFfmpegWithTimeout(trimCmd, FFMPEG_LONG_TIMEOUT_MS, [baseVideoPath]);
     
     tempFiles.push(baseVideoPath);
     outputTimeMapping = [{ sourceStart: seg.start, sourceEnd: seg.end, outputStart: 0 }];

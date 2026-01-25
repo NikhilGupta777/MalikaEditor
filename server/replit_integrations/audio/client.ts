@@ -47,46 +47,74 @@ export function detectAudioFormat(buffer: Buffer): AudioFormat {
   return "unknown";
 }
 
+const AUDIO_CONVERSION_TIMEOUT_MS = 2 * 60 * 1000;
+
 /**
  * Convert any audio/video format to WAV using ffmpeg.
  * Uses temp files instead of pipes because video containers (MP4/MOV)
  * require seeking to find the audio track.
+ * Includes timeout handling to prevent hung processes.
  */
 export async function convertToWav(audioBuffer: Buffer): Promise<Buffer> {
   const inputPath = join(tmpdir(), `input-${randomUUID()}`);
   const outputPath = join(tmpdir(), `output-${randomUUID()}.wav`);
 
+  const cleanup = async () => {
+    await unlink(inputPath).catch(() => {});
+    await unlink(outputPath).catch(() => {});
+  };
+
   try {
-    // Write input to temp file (required for video containers that need seeking)
     await writeFile(inputPath, audioBuffer);
 
-    // Run ffmpeg with file paths
     await new Promise<void>((resolve, reject) => {
-      const ffmpeg = spawn("ffmpeg", [
+      let completed = false;
+      
+      const ffmpegProcess = spawn("ffmpeg", [
         "-i", inputPath,
-        "-vn",              // Extract audio only (ignore video track)
+        "-vn",
         "-f", "wav",
-        "-ar", "16000",     // 16kHz sample rate (good for speech)
-        "-ac", "1",         // Mono
+        "-ar", "16000",
+        "-ac", "1",
         "-acodec", "pcm_s16le",
-        "-y",               // Overwrite output
+        "-y",
         outputPath,
       ]);
 
-      ffmpeg.stderr.on("data", () => {}); // Suppress logs
-      ffmpeg.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`ffmpeg exited with code ${code}`));
+      const timeoutId = setTimeout(() => {
+        if (!completed) {
+          completed = true;
+          try {
+            ffmpegProcess.kill("SIGKILL");
+          } catch {}
+          cleanup();
+          reject(new Error(`ffmpeg audio conversion timed out after ${AUDIO_CONVERSION_TIMEOUT_MS}ms`));
+        }
+      }, AUDIO_CONVERSION_TIMEOUT_MS);
+
+      ffmpegProcess.stderr.on("data", () => {});
+      
+      ffmpegProcess.on("close", (code) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeoutId);
+          if (code === 0) resolve();
+          else reject(new Error(`ffmpeg exited with code ${code}`));
+        }
       });
-      ffmpeg.on("error", reject);
+      
+      ffmpegProcess.on("error", (err) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeoutId);
+          reject(err);
+        }
+      });
     });
 
-    // Read converted audio
     return await readFile(outputPath);
   } finally {
-    // Clean up temp files
-    await unlink(inputPath).catch(() => {});
-    await unlink(outputPath).catch(() => {});
+    await cleanup();
   }
 }
 

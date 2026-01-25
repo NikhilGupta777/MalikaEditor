@@ -1,0 +1,51 @@
+I need you to build a new subtitle generation service for my video editor. The current captions are too static. I want to upgrade to a dynamic "Karaoke" style (like Hormozi/Reels) where words highlight in sync with the audio.
+
+Since you can't see the full context, here is the complete specification for exactly how I want this implemented.
+
+1. The Goal We need to generate an .ass (Advanced Substation Alpha) subtitle file instead of a standard .srt. This allows us to control color animations.
+
+2. Create a new file: server/services/ai/subtitleService.ts Please write a TypeScript module that exports a function generateKaraokeSubtitles(transcript: any[]).
+
+3. The Logic Requirements (Strict)
+
+    Input Data: The function receives a transcript array where each item looks like: { word: "Hello", start: 0.5, end: 0.9 }.
+
+    Step A: Grouping Words (The "Phrasing" Logic)
+
+        Do not show one word at a time. It's too jerky.
+
+        Rule 1: Group words into lines of 2-3 words maximum.
+
+        Rule 2: If there is a silence gap of > 0.5 seconds between the current word and the previous word, force a new line immediately (even if the group isn't full). This prevents grouping words across long pauses.
+
+    Step B: The "Karaoke" Effect (The \k Tag)
+
+        In .ass format, we use {\k<duration>} to highlight text.
+
+        The Math: You must calculate duration in centiseconds (1/100th of a second).
+
+        Formula: duration = (word.end - word.start) * 100
+
+        The Output String: Construct the line so every word has a tag.
+
+        Example: If "Hello" takes 0.5s and "World" takes 0.5s: {\k50}Hello {\k50}World
+
+    Step C: The Visual Style (The Header)
+
+        The function must return the full string content of the .ass file, including the header.
+
+        Style Definition:
+
+            Font: Montserrat-Bold (fallback to Arial)
+
+            Size: 80 (Large)
+
+            Primary Color: &H00FFFF00 (Yellow - BGR format)
+
+            Secondary Color: &H00FFFFFF (White - used for the "future" text)
+
+            Outline: Black (&H00000000) with thickness 3.
+
+            Alignment: Bottom Center (2).
+
+4. Deliverables Please write the full, error-free code for server/services/ai/subtitleService.ts that implements this logic.

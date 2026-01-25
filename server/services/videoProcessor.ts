@@ -605,30 +605,27 @@ function intervalsOverlap(start1: number, end1: number, start2: number, end2: nu
 }
 
 // Generate ASS (Advanced SubStation Alpha) subtitle file for karaoke-style captions
-// This provides word-by-word highlighting with professional styling
+// Hormozi/Reels style: 2-3 words at a time with word-by-word highlight animation
 function generateAssContent(
   captions: CaptionWithWords[],
   videoWidth: number,
   videoHeight: number
 ): string {
-  // Position captions near the bottom of the video
-  // MarginV controls vertical positioning from bottom
-  // 15% from bottom = 85% from top (near the very bottom, above player controls)
-  const marginBottom = Math.round(videoHeight * 0.15);
+  // Position captions near the bottom of the video (15% from bottom)
+  const marginBottom = Math.round(videoHeight * 0.12);
   
-  // Font size scales with video height for readability
-  const fontSize = Math.max(Math.round(videoHeight / 18), 28);
+  // Large, bold font for impact (scales with video height)
+  const fontSize = Math.max(Math.round(videoHeight / 12), 48);
   
-  // ASS karaoke colors:
-  // - SecondaryColour (&H00FFFFFF white): Color BEFORE the word is spoken (unhighlighted)
-  // - PrimaryColour (&H0000D4FF cyan/yellow): Color AS the word is being spoken (highlighted)
-  // The \k tags progressively fill from Secondary to Primary color
-  const highlightColor = "&H0000D4FF";  // Cyan/Yellow highlight (BGR format)
+  // Hormozi-style colors (BGR format in ASS):
+  // - PrimaryColour: Yellow highlight color (shown as word is spoken)
+  // - SecondaryColour: White (color before word is highlighted)
+  const highlightColor = "&H0000FFFF";  // Yellow (BGR: 00FFFF = Yellow)
   const baseColor = "&H00FFFFFF";       // White base color
   const outlineColor = "&H00000000";    // Black outline
-  const backColor = "&H80000000";       // Semi-transparent black background
+  const backColor = "&H00000000";       // Transparent background
   
-  // ASS file header with styles
+  // ASS file header with bold styling
   const header = `[Script Info]
 Title: Karaoke Captions
 ScriptType: v4.00+
@@ -639,7 +636,7 @@ Timer: 100.0000
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,${fontSize},${highlightColor},${baseColor},${outlineColor},${backColor},1,0,0,0,100,100,0,0,1,3,1,2,20,20,${marginBottom},1
+Style: Default,Montserrat-Bold,${fontSize},${highlightColor},${baseColor},${outlineColor},${backColor},1,0,0,0,100,100,0,0,1,4,2,2,30,30,${marginBottom},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -649,56 +646,87 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    const cs = Math.floor((seconds % 1) * 100); // Centiseconds for ASS
+    const cs = Math.floor((seconds % 1) * 100);
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
   };
+
+  // Collect all words from all captions with timing
+  const allWords: WordTiming[] = [];
+  for (const cap of captions) {
+    if (cap.words && cap.words.length > 0) {
+      allWords.push(...cap.words);
+    }
+  }
+
+  if (allWords.length === 0) {
+    // Fallback: use segment-level timing
+    const dialogueLines = captions.map(cap => {
+      const escapedText = escapeAssText(cap.text);
+      return `Dialogue: 0,${formatAssTime(cap.start)},${formatAssTime(cap.end)},Default,,0,0,0,,${escapedText}`;
+    });
+    return header + dialogueLines.join('\n') + '\n';
+  }
+
+  // Group words into phrases of 2-3 words
+  // Force new line on gaps > 0.5 seconds
+  const WORDS_PER_PHRASE = 3;
+  const GAP_THRESHOLD = 0.5; // seconds
+  
+  const phrases: WordTiming[][] = [];
+  let currentPhrase: WordTiming[] = [];
+  
+  for (let i = 0; i < allWords.length; i++) {
+    const word = allWords[i];
+    const prevWord = i > 0 ? allWords[i - 1] : null;
+    
+    // Check if we should start a new phrase
+    const gapToPrevious = prevWord ? word.start - prevWord.end : 0;
+    const shouldBreak = gapToPrevious > GAP_THRESHOLD || currentPhrase.length >= WORDS_PER_PHRASE;
+    
+    if (shouldBreak && currentPhrase.length > 0) {
+      phrases.push(currentPhrase);
+      currentPhrase = [];
+    }
+    
+    currentPhrase.push(word);
+  }
+  
+  // Don't forget the last phrase
+  if (currentPhrase.length > 0) {
+    phrases.push(currentPhrase);
+  }
 
   // Build dialogue lines with karaoke effect
   const dialogueLines: string[] = [];
   
-  for (const cap of captions) {
-    if (cap.words && cap.words.length > 0) {
-      // Karaoke-style: show words progressively with highlighting
-      // Group words into chunks of ~4 words for readability
-      const wordsPerChunk = 4;
-      const chunks: WordTiming[][] = [];
+  for (const phrase of phrases) {
+    if (phrase.length === 0) continue;
+    
+    const phraseStart = phrase[0].start;
+    const phraseEnd = phrase[phrase.length - 1].end;
+    
+    // Build karaoke text with \k timing for each word
+    // \k<duration> highlights the word over that duration (in centiseconds)
+    let karaokeText = '';
+    
+    for (let i = 0; i < phrase.length; i++) {
+      const word = phrase[i];
+      // Duration in centiseconds (1/100th of a second)
+      const wordDuration = Math.max(Math.round((word.end - word.start) * 100), 15);
+      const escapedWord = escapeAssText(word.word);
       
-      for (let i = 0; i < cap.words.length; i += wordsPerChunk) {
-        chunks.push(cap.words.slice(i, i + wordsPerChunk));
-      }
+      // \k creates the karaoke highlight effect
+      karaokeText += `{\\k${wordDuration}}${escapedWord}`;
       
-      // For each chunk, show with progressive word highlighting
-      for (const chunk of chunks) {
-        if (chunk.length === 0) continue;
-        
-        const chunkStart = chunk[0].start;
-        const chunkEnd = chunk[chunk.length - 1].end;
-        
-        // Create karaoke text with {\k} timing codes
-        // \k (or \kf for smooth fill) fills word from SecondaryColour to PrimaryColour
-        // The number is duration in centiseconds
-        let karaokeText = '';
-        
-        for (let i = 0; i < chunk.length; i++) {
-          const word = chunk[i];
-          const wordDuration = Math.max(Math.round((word.end - word.start) * 100), 10); // Min 10cs
-          const escapedWord = escapeAssText(word.word);
-          
-          // \kf creates a smooth fill effect (character by character highlight)
-          karaokeText += `{\\kf${wordDuration}}${escapedWord} `;
-        }
-        
-        dialogueLines.push(
-          `Dialogue: 0,${formatAssTime(chunkStart)},${formatAssTime(chunkEnd)},Default,,0,0,0,,${karaokeText.trim()}`
-        );
+      // Add space between words (not after last word)
+      if (i < phrase.length - 1) {
+        karaokeText += ' ';
       }
-    } else {
-      // Fallback: simple subtitle without word-level timing
-      const escapedText = escapeAssText(cap.text);
-      dialogueLines.push(
-        `Dialogue: 0,${formatAssTime(cap.start)},${formatAssTime(cap.end)},Default,,0,0,0,,${escapedText}`
-      );
     }
+    
+    dialogueLines.push(
+      `Dialogue: 0,${formatAssTime(phraseStart)},${formatAssTime(phraseEnd)},Default,,0,0,0,,${karaokeText}`
+    );
   }
   
   return header + dialogueLines.join('\n') + '\n';

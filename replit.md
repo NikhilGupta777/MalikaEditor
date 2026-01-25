@@ -66,7 +66,13 @@ The AI services are modularized into focused modules for transcription, video an
 
 #### Performance and Quality
 - **Performance Optimizations**: Features single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), and proxy video generation.
+- **Quality Mode Selector**: UI dropdown in render panel allows users to select encoding quality (preview for fast testing, balanced for typical use, quality for final exports).
 - **Chapter Metadata**: Automatic chapter generation from edit plan analysis, embedded in output video for improved navigability.
+
+#### Interactive Transcript
+- **Click-to-Seek**: Clickable timestamps in TranscriptEditor that seek video preview to segment start time.
+- **Current Segment Highlighting**: Active segment highlighted with visual indicator based on video playback position.
+- **Dual Edit Modes**: Tabs for AI-assisted editing (ReviewPanel) and manual transcript editing (TranscriptEditor).
 
 #### Error Handling & Scalability
 - **Error Handling**: Provides user-friendly messages with recovery suggestions, mapped to specific error types and visualized with UI icons.

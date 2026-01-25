@@ -5,6 +5,9 @@ import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
 import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem } from "@shared/schema";
+import { createLogger } from "../utils/logger";
+
+const videoLogger = createLogger("video-processor");
 
 const UPLOADS_DIR = "/tmp/uploads";
 const FRAMES_DIR = "/tmp/frames";
@@ -133,7 +136,7 @@ export async function cleanupStaleTempFiles(maxAgeHours: number = 2): Promise<{ 
               await fs.unlink(fullPath);
             }
             cleaned++;
-            console.log(`[TempCleanup] Removed stale file: ${fullPath} (age: ${(age / 1000 / 60).toFixed(1)} min)`);
+            videoLogger.debug(`[TempCleanup] Removed stale file: ${fullPath} (age: ${(age / 1000 / 60).toFixed(1)} min)`);
           }
         } catch (e) {
           errors++;
@@ -146,7 +149,7 @@ export async function cleanupStaleTempFiles(maxAgeHours: number = 2): Promise<{ 
   }
 
   if (cleaned > 0 || errors > 0) {
-    console.log(`[TempCleanup] Completed: ${cleaned} files cleaned, ${errors} errors`);
+    videoLogger.info(`[TempCleanup] Completed: ${cleaned} files cleaned, ${errors} errors`);
   }
   
   return { cleaned, errors };
@@ -822,9 +825,9 @@ async function applyAllBrollOverlays(
         duration: overlay.duration,
       });
       tempFiles.push(overlayVideoPath);
-      console.log(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s`);
+      videoLogger.debug(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s`);
     } catch (err) {
-      console.error(`Failed to prepare overlay ${i}:`, err);
+      videoLogger.error(`Failed to prepare overlay ${i}:`, err);
     }
   }
 
@@ -874,7 +877,7 @@ async function applyAllBrollOverlays(
     
     tempFiles.push(intermediatePath);
     currentPath = intermediatePath;
-    console.log(`Applied overlay ${i} at ${overlayStart}s with fade`);
+    videoLogger.debug(`Applied overlay ${i} at ${overlayStart}s with fade`);
   }
   
   await fs.copyFile(currentPath, outputPath);
@@ -898,11 +901,11 @@ export async function applyEdits(
 ): Promise<EditResult> {
   await ensureDirs();
   
-  console.log("=== APPLY EDITS START (OVERLAY MODE) ===");
-  console.log("Options:", JSON.stringify(options));
-  console.log("Transcript segments:", transcript.length);
-  console.log("Stock media items:", stockMedia.length);
-  console.log("Edit plan actions:", editPlan.actions?.length || 0);
+  videoLogger.info("=== APPLY EDITS START (OVERLAY MODE) ===");
+  videoLogger.debug("Options:", JSON.stringify(options));
+  videoLogger.debug("Transcript segments:", transcript.length);
+  videoLogger.debug("Stock media items:", stockMedia.length);
+  videoLogger.debug("Edit plan actions:", editPlan.actions?.length || 0);
 
   const outputId = outputFileName || uuidv4();
   const outputPath = path.join(OUTPUT_DIR, `${outputId}.mp4`);
@@ -928,7 +931,7 @@ export async function applyEdits(
     return result;
   } catch (error) {
     // On error, clean up all temp files (they won't be cleaned by internal function)
-    console.log(`[TempCleanup] Error occurred, cleaning up ${tempFiles.length} temp files`);
+    videoLogger.info(`[TempCleanup] Error occurred, cleaning up ${tempFiles.length} temp files`);
     for (const tempPath of tempFiles) {
       if (tempPath !== outputPath) {
         await fs.unlink(tempPath).catch(() => {});
@@ -979,11 +982,11 @@ async function applyEditsInternal(
     a.type === "add_caption" && a.text
   );
 
-  console.log(`Keep segments: ${keepSegments.length}`);
-  console.log(`Cut segments: ${cutSegments.length}`);
-  console.log(`Insert stock actions: ${insertStockActions.length}`);
-  console.log(`Text overlay actions: ${textOverlayActions.length}`);
-  console.log(`Caption actions: ${captionActions.length}`);
+  videoLogger.debug(`Keep segments: ${keepSegments.length}`);
+  videoLogger.debug(`Cut segments: ${cutSegments.length}`);
+  videoLogger.debug(`Insert stock actions: ${insertStockActions.length}`);
+  videoLogger.debug(`Text overlay actions: ${textOverlayActions.length}`);
+  videoLogger.debug(`Caption actions: ${captionActions.length}`);
 
   // Download stock media for B-roll overlays (separating stock and AI-generated)
   const downloadedStockMedia: DownloadedStock[] = [];
@@ -992,14 +995,14 @@ async function applyEditsInternal(
   // First: Always process AI-generated images if present (independent of addBroll option)
   const aiGeneratedItems = stockMedia.filter(item => item.type === "ai_generated");
   if (aiGeneratedItems.length > 0) {
-    console.log(`Processing ${aiGeneratedItems.length} AI-generated images...`);
+    videoLogger.info(`Processing ${aiGeneratedItems.length} AI-generated images...`);
     
     for (let i = 0; i < aiGeneratedItems.length; i++) {
       const item = aiGeneratedItems[i];
       try {
         // AI-generated images are already saved locally, use path directly
         const localPath = item.url; // URL is the local file path for AI images
-        console.log(`Using AI-generated image ${i}: ${item.query}`);
+        videoLogger.debug(`Using AI-generated image ${i}: ${item.query}`);
         
         // Verify file exists
         try {
@@ -1008,22 +1011,22 @@ async function applyEditsInternal(
             item: { ...item, type: "image" as const }, // Treat as image for overlay
             localPath 
           });
-          console.log(`AI image ready: ${localPath}`);
+          videoLogger.debug(`AI image ready: ${localPath}`);
         } catch {
-          console.error(`AI image file not found: ${localPath}`);
+          videoLogger.error(`AI image file not found: ${localPath}`);
         }
       } catch (e) {
-        console.error(`Failed to process AI image ${i}:`, e);
+        videoLogger.error(`Failed to process AI image ${i}:`, e);
       }
     }
     
-    console.log(`AI media processed: ${downloadedAiMedia.length}`);
+    videoLogger.info(`AI media processed: ${downloadedAiMedia.length}`);
   }
   
   // Second: Process stock media only if addBroll is enabled
   const stockItems = stockMedia.filter(item => item.type !== "ai_generated");
   if (options.addBroll && stockItems.length > 0) {
-    console.log(`Processing ${Math.min(stockItems.length, 8)} stock media items for overlays...`);
+    videoLogger.info(`Processing ${Math.min(stockItems.length, 8)} stock media items for overlays...`);
     
     for (let i = 0; i < Math.min(stockItems.length, 8); i++) {
       const item = stockItems[i];
@@ -1032,29 +1035,29 @@ async function applyEditsInternal(
         
         if (item.type === "video") {
           localPath = path.join(STOCK_DIR, `${outputId}_stock_${i}.mp4`);
-          console.log(`Downloading stock video ${i}: ${item.query}`);
+          videoLogger.debug(`Downloading stock video ${i}: ${item.query}`);
           await downloadFile(item.url, localPath);
           downloadedStockMedia.push({ item, localPath });
           tempFiles.push(localPath);
-          console.log(`Downloaded: ${localPath}`);
+          videoLogger.debug(`Downloaded: ${localPath}`);
         } else {
           const ext = item.url.includes(".png") ? "png" : "jpg";
           localPath = path.join(STOCK_DIR, `${outputId}_stock_${i}.${ext}`);
-          console.log(`Downloading stock image ${i}: ${item.query}`);
+          videoLogger.debug(`Downloading stock image ${i}: ${item.query}`);
           await downloadFile(item.url, localPath);
           downloadedStockMedia.push({ item, localPath });
           tempFiles.push(localPath);
-          console.log(`Downloaded: ${localPath}`);
+          videoLogger.debug(`Downloaded: ${localPath}`);
         }
       } catch (e) {
-        console.error(`Failed to process stock media ${i}:`, e);
+        videoLogger.error(`Failed to process stock media ${i}:`, e);
       }
     }
     
-    console.log(`Stock media downloaded: ${downloadedStockMedia.length}`);
+    videoLogger.info(`Stock media downloaded: ${downloadedStockMedia.length}`);
   }
   
-  console.log(`Total media ready: Stock=${downloadedStockMedia.length}, AI=${downloadedAiMedia.length}`);
+  videoLogger.info(`Total media ready: Stock=${downloadedStockMedia.length}, AI=${downloadedAiMedia.length}`);
 
   // STEP 1: Build base video from keep segments (or cuts)
   // This handles silence removal by cutting out specified segments
@@ -1094,8 +1097,8 @@ async function applyEditsInternal(
     segmentsToKeep = [{ start: 0, end: metadata.duration }];
   }
 
-  console.log(`Segments to keep: ${segmentsToKeep.length}`);
-  segmentsToKeep.forEach((s, i) => console.log(`  [${i}] ${s.start.toFixed(2)}s - ${s.end.toFixed(2)}s`));
+  videoLogger.debug(`Segments to keep: ${segmentsToKeep.length}`);
+  segmentsToKeep.forEach((s, i) => videoLogger.debug(`  [${i}] ${s.start.toFixed(2)}s - ${s.end.toFixed(2)}s`));
 
   // Create base video from kept segments
   if (segmentsToKeep.length === 1 && segmentsToKeep[0].start === 0 && 
@@ -1103,7 +1106,7 @@ async function applyEditsInternal(
     // Keep entire video as-is
     baseVideoPath = videoPath;
     outputTimeMapping = [{ sourceStart: 0, sourceEnd: metadata.duration, outputStart: 0 }];
-    console.log("Using original video as base (no cuts)");
+    videoLogger.info("Using original video as base (no cuts)");
   } else if (segmentsToKeep.length === 1) {
     // Single segment, just trim
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
@@ -1127,7 +1130,7 @@ async function applyEditsInternal(
     
     tempFiles.push(baseVideoPath);
     outputTimeMapping = [{ sourceStart: seg.start, sourceEnd: seg.end, outputStart: 0 }];
-    console.log(`Created trimmed base video: ${seg.start}s - ${seg.end}s`);
+    videoLogger.info(`Created trimmed base video: ${seg.start}s - ${seg.end}s`);
   } else {
     // Multiple segments - concatenate
     const segmentPaths: string[] = [];
@@ -1152,12 +1155,12 @@ async function applyEditsInternal(
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
     await concatSegmentsSimple(segmentPaths, baseVideoPath);
     tempFiles.push(baseVideoPath);
-    console.log(`Created concatenated base video from ${segmentsToKeep.length} segments`);
+    videoLogger.info(`Created concatenated base video from ${segmentsToKeep.length} segments`);
   }
 
   // Get base video duration
   const baseMetadata = await getVideoMetadata(baseVideoPath);
-  console.log(`Base video duration: ${baseMetadata.duration.toFixed(2)}s`);
+  videoLogger.info(`Base video duration: ${baseMetadata.duration.toFixed(2)}s`);
 
   // STEP 2: Prepare B-roll overlays
   // Map insert_stock times from source to output timeline
@@ -1189,13 +1192,13 @@ async function applyEditsInternal(
       
       // STRICT VALIDATION: Require both startTime and duration
       if (typeof sourceTime !== "number" || sourceTime < 0) {
-        console.warn(`[AI Image SKIP] Missing/invalid startTime (${sourceTime}): ${itemQuery}`);
+        videoLogger.warn(`[AI Image SKIP] Missing/invalid startTime (${sourceTime}): ${itemQuery}`);
         aiImagesSkipped++;
         continue;
       }
       
       if (typeof itemDuration !== "number" || itemDuration <= 0) {
-        console.warn(`[AI Image SKIP] Missing/invalid duration (${itemDuration}): ${itemQuery}`);
+        videoLogger.warn(`[AI Image SKIP] Missing/invalid duration (${itemDuration}): ${itemQuery}`);
         aiImagesSkipped++;
         continue;
       }
@@ -1214,7 +1217,7 @@ async function applyEditsInternal(
         
         // Ensure overlay doesn't extend beyond video
         if (outputTime + duration > baseMetadata.duration) {
-          console.warn(`[AI Image SKIP] Would extend beyond video (${outputTime}+${duration} > ${baseMetadata.duration}s): ${itemQuery}`);
+          videoLogger.warn(`[AI Image SKIP] Would extend beyond video (${outputTime}+${duration} > ${baseMetadata.duration}s): ${itemQuery}`);
           aiImagesSkipped++;
           continue;
         }
@@ -1227,17 +1230,17 @@ async function applyEditsInternal(
         });
         
         aiImagesApplied++;
-        console.log(`[AI Image OK] Applied at ${outputTime.toFixed(2)}s for ${duration.toFixed(2)}s: ${itemQuery.substring(0, 50)}`);
+        videoLogger.debug(`[AI Image OK] Applied at ${outputTime.toFixed(2)}s for ${duration.toFixed(2)}s: ${itemQuery.substring(0, 50)}`);
       } else {
         aiImagesSkipped++;
-        console.warn(`[AI Image SKIP] Timing outside video bounds (source=${sourceTime}s): ${itemQuery}`);
+        videoLogger.warn(`[AI Image SKIP] Timing outside video bounds (source=${sourceTime}s): ${itemQuery}`);
       }
     }
     
     // Log AI image placement summary
-    console.log(`AI Image Summary: ${aiImagesApplied} applied, ${aiImagesSkipped} skipped (total: ${downloadedAiMedia.length})`);
+    videoLogger.info(`AI Image Summary: ${aiImagesApplied} applied, ${aiImagesSkipped} skipped (total: ${downloadedAiMedia.length})`);
     if (aiImagesSkipped > 0) {
-      console.warn(`Warning: ${aiImagesSkipped} AI image(s) were not applied due to timing issues`);
+      videoLogger.warn(`Warning: ${aiImagesSkipped} AI image(s) were not applied due to timing issues`);
     }
     
     // SECOND: Process stock media based on insert_stock actions from edit plan
@@ -1281,7 +1284,7 @@ async function applyEditsInternal(
           stockIdx++;
           stockMediaApplied++;
         } else {
-          console.log(`Skipping stock at ${outputTime.toFixed(2)}s - overlaps with AI image`);
+          videoLogger.debug(`Skipping stock at ${outputTime.toFixed(2)}s - overlaps with AI image`);
         }
       }
     }
@@ -1315,8 +1318,8 @@ async function applyEditsInternal(
     // Sort overlays by start time
     brollOverlays.sort((a, b) => a.startTime - b.startTime);
     
-    console.log(`Prepared ${brollOverlays.length} B-roll overlays:`);
-    brollOverlays.forEach((o, i) => console.log(`  [${i}] ${o.type} at ${o.startTime.toFixed(2)}s for ${o.duration.toFixed(2)}s`));
+    videoLogger.debug(`Prepared ${brollOverlays.length} B-roll overlays:`);
+    brollOverlays.forEach((o, i) => videoLogger.debug(`  [${i}] ${o.type} at ${o.startTime.toFixed(2)}s for ${o.duration.toFixed(2)}s`));
   }
 
   // STEP 3: Apply B-roll overlays (visual only, audio continues)
@@ -1335,9 +1338,9 @@ async function applyEditsInternal(
         tempFiles
       );
       tempFiles.push(overlayedPath);
-      console.log(`Applied ${brollOverlays.length} B-roll overlays successfully`);
+      videoLogger.info(`Applied ${brollOverlays.length} B-roll overlays successfully`);
     } catch (err) {
-      console.error("Failed to apply overlays, using base video:", err);
+      videoLogger.error("Failed to apply overlays, using base video:", err);
       overlayedPath = baseVideoPath;
     }
   } else {
@@ -1400,12 +1403,12 @@ async function applyEditsInternal(
       }
     }
     
-    console.log(`Mapped ${adjustedCaptions.length} captions to output timeline`);
+    videoLogger.info(`Mapped ${adjustedCaptions.length} captions to output timeline`);
   }
 
   // Apply captions if any - use ASS format for karaoke-style highlighting
   if (adjustedCaptions.length > 0) {
-    console.log(`Burning ${adjustedCaptions.length} karaoke-style captions into final video`);
+    videoLogger.info(`Burning ${adjustedCaptions.length} karaoke-style captions into final video`);
     
     // Get video dimensions for proper ASS rendering
     const videoMeta = await getVideoMetadata(overlayedPath);
@@ -1431,8 +1434,8 @@ async function applyEditsInternal(
     }
   }
 
-  console.log("=== APPLY EDITS COMPLETE (OVERLAY MODE) ===");
-  console.log(`Final Stats: aiImagesApplied=${aiImagesApplied}, aiImagesSkipped=${aiImagesSkipped}, stockMediaApplied=${stockMediaApplied}, brollOverlays=${brollOverlays.length}`);
+  videoLogger.info("=== APPLY EDITS COMPLETE (OVERLAY MODE) ===");
+  videoLogger.info(`Final Stats: aiImagesApplied=${aiImagesApplied}, aiImagesSkipped=${aiImagesSkipped}, stockMediaApplied=${stockMediaApplied}, brollOverlays=${brollOverlays.length}`);
   
   return {
     outputPath,

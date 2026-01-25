@@ -1,5 +1,8 @@
 import axios from "axios";
 import type { StockMediaItem } from "@shared/schema";
+import { createLogger } from "../utils/logger";
+
+const pexelsLogger = createLogger("pexels");
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 const PEXELS_BASE_URL = "https://api.pexels.com";
@@ -40,7 +43,7 @@ export async function searchPhotos(
   perPage: number = 3
 ): Promise<StockMediaItem[]> {
   if (!PEXELS_API_KEY) {
-    console.warn("Pexels API key not configured");
+    pexelsLogger.warn("Pexels API key not configured");
     return [];
   }
 
@@ -74,7 +77,7 @@ export async function searchVideos(
   perPage: number = 2
 ): Promise<StockMediaItem[]> {
   if (!PEXELS_API_KEY) {
-    console.warn("Pexels API key not configured");
+    pexelsLogger.warn("Pexels API key not configured");
     return [];
   }
 

@@ -829,29 +829,61 @@ const WHISPER_MODEL_URL = process.env.WHISPER_MODEL_URL || "https://huggingface.
 
 /**
  * Fallback transcription using OpenAI API
- * Uses gpt-4o-mini-transcribe for text, then estimates timestamps
+ * Uses gpt-4o-mini-transcribe with verbose_json for accurate word-level timestamps
  */
 async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegment[]> {
   try {
-    aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription...");
+    aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription with word-level timestamps...");
     const audioBuffer = await fs.readFile(audioPath);
     const file = await toFile(audioBuffer, "audio.mp3");
 
     const response = await getOpenAIClient().audio.transcriptions.create({
       file,
       model: "gpt-4o-mini-transcribe",
-      response_format: "json",
+      response_format: "verbose_json",
+      timestamp_granularities: ["word", "segment"],
     }) as any;
 
+    const segments: TranscriptSegment[] = [];
+    
+    if (response.segments && Array.isArray(response.segments)) {
+      aiLogger.info(`OpenAI transcription successful. Processing ${response.segments.length} segments...`);
+      
+      for (const segment of response.segments) {
+        if (segment.words && Array.isArray(segment.words) && segment.words.length > 0) {
+          for (const word of segment.words) {
+            if (word.word && typeof word.start === 'number' && typeof word.end === 'number') {
+              segments.push({
+                start: word.start,
+                end: word.end,
+                text: word.word.trim(),
+              });
+            }
+          }
+        } else if (typeof segment.start === 'number' && typeof segment.end === 'number' && segment.text) {
+          segments.push({
+            start: segment.start,
+            end: segment.end,
+            text: segment.text.trim(),
+          });
+        }
+      }
+      
+      if (segments.length > 0) {
+        aiLogger.info(`Extracted ${segments.length} transcript segments with accurate timestamps`);
+        return segments;
+      }
+    }
+    
     const text = response.text || "";
-    if (text.trim()) {
-      aiLogger.info("OpenAI transcription successful. Estimating timestamps based on speech pacing...");
+    if (text.trim() && segments.length === 0) {
+      aiLogger.warn("No segment data available, falling back to estimated timestamps...");
       const sentences = text.split(/(?<=[.!?])\s+/).filter((s: string) => s.trim());
       
       const charsPerSecond = 12.5;
       let currentTime = 0;
       
-      const segments = sentences.map((sentence: string) => {
+      const estimatedSegments = sentences.map((sentence: string) => {
         const duration = Math.max(1.5, sentence.length / charsPerSecond);
         const segment = {
           start: currentTime,
@@ -862,8 +894,8 @@ async function transcribeWithOpenAI(audioPath: string): Promise<TranscriptSegmen
         return segment;
       }).filter((s: TranscriptSegment) => s.text.length > 0);
       
-      aiLogger.info(`Estimated ${segments.length} transcript segments (timing is approximate)`);
-      return segments;
+      aiLogger.info(`Estimated ${estimatedSegments.length} transcript segments (timing is approximate)`);
+      return estimatedSegments;
     }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);

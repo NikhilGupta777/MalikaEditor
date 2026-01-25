@@ -1003,16 +1003,21 @@ async function concatTwoWithTransition(
   ];
 
   if (hasAudio1 && hasAudio2) {
+    // Use acrossfade for smooth audio blending during video transition
+    // This properly fades out audio 1 while fading in audio 2 at the transition point
+    const offsetMs = Math.floor(offset * 1000);
     complexFilterArray.push(
-      `[0:a]apad=pad_dur=${transitionDuration}[a0];[1:a]adelay=0|0[a1];[a0][a1]amix=inputs=2:duration=longest[a]`
+      `[0:a][1:a]acrossfade=d=${transitionDuration}:c1=tri:c2=tri[a]`
     );
-    outputOptions.push("-map", "[a]", "-c:a", "aac", "-b:a", "96k");
+    outputOptions.push("-map", "[a]", "-c:a", "aac", "-b:a", "128k");
   } else if (hasAudio1) {
-    complexFilterArray.push(`[0:a]apad=pad_dur=${transitionDuration}[a]`);
-    outputOptions.push("-map", "[a]", "-c:a", "aac", "-b:a", "96k");
+    // Only first segment has audio - just pass it through
+    outputOptions.push("-map", "0:a", "-c:a", "aac", "-b:a", "128k");
   } else if (hasAudio2) {
-    complexFilterArray.push(`[1:a]adelay=${Math.floor(offset * 1000)}|${Math.floor(offset * 1000)}[a]`);
-    outputOptions.push("-map", "[a]", "-c:a", "aac", "-b:a", "96k");
+    // Only second segment has audio - delay it to start at offset
+    const offsetMs = Math.floor(offset * 1000);
+    complexFilterArray.push(`[1:a]adelay=${offsetMs}|${offsetMs}[a]`);
+    outputOptions.push("-map", "[a]", "-c:a", "aac", "-b:a", "128k");
   } else {
     outputOptions.push("-an");
   }

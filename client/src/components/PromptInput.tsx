@@ -1,11 +1,14 @@
 import { useState, useCallback } from "react";
-import { Sparkles, Wand2, Scissors, Type, Image, Zap, Settings2, Film, ImagePlus } from "lucide-react";
+import { Sparkles, Wand2, Scissors, Type, Image, Zap, Settings2, Film, ImagePlus, Gauge } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+
+export type QualityMode = "preview" | "balanced" | "quality";
 
 export interface EditOptions {
   addCaptions: boolean;
@@ -13,6 +16,7 @@ export interface EditOptions {
   removeSilence: boolean;
   generateAiImages: boolean;
   addTransitions: boolean;
+  qualityMode: QualityMode;
 }
 
 interface PromptInputProps {
@@ -154,6 +158,29 @@ export function PromptInput({
               <span>AI Generated Images</span>
               <span className="text-xs text-muted-foreground ml-1">(context-aware visuals)</span>
             </Label>
+          </div>
+          
+          <div className="flex items-center justify-between pt-2 border-t">
+            <Label className="flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-purple-500" />
+              <span>Output Quality</span>
+            </Label>
+            <Select
+              value={editOptions.qualityMode}
+              onValueChange={(value: QualityMode) => 
+                onEditOptionsChange({ ...editOptions, qualityMode: value })
+              }
+              disabled={isProcessing}
+            >
+              <SelectTrigger className="w-[140px]" data-testid="select-quality-mode">
+                <SelectValue placeholder="Quality" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="preview">Preview (Fast)</SelectItem>
+                <SelectItem value="balanced">Balanced</SelectItem>
+                <SelectItem value="quality">High Quality</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>

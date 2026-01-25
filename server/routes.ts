@@ -849,6 +849,13 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       return res.status(400).json({ error: formatZodError(paramResult.error) });
     }
     const { id } = paramResult.data;
+    
+    // Parse quality mode from query params
+    const qualityMode = (req.query.qualityMode as string) || "balanced";
+    const validQualities = ["preview", "balanced", "quality"] as const;
+    const renderQuality = validQualities.includes(qualityMode as any) 
+      ? (qualityMode as "preview" | "balanced" | "quality")
+      : "balanced";
 
     const project = await storage.getVideoProject(id);
     if (!project) {
@@ -1027,6 +1034,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         removeSilence: true,
         generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
         addTransitions: false,
+        renderQuality,
       };
 
       const editResult = await applyEdits(

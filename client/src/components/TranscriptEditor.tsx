@@ -28,6 +28,8 @@ interface TranscriptEditorProps {
   onEditPlanChange: (updatedPlan: EditPlan) => void;
   semanticAnalysis?: SemanticAnalysis;
   isLoading?: boolean;
+  onSeekTo?: (time: number) => void;
+  currentTime?: number;
 }
 
 type SegmentAction = "keep" | "cut" | "broll" | "key_moment" | "clear";
@@ -62,6 +64,8 @@ export function TranscriptEditor({
   transcript,
   editPlan,
   onEditPlanChange,
+  onSeekTo,
+  currentTime = 0,
   semanticAnalysis,
   isLoading = false,
 }: TranscriptEditorProps) {
@@ -500,22 +504,33 @@ export function TranscriptEditor({
               const action = getSegmentAction(segment, editPlan);
               const keyMoment = keyMoments.find(m => m.segmentIndex === index);
               const isFiller = segment.isFiller || isFillerWord(segment.text);
+              const isCurrentSegment = currentTime >= segment.start && currentTime < segment.end;
 
               return (
                 <div 
                   key={index} 
-                  className="flex gap-2"
+                  className={cn(
+                    "flex gap-2 transition-colors",
+                    isCurrentSegment && "bg-primary/10 rounded-lg"
+                  )}
                   data-testid={`segment-row-${index}`}
                 >
                   <div className="flex flex-col items-end shrink-0 w-16 pt-2">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <span className="text-xs text-muted-foreground font-mono">
+                        <button
+                          className="text-xs text-muted-foreground font-mono hover:text-primary hover:underline transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSeekTo?.(segment.start);
+                          }}
+                          data-testid={`seek-button-${index}`}
+                        >
                           {formatTime(segment.start)}
-                        </span>
+                        </button>
                       </TooltipTrigger>
                       <TooltipContent>
-                        {formatTime(segment.start)} - {formatTime(segment.end)}
+                        Click to seek to {formatTime(segment.start)} - {formatTime(segment.end)}
                       </TooltipContent>
                     </Tooltip>
                     {keyMoment && (

@@ -95,12 +95,15 @@ interface VideoProject {
   structureAnalysis?: StructureAnalysis;
 }
 
+export type QualityMode = "preview" | "balanced" | "quality";
+
 export interface EditOptions {
   addCaptions: boolean;
   addBroll: boolean;
   removeSilence: boolean;
   generateAiImages: boolean;
   addTransitions: boolean;
+  qualityMode: QualityMode;
 }
 
 type EditMode = "ai" | "manual";
@@ -121,6 +124,7 @@ export default function Editor() {
     removeSilence: true,
     generateAiImages: false,
     addTransitions: false,
+    qualityMode: "balanced",
   });
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const [isRendering, setIsRendering] = useState(false);
@@ -433,7 +437,7 @@ export default function Editor() {
         eventSourceRef.current.close();
       }
       
-      const eventSource = new EventSource(`/api/videos/${project.id}/render`);
+      const eventSource = new EventSource(`/api/videos/${project.id}/render?qualityMode=${editOptions.qualityMode}`);
       eventSourceRef.current = eventSource;
       
       eventSource.onmessage = (event) => {
@@ -813,6 +817,8 @@ export default function Editor() {
                       onEditPlanChange={handleEditPlanChange}
                       semanticAnalysis={project.semanticAnalysis}
                       isLoading={project.status === "analyzing"}
+                      currentTime={currentTime}
+                      onSeekTo={setCurrentTime}
                     />
                   </TabsContent>
                 </Tabs>

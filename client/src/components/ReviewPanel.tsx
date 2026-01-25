@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { Progress } from "@/components/ui/progress";
 import { 
   Check, 
   X, 
@@ -18,7 +19,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Timer
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment } from "@shared/schema";
@@ -58,6 +60,8 @@ function getActionLabel(type: string) {
   }
 }
 
+const AUTO_ACCEPT_SECONDS = 120; // 2 minutes
+
 export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: ReviewPanelProps) {
   const [localReviewData, setLocalReviewData] = useState<ReviewData>(reviewData);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
@@ -65,12 +69,63 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
     editPlan: true,
     media: true,
   });
+  const [timeRemaining, setTimeRemaining] = useState(AUTO_ACCEPT_SECONDS);
+  const [userHasInteracted, setUserHasInteracted] = useState(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const hasAutoApprovedRef = useRef(false);
+  
+  // Keep a ref to the latest reviewData to avoid stale closure in timer
+  const latestReviewDataRef = useRef<ReviewData>(localReviewData);
+  useEffect(() => {
+    latestReviewDataRef.current = localReviewData;
+  }, [localReviewData]);
+
+  // Auto-accept timer countdown
+  useEffect(() => {
+    if (isLoading || hasAutoApprovedRef.current) return;
+
+    timerRef.current = setInterval(() => {
+      setTimeRemaining(prev => {
+        if (prev <= 1) {
+          // Timer expired - auto-approve with latest data from ref
+          if (!hasAutoApprovedRef.current) {
+            hasAutoApprovedRef.current = true;
+            onApprove({ ...latestReviewDataRef.current, userApproved: true });
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [isLoading, onApprove]);
+
+  // Reset timer when user interacts (any checkbox toggle or text edit)
+  // This gives user another 2 minutes from their last action
+  const resetTimer = useCallback(() => {
+    setUserHasInteracted(true);
+    setTimeRemaining(AUTO_ACCEPT_SECONDS);
+  }, []);
+
+  const formatCountdown = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const timerProgress = (timeRemaining / AUTO_ACCEPT_SECONDS) * 100;
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
   const toggleActionApproval = useCallback((actionId: string) => {
+    resetTimer();
     setLocalReviewData(prev => ({
       ...prev,
       editPlan: {
@@ -80,34 +135,37 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
         ),
       },
     }));
-  }, []);
+  }, [resetTimer]);
 
   const toggleMediaApproval = useCallback((mediaId: string, isAiImage: boolean) => {
+    resetTimer();
     setLocalReviewData(prev => ({
       ...prev,
       [isAiImage ? 'aiImages' : 'stockMedia']: (isAiImage ? prev.aiImages : prev.stockMedia).map(media =>
         media.id === mediaId ? { ...media, approved: !media.approved } : media
       ),
     }));
-  }, []);
+  }, [resetTimer]);
 
   const toggleTranscriptApproval = useCallback((segmentId: string) => {
+    resetTimer();
     setLocalReviewData(prev => ({
       ...prev,
       transcript: prev.transcript.map(seg =>
         seg.id === segmentId ? { ...seg, approved: !seg.approved } : seg
       ),
     }));
-  }, []);
+  }, [resetTimer]);
 
   const updateTranscriptText = useCallback((segmentId: string, newText: string) => {
+    resetTimer();
     setLocalReviewData(prev => ({
       ...prev,
       transcript: prev.transcript.map(seg =>
         seg.id === segmentId ? { ...seg, text: newText, edited: true } : seg
       ),
     }));
-  }, []);
+  }, [resetTimer]);
 
   const handleApprove = () => {
     onApprove({ ...localReviewData, userApproved: true });
@@ -142,6 +200,92 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
               ~{formatTime(Math.max(0, estimatedDuration))} final
             </Badge>
           </div>
+        </div>
+
+        {/* Auto-accept timer */}
+        {!isLoading && (
+          <div className={cn(
+            "mt-4 p-3 rounded-lg border",
+            timeRemaining <= 30 ? "bg-orange-500/10 border-orange-500/30" : "bg-blue-500/10 border-blue-500/30"
+          )}>
+            <div className="flex items-center justify-between gap-4 flex-wrap mb-2">
+              <div className="flex items-center gap-2">
+                <Timer className={cn("h-4 w-4", timeRemaining <= 30 ? "text-orange-500" : "text-blue-500")} />
+                <span className="text-sm font-medium">
+                  {timeRemaining <= 0 ? (
+                    "Auto-approving..."
+                  ) : (
+                    <>Auto-accept in <span className="font-bold">{formatCountdown(timeRemaining)}</span></>
+                  )}
+                </span>
+              </div>
+              {userHasInteracted && (
+                <Badge variant="outline" className="text-xs">
+                  Timer reset on your last change
+                </Badge>
+              )}
+            </div>
+            {timeRemaining > 0 && (
+              <Progress value={timerProgress} className="h-1" />
+            )}
+            <p className="text-xs text-muted-foreground mt-2">
+              The video will auto-approve with your current settings when the timer ends. Making changes resets the 2-minute timer.
+            </p>
+          </div>
+        )}
+
+        {/* Summary of what will happen */}
+        <div className="mt-4 p-3 rounded-lg bg-muted/30 border">
+          <h4 className="text-sm font-medium mb-2">What will happen:</h4>
+          <ul className="text-xs text-muted-foreground space-y-1">
+            {approvedCuts.length > 0 ? (
+              <li className="flex items-center gap-2">
+                <Scissors className="h-3 w-3 text-destructive" />
+                <span><strong>{approvedCuts.length} cuts</strong> will remove ~{formatTime(totalCutDuration)} from the video (final: ~{formatTime(Math.max(0, estimatedDuration))})</span>
+              </li>
+            ) : (
+              <li className="flex items-center gap-2">
+                <Check className="h-3 w-3 text-green-500" />
+                <span><strong>No cuts approved</strong> - the full video will be kept ({formatTime(localReviewData.summary.originalDuration)})</span>
+              </li>
+            )}
+            {approvedKeeps.length > 0 && (
+              <li className="flex items-center gap-2">
+                <Check className="h-3 w-3 text-green-500" />
+                <span><strong>{approvedKeeps.length} keep segments</strong> will be preserved</span>
+              </li>
+            )}
+            {localReviewData.stockMedia.filter(m => m.approved).length > 0 && (
+              <li className="flex items-center gap-2">
+                <Video className="h-3 w-3 text-blue-500" />
+                <span><strong>{localReviewData.stockMedia.filter(m => m.approved).length} B-roll clips</strong> will be overlaid on video</span>
+              </li>
+            )}
+            {localReviewData.aiImages.filter(m => m.approved).length > 0 && (
+              <li className="flex items-center gap-2">
+                <Sparkles className="h-3 w-3 text-purple-500" />
+                <span><strong>{localReviewData.aiImages.filter(m => m.approved).length} AI images</strong> will be overlaid on video</span>
+              </li>
+            )}
+            {localReviewData.transcript.filter(t => t.approved).length > 0 && (
+              <li className="flex items-center gap-2">
+                <CheckCircle2 className="h-3 w-3 text-primary" />
+                <span><strong>Captions</strong> will be burned in from {localReviewData.transcript.filter(t => t.approved).length} transcript segments</span>
+              </li>
+            )}
+            {localReviewData.transcript.filter(t => !t.approved).length > 0 && (
+              <li className="flex items-center gap-2">
+                <X className="h-3 w-3 text-muted-foreground" />
+                <span><strong>{localReviewData.transcript.filter(t => !t.approved).length} transcript segments</strong> will be excluded from captions</span>
+              </li>
+            )}
+          </ul>
+          {approvedCuts.length === 0 && localReviewData.editPlan.actions.filter(a => a.type === 'cut').length > 0 && (
+            <p className="text-xs text-green-600 dark:text-green-400 mt-2 flex items-center gap-1">
+              <Check className="h-3 w-3" />
+              You unchecked all cuts - your video will remain at its original length.
+            </p>
+          )}
         </div>
       </CardHeader>
 

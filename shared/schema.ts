@@ -191,6 +191,7 @@ export const projectStatusEnum = pgEnum("project_status", [
   "planning",
   "fetching_stock",
   "generating_ai_images",
+  "awaiting_review",
   "editing",
   "rendering",
   "completed",
@@ -226,6 +227,7 @@ export const videoProjects = pgTable("video_projects", {
   editPlan: jsonb("edit_plan"),
   transcript: jsonb("transcript"),
   stockMedia: jsonb("stock_media"),
+  reviewData: jsonb("review_data"),
   errorMessage: text("error_message"),
   version: integer("version").notNull().default(1),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
@@ -253,6 +255,7 @@ export const processingStatusEnum = z.enum([
   "planning",
   "fetching_stock",
   "generating_ai_images",
+  "awaiting_review",
   "editing",
   "rendering",
   "completed",
@@ -545,3 +548,68 @@ export const editOptionsSchema = z.object({
 });
 
 export type EditOptionsType = z.infer<typeof editOptionsSchema>;
+
+// Review data for user approval before final processing
+export const reviewMediaItemSchema = z.object({
+  id: z.string(),
+  type: normalizedEnum(["image", "video", "ai_generated"], normalizeStockMediaType),
+  query: z.string(),
+  url: z.string(),
+  thumbnailUrl: z.string().optional(),
+  duration: coercedNumber().optional(),
+  startTime: coercedNumber().optional(),
+  endTime: coercedNumber().optional(),
+  reason: z.string().optional(),
+  approved: z.boolean().default(true),
+});
+
+export type ReviewMediaItem = z.infer<typeof reviewMediaItemSchema>;
+
+export const reviewEditActionSchema = z.object({
+  id: z.string(),
+  type: normalizedEnum(["cut", "keep", "insert_stock", "insert_ai_image", "add_caption", "add_text_overlay", "transition", "speed_change"], normalizeEditActionType),
+  start: coercedNumber().optional(),
+  end: coercedNumber().optional(),
+  duration: coercedNumber().optional(),
+  text: z.string().optional(),
+  reason: z.string().optional(),
+  approved: z.boolean().default(true),
+});
+
+export type ReviewEditAction = z.infer<typeof reviewEditActionSchema>;
+
+export const reviewTranscriptSegmentSchema = z.object({
+  id: z.string(),
+  start: coercedNumber(),
+  end: coercedNumber(),
+  text: z.string(),
+  words: z.array(wordTimingSchema).optional(),
+  emotion: z.string().optional(),
+  approved: z.boolean().default(true),
+  edited: z.boolean().default(false),
+});
+
+export type ReviewTranscriptSegment = z.infer<typeof reviewTranscriptSegmentSchema>;
+
+export const reviewDataSchema = z.object({
+  transcript: z.array(reviewTranscriptSegmentSchema),
+  editPlan: z.object({
+    actions: z.array(reviewEditActionSchema),
+    estimatedDuration: coercedNumber().optional(),
+    originalDuration: coercedNumber().optional(),
+  }),
+  stockMedia: z.array(reviewMediaItemSchema),
+  aiImages: z.array(reviewMediaItemSchema),
+  summary: z.object({
+    originalDuration: coercedNumber(),
+    estimatedFinalDuration: coercedNumber(),
+    totalCuts: coercedNumber(),
+    totalKeeps: coercedNumber(),
+    totalBroll: coercedNumber(),
+    totalAiImages: coercedNumber(),
+  }),
+  userApproved: z.boolean().default(false),
+  userNotes: z.string().optional(),
+});
+
+export type ReviewData = z.infer<typeof reviewDataSchema>;

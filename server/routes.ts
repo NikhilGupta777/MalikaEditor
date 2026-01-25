@@ -27,6 +27,7 @@ const processQuerySchema = z.object({
   removeSilence: booleanQueryParam(true),
   generateAiImages: booleanQueryParam(false),
   addTransitions: booleanQueryParam(false),
+  skipReview: booleanQueryParam(false),
 });
 
 // Helper to format Zod errors for user-friendly 400 responses
@@ -59,8 +60,8 @@ import {
   generateSmartEditPlan,
   detectFillerWords,
 } from "./services/aiService";
-import type { SemanticAnalysis, StockMediaItem, ProcessingStatus } from "@shared/schema";
-import { editPlanSchema } from "@shared/schema";
+import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment } from "@shared/schema";
+import { editPlanSchema, reviewDataSchema } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
 import { registerAuthRoutes } from "./routes/auth";
@@ -117,6 +118,103 @@ function getSecurePath(baseDir: string, requestedPath: string): string | null {
     return finalResolved;
   } catch {
     return null;
+  }
+}
+
+// Helper function to prepare review data for user approval
+function prepareReviewData(
+  transcript: Array<{ start: number; end: number; text: string; words?: Array<{ word: string; start: number; end: number }> }>,
+  editPlan: { actions?: Array<any>; estimatedDuration?: number },
+  stockMedia: StockMediaItem[],
+  originalDuration: number
+): ReviewData {
+  // Convert transcript to review format with IDs
+  const reviewTranscript: ReviewTranscriptSegment[] = transcript.map((seg, idx) => ({
+    id: `transcript_${idx}`,
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    words: seg.words,
+    approved: true,
+    edited: false,
+  }));
+
+  // Convert edit actions to review format with IDs and reasons
+  const reviewActions: ReviewEditAction[] = (editPlan.actions || []).map((action, idx) => ({
+    id: `action_${idx}`,
+    type: action.type,
+    start: action.start,
+    end: action.end,
+    duration: action.duration,
+    text: action.text,
+    reason: action.reason || getDefaultReason(action.type),
+    approved: true,
+  }));
+
+  // Separate stock media and AI images
+  const reviewStockMedia: ReviewMediaItem[] = stockMedia
+    .filter(m => m.type !== 'ai_generated')
+    .map((m, idx) => ({
+      id: `stock_${idx}`,
+      type: m.type as 'image' | 'video' | 'ai_generated',
+      query: m.query,
+      url: m.url,
+      thumbnailUrl: m.thumbnailUrl,
+      duration: m.duration,
+      startTime: m.startTime,
+      endTime: m.endTime,
+      reason: `Matches: "${m.query}"`,
+      approved: true,
+    }));
+
+  const reviewAiImages: ReviewMediaItem[] = stockMedia
+    .filter(m => m.type === 'ai_generated')
+    .map((m, idx) => ({
+      id: `ai_${idx}`,
+      type: 'ai_generated' as const,
+      query: m.aiPrompt || m.query,
+      url: m.url,
+      duration: m.duration,
+      startTime: m.startTime,
+      endTime: m.endTime,
+      reason: `AI generated for: "${m.aiPrompt?.substring(0, 50) || m.query}"`,
+      approved: true,
+    }));
+
+  // Calculate summary statistics
+  const cuts = reviewActions.filter(a => a.type === 'cut');
+  const keeps = reviewActions.filter(a => a.type === 'keep');
+  const totalCutDuration = cuts.reduce((sum, c) => sum + ((c.end || 0) - (c.start || 0)), 0);
+  const estimatedFinalDuration = editPlan.estimatedDuration || (originalDuration - totalCutDuration);
+
+  return {
+    transcript: reviewTranscript,
+    editPlan: {
+      actions: reviewActions,
+      estimatedDuration: estimatedFinalDuration,
+      originalDuration,
+    },
+    stockMedia: reviewStockMedia,
+    aiImages: reviewAiImages,
+    summary: {
+      originalDuration,
+      estimatedFinalDuration: Math.max(0, estimatedFinalDuration),
+      totalCuts: cuts.length,
+      totalKeeps: keeps.length,
+      totalBroll: reviewStockMedia.length,
+      totalAiImages: reviewAiImages.length,
+    },
+    userApproved: false,
+  };
+}
+
+function getDefaultReason(actionType: string): string {
+  switch (actionType) {
+    case 'cut': return 'Removing to improve pacing';
+    case 'keep': return 'Important content to retain';
+    case 'insert_stock': return 'Adding visual variety with B-roll';
+    case 'insert_ai_image': return 'AI-generated visual for context';
+    default: return 'Edit action';
   }
 }
 
@@ -295,7 +393,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: formatZodError(queryResult.error) });
     }
     
-    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions } = queryResult.data;
+    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions, skipReview } = queryResult.data;
     
     const editOptions: EditOptions = {
       addCaptions,
@@ -579,6 +677,39 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         }
       }
 
+      // Pause for user review if skipReview is false (default behavior)
+      if (!skipReview) {
+        sendActivity("Preparing edit preview for your review...");
+        
+        // Prepare review data with all gathered information
+        const reviewData = prepareReviewData(
+          transcript,
+          editPlan,
+          stockMedia,
+          metadata.duration
+        );
+        
+        // Store review data and update status
+        await storage.updateVideoProject(id, { 
+          reviewData,
+          status: "awaiting_review" as ProcessingStatus,
+        });
+        
+        await updateStatus("awaiting_review");
+        sendActivity("Analysis complete! Review your edit plan before rendering.");
+        
+        // Send review data to frontend
+        sendEvent("reviewReady", { 
+          reviewData,
+          message: "Please review the transcript, edit plan, and media selections before proceeding." 
+        });
+        
+        // End the SSE connection - user will trigger rendering separately
+        clearInterval(heartbeatInterval);
+        res.end();
+        return;
+      }
+
       await updateStatus("editing");
       sendActivity("Preparing to apply all edit actions...");
       checkAborted();
@@ -668,6 +799,262 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         res.end();
       }
     }
+  });
+
+  // Approve review and continue rendering
+  app.post("/api/videos/:id/approve-review", requireAuth, async (req: Request, res: Response) => {
+    const paramResult = idParamSchema.safeParse(req.params);
+    if (!paramResult.success) {
+      return res.status(400).json({ error: formatZodError(paramResult.error) });
+    }
+    const { id } = paramResult.data;
+
+    const project = await storage.getVideoProject(id);
+    if (!project) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+
+    if (project.status !== "awaiting_review") {
+      return res.status(400).json({ error: "Project is not awaiting review" });
+    }
+
+    // Get the updated review data from request body
+    const { reviewData: updatedReviewData } = req.body;
+    
+    if (updatedReviewData) {
+      // Validate the review data
+      const parseResult = reviewDataSchema.safeParse(updatedReviewData);
+      if (!parseResult.success) {
+        return res.status(400).json({ error: "Invalid review data", details: parseResult.error });
+      }
+      
+      // Store the updated review data
+      await storage.updateVideoProject(id, { 
+        reviewData: { ...parseResult.data, userApproved: true },
+      });
+    }
+
+    // Return success - the render endpoint will be called separately
+    res.json({ 
+      success: true, 
+      message: "Review approved. You can now proceed with rendering.",
+      projectId: id 
+    });
+  });
+
+  // Render video after review approval (SSE endpoint)
+  app.get("/api/videos/:id/render", requireAuth, async (req: Request, res: Response) => {
+    const paramResult = idParamSchema.safeParse(req.params);
+    if (!paramResult.success) {
+      return res.status(400).json({ error: formatZodError(paramResult.error) });
+    }
+    const { id } = paramResult.data;
+
+    const project = await storage.getVideoProject(id);
+    if (!project) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+
+    // Allow rendering from awaiting_review or completed status (re-render)
+    if (project.status !== "awaiting_review" && project.status !== "completed") {
+      return res.status(400).json({ error: "Project must be awaiting review or completed to render" });
+    }
+
+    const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
+    
+    try {
+      await fs.access(videoPath);
+    } catch {
+      return res.status(404).json({ error: "Video file not found. Please re-upload your video." });
+    }
+
+    // Set up SSE response
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    const abortController = new AbortController();
+    let connectionClosed = false;
+
+    req.on("close", () => {
+      connectionClosed = true;
+      abortController.abort();
+    });
+
+    const sendEvent = (type: string, data: Record<string, unknown>) => {
+      if (!connectionClosed) {
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
+    };
+
+    const heartbeatInterval = setInterval(() => {
+      if (!connectionClosed) {
+        res.write(": heartbeat\n\n");
+      }
+    }, 15000);
+
+    const sendActivity = (message: string, details?: Record<string, unknown>) => {
+      sendEvent("activity", { message, timestamp: Date.now(), ...details });
+    };
+
+    try {
+      // Get stored data from project
+      const editPlan = project.editPlan as { actions?: any[]; estimatedDuration?: number } | null;
+      const transcript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
+      const reviewData = project.reviewData as ReviewData | null;
+      let stockMedia = project.stockMedia as StockMediaItem[] || [];
+      
+      // If we have review data, apply user modifications
+      if (reviewData && reviewData.userApproved) {
+        // Filter out rejected items
+        const approvedActions = reviewData.editPlan.actions.filter(a => a.approved);
+        const approvedStockMedia = reviewData.stockMedia.filter(m => m.approved);
+        const approvedAiImages = reviewData.aiImages.filter(m => m.approved);
+        
+        // Update edit plan with only approved actions
+        if (editPlan) {
+          editPlan.actions = approvedActions;
+        }
+        
+        // Update stock media with only approved items
+        stockMedia = [
+          ...approvedStockMedia.map(m => ({
+            type: m.type,
+            query: m.query,
+            url: m.url,
+            thumbnailUrl: m.thumbnailUrl,
+            duration: m.duration,
+            startTime: m.startTime,
+            endTime: m.endTime,
+          } as StockMediaItem)),
+          ...approvedAiImages.map(m => ({
+            type: 'ai_generated' as const,
+            query: m.query,
+            url: m.url,
+            duration: m.duration,
+            aiPrompt: m.query,
+            startTime: m.startTime,
+            endTime: m.endTime,
+          } as StockMediaItem)),
+        ];
+        
+        sendActivity(`Applying ${approvedActions.length} approved edit actions...`);
+      }
+
+      if (!editPlan || !editPlan.actions) {
+        throw new Error("No edit plan found. Please run analysis first.");
+      }
+      
+      // Ensure editPlan has proper structure for applyEdits
+      const finalEditPlan = {
+        ...editPlan,
+        actions: editPlan.actions || [],
+      };
+
+      // Get edit options from the stored analysis
+      const analysis = project.analysis as { semanticAnalysis?: SemanticAnalysis } | null;
+      const semanticAnalysis = analysis?.semanticAnalysis;
+
+      await storage.updateVideoProject(id, { status: "editing" as ProcessingStatus });
+      sendEvent("status", { status: "editing" });
+      sendActivity("Preparing to apply all edit actions...");
+
+      await storage.updateVideoProject(id, { status: "rendering" as ProcessingStatus });
+      sendEvent("status", { status: "rendering" });
+      sendActivity("Starting FFmpeg rendering engine...");
+      sendActivity("Cutting segments, adding overlays, and encoding video...");
+
+      // Use stored edit options or defaults
+      const editOptions: EditOptions = {
+        addCaptions: true,
+        addBroll: stockMedia.length > 0,
+        removeSilence: true,
+        generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
+        addTransitions: false,
+      };
+
+      const editResult = await applyEdits(
+        videoPath,
+        finalEditPlan,
+        transcript,
+        stockMedia,
+        editOptions,
+        undefined,
+        semanticAnalysis
+      );
+
+      sendActivity("Video rendering complete! Finalizing output...");
+
+      // Verify output
+      const outputMetadata = await getVideoMetadata(editResult.outputPath);
+      const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
+      
+      sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s, ready for download!`);
+      
+      await storage.updateVideoProject(id, {
+        status: "completed" as ProcessingStatus,
+        outputPath: publicOutputPath,
+        duration: Math.round(outputMetadata.duration),
+      });
+
+      sendEvent("complete", {
+        outputPath: publicOutputPath,
+        duration: Math.round(outputMetadata.duration),
+        aiImageStats: editOptions.generateAiImages ? {
+          applied: editResult.aiImagesApplied,
+          skipped: editResult.aiImagesSkipped,
+        } : undefined,
+      });
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Rendering failed";
+      routesLogger.error("Render error:", error);
+      
+      const friendlyError = formatErrorForSSE(error instanceof Error ? error : new Error(errorMessage));
+      
+      await storage.updateVideoProject(id, {
+        status: "failed" as ProcessingStatus,
+        errorMessage: friendlyError.error,
+      });
+
+      sendEvent("error", {
+        error: friendlyError.error,
+        suggestion: friendlyError.suggestion,
+        errorType: friendlyError.errorType,
+      });
+    } finally {
+      clearInterval(heartbeatInterval);
+      if (!connectionClosed) {
+        res.end();
+      }
+    }
+  });
+
+  // Get review data for a project
+  app.get("/api/videos/:id/review", requireAuth, async (req: Request, res: Response) => {
+    const paramResult = idParamSchema.safeParse(req.params);
+    if (!paramResult.success) {
+      return res.status(400).json({ error: formatZodError(paramResult.error) });
+    }
+    const { id } = paramResult.data;
+
+    const project = await storage.getVideoProject(id);
+    if (!project) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+
+    if (!project.reviewData) {
+      return res.status(404).json({ error: "No review data available" });
+    }
+
+    res.json({
+      reviewData: project.reviewData,
+      status: project.status,
+      transcript: project.transcript,
+      editPlan: project.editPlan,
+      stockMedia: project.stockMedia,
+    });
   });
 
   // Enhanced analysis endpoint - returns full analysis data

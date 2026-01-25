@@ -697,16 +697,33 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   }
 
   // Build dialogue lines with karaoke effect
+  // CRITICAL: Each phrase must have NON-OVERLAPPING timing to show one at a time
   const dialogueLines: string[] = [];
   
-  for (const phrase of phrases) {
+  for (let p = 0; p < phrases.length; p++) {
+    const phrase = phrases[p];
     if (phrase.length === 0) continue;
     
     const phraseStart = phrase[0].start;
-    const phraseEnd = phrase[phrase.length - 1].end;
+    // End this phrase RIGHT BEFORE the next phrase starts (no overlap)
+    // This ensures only ONE phrase shows at any time
+    const nextPhrase = phrases[p + 1];
+    let phraseEnd: number;
+    
+    if (nextPhrase && nextPhrase.length > 0) {
+      // End 0.01s before next phrase to prevent any overlap
+      phraseEnd = Math.max(phrase[phrase.length - 1].end, nextPhrase[0].start - 0.01);
+    } else {
+      // Last phrase - use actual end time
+      phraseEnd = phrase[phrase.length - 1].end;
+    }
+    
+    // Ensure end is always after start
+    if (phraseEnd <= phraseStart) {
+      phraseEnd = phraseStart + 0.5;
+    }
     
     // Build karaoke text with \k timing for each word
-    // \k<duration> highlights the word over that duration (in centiseconds)
     let karaokeText = '';
     
     for (let i = 0; i < phrase.length; i++) {

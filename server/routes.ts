@@ -358,6 +358,10 @@ export async function registerRoutes(
       sendEvent("status", { status });
     };
 
+    const sendActivity = (message: string, details?: Record<string, unknown>) => {
+      sendEvent("activity", { message, timestamp: Date.now(), ...details });
+    };
+
     let tempFiles: string[] = [];
     let transcript: { start: number; end: number; text: string }[] = [];
 
@@ -365,29 +369,40 @@ export async function registerRoutes(
       await storage.updateVideoProject(id, { prompt });
 
       await updateStatus("analyzing");
+      sendActivity("Reading video metadata...");
       const metadata = await getVideoMetadata(videoPath);
-      checkAborted(); // Check after metadata extraction
+      sendActivity(`Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width}x${metadata.height}`, { duration: metadata.duration });
+      checkAborted();
 
       const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
+      sendActivity(`Extracting ${numFrames} key frames for AI analysis...`);
       const framePaths = await extractFrames(videoPath, numFrames);
+      sendActivity(`Extracted ${framePaths.length} frames successfully`);
       tempFiles.push(path.dirname(framePaths[0]));
-      checkAborted(); // Check after frame extraction
+      checkAborted();
 
       let silentSegments: { start: number; end: number }[] = [];
       if (editOptions.removeSilence) {
+        sendActivity("Scanning audio for silent segments...");
         silentSegments = await detectSilence(videoPath);
-        checkAborted(); // Check after silence detection
+        sendActivity(`Found ${silentSegments.length} silent segments to remove`, { silentCount: silentSegments.length });
+        checkAborted();
       }
 
       await updateStatus("transcribing");
+      sendActivity("Extracting audio track...");
       const audioPath = await extractAudio(videoPath);
       tempFiles.push(audioPath);
-      checkAborted(); // Check after audio extraction
+      checkAborted();
 
+      sendActivity("Running speech-to-text AI (this may take a moment)...");
       transcript = await transcribeAudio(audioPath);
-      checkAborted(); // Check after transcription (expensive AI call)
+      sendActivity(`Transcribed ${transcript.length} speech segments with timestamps`, { segments: transcript.length });
+      checkAborted();
 
       // Use deep video analysis for comprehensive AI-powered insights
+      sendActivity("Starting deep AI video analysis...");
+      sendActivity("AI is watching your video to understand content, emotions, and key moments...");
       routesLogger.info("Performing deep video analysis...");
       const deepAnalysisResult = await analyzeVideoDeep(
         framePaths,
@@ -395,9 +410,19 @@ export async function registerRoutes(
         silentSegments,
         transcript
       );
-      checkAborted(); // Check after deep analysis (expensive AI call)
+      checkAborted();
 
       const { videoAnalysis: analysis, semanticAnalysis, fillerSegments, qualityInsights } = deepAnalysisResult;
+      
+      sendActivity(`AI detected ${semanticAnalysis.keyMoments?.length || 0} key moments in your video`);
+      sendActivity(`Found ${fillerSegments.length} filler words (um, uh, like...)`, { fillerCount: fillerSegments.length });
+      sendActivity(`Hook strength score: ${qualityInsights.hookStrength}/100`, { hookScore: qualityInsights.hookStrength });
+      if (semanticAnalysis.mainTopics?.length > 0) {
+        sendActivity(`Main topics identified: ${semanticAnalysis.mainTopics.slice(0, 3).join(", ")}`);
+      }
+      if (semanticAnalysis.brollWindows?.length > 0) {
+        sendActivity(`Identified ${semanticAnalysis.brollWindows.length} opportunities for B-roll`, { brollOpportunities: semanticAnalysis.brollWindows.length });
+      }
 
       // Detect language and translate if needed for non-English content
       if (transcript.length > 0) {
@@ -428,6 +453,8 @@ export async function registerRoutes(
       });
 
       await updateStatus("planning");
+      sendActivity("Creating intelligent edit plan using multi-pass AI system...");
+      sendActivity("Pass 1: Analyzing narrative structure (intro/body/outro)...");
       
       routesLogger.info("Deep analysis complete:", {
         topics: semanticAnalysis.mainTopics,
@@ -446,7 +473,9 @@ User has selected these options:
 
 Please create an edit plan that follows these preferences. Do NOT include any transition effects - transitions are not supported.`;
 
-      checkAborted(); // Check before edit plan generation
+      checkAborted();
+      sendActivity("Pass 2: Scoring content quality and engagement levels...");
+      sendActivity("Pass 3: Optimizing B-roll placement and distribution...");
       // Use smart multi-pass edit planning for better results
       const editPlan = await generateSmartEditPlan(
         enhancedPrompt,
@@ -455,7 +484,14 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         semanticAnalysis,
         fillerSegments
       );
-      checkAborted(); // Check after edit plan generation
+      checkAborted();
+      
+      sendActivity("Pass 4: Quality review - validating edit plan...");
+      sendActivity(`Edit plan created with ${editPlan.actions?.length || 0} edit actions`, { actionCount: editPlan.actions?.length || 0 });
+      const stockQueryCount = editPlan.stockQueries?.length || 0;
+      if (stockQueryCount > 0) {
+        sendActivity(`Generated ${stockQueryCount} B-roll search queries`);
+      }
 
       await storage.updateVideoProject(id, { editPlan });
       sendEvent("editPlan", { editPlan });
@@ -463,10 +499,15 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       let stockMedia: StockMediaItem[] = [];
       if (editOptions.addBroll) {
         await updateStatus("fetching_stock");
-        checkAborted(); // Check before stock media fetch
         const stockQueries = editPlan.stockQueries || [];
+        sendActivity(`Searching Pexels for ${stockQueries.length} B-roll clips...`);
+        for (let i = 0; i < Math.min(3, stockQueries.length); i++) {
+          sendActivity(`Searching: "${stockQueries[i].substring(0, 50)}..."`);
+        }
+        checkAborted();
         stockMedia = await fetchStockMedia(stockQueries);
-        checkAborted(); // Check after stock media fetch
+        sendActivity(`Found ${stockMedia.length} stock media clips`, { stockCount: stockMedia.length });
+        checkAborted();
         await storage.updateVideoProject(id, { stockMedia });
         sendEvent("stockMedia", { stockMedia });
       }
@@ -475,7 +516,8 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       let aiGeneratedImages: StockMediaItem[] = [];
       if (editOptions.generateAiImages && semanticAnalysis && semanticAnalysis.brollWindows.length > 0) {
         await updateStatus("generating_ai_images");
-        checkAborted(); // Check before AI image generation
+        sendActivity("Preparing to generate custom AI images...");
+        checkAborted();
         routesLogger.info("Generating AI images based on video content...");
         
         try {
@@ -483,15 +525,17 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
           // Target: ~1 AI image per 8-10 seconds of video, minimum 3, maximum 12
           const videoDuration = metadata.duration;
           const optimalImages = Math.min(12, Math.max(3, Math.ceil(videoDuration / 8)));
+          sendActivity(`Targeting ${optimalImages} AI images for ${videoDuration.toFixed(0)}s video...`);
           routesLogger.info(`Video is ${videoDuration.toFixed(1)}s, targeting ${optimalImages} AI images`);
           
+          sendActivity("Sending image prompts to Gemini AI...");
           const generatedImages = await generateAiImagesForVideo(
             semanticAnalysis,
             analysis.context,
             optimalImages,
             videoDuration  // Pass video duration for distribution logic
           );
-          checkAborted(); // Check after AI image generation (expensive operation)
+          checkAborted();
           
           // Convert to StockMediaItem format and save to files with timing info
           for (let i = 0; i < generatedImages.length; i++) {
@@ -517,6 +561,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
             routesLogger.debug(`AI image ${i}: "${img.prompt.substring(0, 40)}..." at ${img.startTime.toFixed(1)}s-${img.endTime.toFixed(1)}s`);
           }
           
+          sendActivity(`Successfully generated ${aiGeneratedImages.length} AI images`, { aiImageCount: aiGeneratedImages.length });
           routesLogger.info(`Generated ${aiGeneratedImages.length} AI images`);
           sendEvent("aiImages", { count: aiGeneratedImages.length });
           
@@ -524,14 +569,18 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
           stockMedia = [...stockMedia, ...aiGeneratedImages];
           await storage.updateVideoProject(id, { stockMedia });
         } catch (aiError) {
+          sendActivity("AI image generation encountered an issue, continuing with stock media...");
           routesLogger.error("AI image generation failed, continuing with stock media:", aiError);
           sendEvent("aiImagesError", { error: "AI image generation failed, using stock media only" });
         }
       }
 
       await updateStatus("editing");
-      checkAborted(); // Check before final rendering (most expensive operation)
+      sendActivity("Preparing to apply all edit actions...");
+      checkAborted();
       await updateStatus("rendering");
+      sendActivity("Starting FFmpeg rendering engine...");
+      sendActivity("Cutting segments, adding overlays, and encoding video...");
 
       const editResult = await applyEdits(
         videoPath, 
@@ -542,8 +591,11 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       );
       checkAborted(); // Check after rendering
       
+      sendActivity("Video rendering complete! Finalizing output...");
+      
       // Send SSE event with AI image placement stats
       if (editOptions.generateAiImages) {
+        sendActivity(`Applied ${editResult.aiImagesApplied} AI images, ${editResult.stockMediaApplied} stock clips`);
         sendEvent("aiImageStats", {
           applied: editResult.aiImagesApplied,
           skipped: editResult.aiImagesSkipped,
@@ -552,9 +604,11 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         });
       }
       
+      sendActivity("Verifying output video...");
       const outputMetadata = await getVideoMetadata(editResult.outputPath);
 
       const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
+      sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s, ready for download!`);
       await storage.updateVideoProject(id, {
         status: "completed",
         outputPath: publicOutputPath,

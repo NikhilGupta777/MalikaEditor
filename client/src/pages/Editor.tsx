@@ -11,6 +11,7 @@ import { StockMediaPreview } from "@/components/StockMediaPreview";
 import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TranscriptEditor } from "@/components/TranscriptEditor";
+import { ActivityLog } from "@/components/ActivityLog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -53,6 +54,12 @@ interface StructureAnalysis {
   outroStart?: number;
 }
 
+interface ActivityItem {
+  message: string;
+  timestamp: number;
+  details?: Record<string, unknown>;
+}
+
 interface VideoProject {
   id: number;
   fileName: string;
@@ -87,6 +94,7 @@ export default function Editor() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [currentTime, setCurrentTime] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [editMode, setEditMode] = useState<EditMode>("ai");
@@ -194,6 +202,7 @@ export default function Editor() {
       if (!project) return;
 
       setIsProcessing(true);
+      setActivities([]);
 
       try {
         const params = new URLSearchParams({
@@ -265,7 +274,17 @@ export default function Editor() {
               description: data.error || "AI images unavailable, using stock media",
               variant: "default",
             });
+          } else if (data.type === "activity") {
+            setActivities((prev) => [...prev, {
+              message: data.message,
+              timestamp: data.timestamp,
+              details: data.details,
+            }]);
           } else if (data.type === "complete") {
+            setActivities((prev) => [...prev, {
+              message: "Processing complete! Your video is ready.",
+              timestamp: Date.now(),
+            }]);
             setProject((prev) =>
               prev
                 ? {
@@ -497,6 +516,11 @@ export default function Editor() {
                   stockMediaCount={project.stockMedia?.length}
                   editActionsCount={project.editPlan?.actions?.length}
                 />
+              )}
+
+              {/* AI Activity Log */}
+              {(isProcessing || activities.length > 0) && project?.status !== "completed" && (
+                <ActivityLog activities={activities} isProcessing={isProcessing} />
               )}
 
               {/* Completed */}

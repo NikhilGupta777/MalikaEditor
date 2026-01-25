@@ -37,7 +37,7 @@ The AI services have been modularized into focused modules in `server/services/a
 | Module | Lines | Purpose |
 |--------|-------|---------|
 | `clients.ts` | 35 | Lazy-loading Gemini and OpenAI client initialization |
-| `transcription.ts` | 115 | OpenAI Whisper-1 transcription with word-level timestamps |
+| `transcription.ts` | 220 | Multi-provider transcription with OpenAI + Gemini fallback |
 | `videoAnalysis.ts` | 623 | Frame analysis, deep video analysis, quality insights |
 | `semanticAnalysis.ts` | 450 | Transcript semantics, filler detection, language detection |
 | `editPlanning.ts` | 473 | Multi-pass edit planning orchestration |
@@ -54,9 +54,12 @@ The AI services have been modularized into focused modules in `server/services/a
   - Key Moment Detection: Identifies hooks, climaxes, call-to-actions, key points
 
 #### Layer 2: Smart Transcript Analysis
-- **Audio Transcription**: OpenAI Whisper-1 model with verbose_json format for word-level timing
-  - Note: Local whisper.cpp is not configured; system uses OpenAI API exclusively
-  - Startup health check confirms transcription mode
+- **Audio Transcription**: Multi-provider system with automatic fallback:
+  - Primary: OpenAI gpt-4o-mini-transcribe (via AI Integrations)
+  - Fallback: Gemini 2.5 Flash for audio transcription
+  - Retry logic with exponential backoff (3 attempts per provider)
+  - Supports all languages including Hindi, English, and mixed-language audio
+  - Startup health check confirms available providers
 - **Filler Word Detection**: Automatically detects "um", "uh", "like", "you know", "basically", etc.
 - **Hook Analysis**: Scores the first 3-10 seconds for attention-grabbing strength (0-100)
 - **Structure Analysis**: Detects intro/main/outro section boundaries

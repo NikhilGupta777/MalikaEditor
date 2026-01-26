@@ -83,11 +83,13 @@ interface VideoProject {
   fileName: string;
   originalPath: string;
   outputPath?: string | null;
+  prompt?: string | null;
   status: ProcessingStatusType;
   duration?: number | null;
   editPlan?: EditPlan | null;
   transcript?: TranscriptSegment[] | null;
   stockMedia?: StockMediaItem[] | null;
+  reviewData?: ReviewData | null;
   errorMessage?: string | null;
   errorSuggestion?: string | null;
   errorType?: ErrorType | null;
@@ -590,8 +592,14 @@ export default function Editor() {
     }
   }, [project?.id, updateEditPlanMutation]);
 
-  const handleRetryProcessing = useCallback(() => {
-    if (project) {
+  const handleRetryProcessing = useCallback(async () => {
+    if (!project) return;
+    
+    try {
+      // First, call backend to reset project status in database
+      await apiRequest("POST", `/api/videos/${project.id}/retry`, { stage: "all" });
+      
+      // Reset local state
       setProject((prev) => prev ? { 
         ...prev, 
         status: "pending", 
@@ -600,8 +608,74 @@ export default function Editor() {
         errorType: undefined,
       } : null);
       setActivities([]);
+      setIsProcessing(true);
+      
+      // Get stored edit options from reviewData or use defaults
+      const storedOptions = project.reviewData?.editOptions || editOptions;
+      
+      // Restart processing SSE connection with same prompt
+      const params = new URLSearchParams({
+        prompt: project.prompt || "Edit my video",
+        addCaptions: String(storedOptions.addCaptions ?? true),
+        addBroll: String(storedOptions.addBroll ?? true),
+        removeSilence: String(storedOptions.removeSilence ?? true),
+        generateAiImages: String(storedOptions.generateAiImages ?? true),
+        addTransitions: String(storedOptions.addTransitions ?? true),
+      });
+      
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+      
+      const eventSource = new EventSource(`/api/videos/${project.id}/process?${params.toString()}`);
+      eventSourceRef.current = eventSource;
+      
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === "status") {
+          setProject((prev) => prev ? { ...prev, status: data.status } : null);
+        } else if (data.type === "editPlan") {
+          setProject((prev) => prev ? { ...prev, editPlan: data.editPlan } : null);
+        } else if (data.type === "stockMedia") {
+          setProject((prev) => prev ? { ...prev, stockMedia: data.stockMedia } : null);
+        } else if (data.type === "aiImageStats") {
+          setProject((prev) => prev ? { ...prev, aiImageStats: data } : null);
+        } else if (data.type === "transcript") {
+          setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
+        } else if (data.type === "reviewReady") {
+          setReviewData(data.reviewData);
+          setProject((prev) => prev ? { ...prev, status: "awaiting_review", reviewData: data.reviewData } : null);
+        } else if (data.type === "activity") {
+          setActivities((prev) => [...prev, { message: data.message, timestamp: Date.now() }]);
+        } else if (data.type === "error") {
+          setProject((prev) => prev ? { 
+            ...prev, 
+            status: "failed", 
+            errorMessage: data.message,
+            errorSuggestion: data.suggestion,
+            errorType: data.errorType,
+          } : null);
+          toast({ title: "Processing failed", description: data.message, variant: "destructive" });
+        } else if (data.type === "complete") {
+          eventSource.close();
+        }
+      };
+      
+      eventSource.onerror = () => {
+        eventSource.close();
+        setIsProcessing(false);
+      };
+      
+    } catch (error) {
+      console.error("Failed to retry processing:", error);
+      toast({
+        title: "Retry failed",
+        description: "Could not restart processing. Please try uploading a new video.",
+        variant: "destructive",
+      });
     }
-  }, [project]);
+  }, [project, editOptions, toast]);
 
   const handleTranscriptionRetryStart = useCallback(() => {
     if (!project) return;

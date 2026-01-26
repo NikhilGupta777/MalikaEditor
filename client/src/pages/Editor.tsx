@@ -138,6 +138,9 @@ export default function Editor() {
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const [isRendering, setIsRendering] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const MAX_RECONNECT_ATTEMPTS = 5;
   
   // Load project from URL if project ID is present
   const { data: loadedProject, isLoading: isLoadingProject } = useQuery<VideoProject>({
@@ -174,87 +177,100 @@ export default function Editor() {
       if (loadedProject.status === "rendering") {
         console.log("Reconnecting to in-progress rendering...");
         setIsRendering(true);
+        reconnectAttemptsRef.current = 0;
         
-        const params = new URLSearchParams();
-        params.append("reconnect", "true");
-        
-        const eventSource = new EventSource(
-          `/api/videos/${loadedProject.id}/render?${params.toString()}`
-        );
-        eventSourceRef.current = eventSource;
-        
-        eventSource.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          
-          if (data.type === "status") {
-            setProject((prev) => prev ? { ...prev, status: data.status } : null);
-          } else if (data.type === "activity") {
-            setActivities((prev) => {
-              const newActivity = { message: data.message, timestamp: data.timestamp };
-              const updated = [...prev, newActivity];
-              return updated.length > 100 ? updated.slice(-100) : updated;
-            });
-          } else if (data.type === "complete") {
-            setProject((prev) =>
-              prev ? {
-                ...prev,
-                status: "completed",
-                outputPath: data.outputPath,
-                duration: data.duration,
-              } : null
-            );
-            setPreviewUrl(data.outputPath);
-            setIsRendering(false);
-            setActivities([]);
-            eventSource.close();
-            eventSourceRef.current = null;
-          } else if (data.type === "error") {
-            setProject((prev) =>
-              prev ? { ...prev, status: "failed", errorMessage: data.error } : null
-            );
-            setIsRendering(false);
-            eventSource.close();
-            eventSourceRef.current = null;
+        const connectRenderSSE = (projectId: number) => {
+          // Clear any pending reconnect timeout
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
           }
+          
+          const params = new URLSearchParams();
+          params.append("reconnect", "true");
+          
+          const eventSource = new EventSource(
+            `/api/videos/${projectId}/render?${params.toString()}`
+          );
+          eventSourceRef.current = eventSource;
+          
+          eventSource.onmessage = (event) => {
+            reconnectAttemptsRef.current = 0; // Reset on successful message
+            const data = JSON.parse(event.data);
+            
+            if (data.type === "status") {
+              setProject((prev) => prev ? { ...prev, status: data.status } : null);
+            } else if (data.type === "activity") {
+              setActivities((prev) => {
+                const newActivity = { message: data.message, timestamp: data.timestamp };
+                const updated = [...prev, newActivity];
+                return updated.length > 100 ? updated.slice(-100) : updated;
+              });
+            } else if (data.type === "complete") {
+              setProject((prev) =>
+                prev ? {
+                  ...prev,
+                  status: "completed",
+                  outputPath: data.outputPath,
+                  duration: data.duration,
+                } : null
+              );
+              setPreviewUrl(data.outputPath);
+              setIsRendering(false);
+              setActivities([]);
+              eventSource.close();
+              eventSourceRef.current = null;
+            } else if (data.type === "error") {
+              setProject((prev) =>
+                prev ? { ...prev, status: "failed", errorMessage: data.error } : null
+              );
+              setIsRendering(false);
+              eventSource.close();
+              eventSourceRef.current = null;
+            }
+          };
+          
+          eventSource.onerror = () => {
+            console.log("Render SSE connection lost, attempting reconnection...");
+            eventSource.close();
+            eventSourceRef.current = null;
+            
+            // Fetch current status and reconnect if still rendering
+            fetch(`/api/videos/${projectId}`)
+              .then(res => res.json())
+              .then(data => {
+                if (data.status === "completed") {
+                  setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
+                  setPreviewUrl(data.outputPath);
+                  setIsRendering(false);
+                } else if (data.status === "failed") {
+                  setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
+                  setIsRendering(false);
+                } else if (data.status === "rendering") {
+                  // Check retry limit
+                  if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+                    console.log("Max reconnection attempts reached");
+                    setIsRendering(false);
+                    return;
+                  }
+                  // Still rendering - reconnect with exponential backoff
+                  reconnectAttemptsRef.current++;
+                  const delay = Math.min(2000 * Math.pow(1.5, reconnectAttemptsRef.current - 1), 10000);
+                  console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+                  reconnectTimeoutRef.current = setTimeout(() => {
+                    connectRenderSSE(projectId);
+                  }, delay);
+                } else {
+                  setIsRendering(false);
+                }
+              })
+              .catch(() => {
+                setIsRendering(false);
+              });
+          };
         };
         
-        eventSource.onerror = () => {
-          console.log("Render SSE connection lost, attempting reconnection...");
-          eventSource.close();
-          eventSourceRef.current = null;
-          
-          // Fetch current status and reconnect if still rendering
-          fetch(`/api/videos/${loadedProject.id}`)
-            .then(res => res.json())
-            .then(data => {
-              if (data.status === "completed") {
-                setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
-                setPreviewUrl(data.outputPath);
-                setIsRendering(false);
-              } else if (data.status === "failed") {
-                setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
-                setIsRendering(false);
-              } else if (data.status === "rendering") {
-                // Still rendering - reconnect after a short delay
-                setTimeout(() => {
-                  const retryParams = new URLSearchParams();
-                  retryParams.append("reconnect", "true");
-                  const retryEventSource = new EventSource(
-                    `/api/videos/${loadedProject.id}/render?${retryParams.toString()}`
-                  );
-                  eventSourceRef.current = retryEventSource;
-                  
-                  retryEventSource.onmessage = eventSource.onmessage;
-                  retryEventSource.onerror = eventSource.onerror;
-                }, 2000);
-              } else {
-                setIsRendering(false);
-              }
-            })
-            .catch(() => {
-              setIsRendering(false);
-            });
-        };
+        connectRenderSSE(loadedProject.id);
       }
       
       // Auto-reconnect to processing if project is in a processing state
@@ -262,128 +278,128 @@ export default function Editor() {
       if (processingStates.includes(loadedProject.status)) {
         console.log("Reconnecting to in-progress processing...");
         setIsProcessing(true);
+        reconnectAttemptsRef.current = 0;
         
-        // Use stored editOptions from reviewData or project, fallback to defaults
         const storedOptions = loadedProject.reviewData?.editOptions;
-        const params = new URLSearchParams({
-          prompt: loadedProject.prompt || "",
-          addCaptions: String(storedOptions?.addCaptions ?? true),
-          addBroll: String(storedOptions?.addBroll ?? true), 
-          removeSilence: String(storedOptions?.removeSilence ?? true),
-          generateAiImages: String(storedOptions?.generateAiImages ?? false),
-          addTransitions: String(storedOptions?.addTransitions ?? false),
-          reconnect: "true",
-        });
-        
-        // Check for stored lastEventId from sessionStorage for page refresh recovery
         const sessionKey = `sse_lastEventId_process_${loadedProject.id}`;
-        const storedLastEventId = sessionStorage.getItem(sessionKey);
-        if (storedLastEventId) {
-          params.append("lastEventId", storedLastEventId);
-        }
         
-        const eventSource = new EventSource(
-          `/api/videos/${loadedProject.id}/process?${params.toString()}`
-        );
-        eventSourceRef.current = eventSource;
-        
-        eventSource.onmessage = (event) => {
-          // Store lastEventId for reconnection support
-          if (event.lastEventId) {
-            sessionStorage.setItem(sessionKey, event.lastEventId);
+        const connectProcessSSE = (projectId: number) => {
+          // Clear any pending reconnect timeout
+          if (reconnectTimeoutRef.current) {
+            clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
           }
-          const data = JSON.parse(event.data);
           
-          if (data.type === "status") {
-            setProject((prev) => prev ? { ...prev, status: data.status } : null);
-          } else if (data.type === "activity") {
-            setActivities((prev) => {
-              const newActivity = { message: data.message, timestamp: data.timestamp };
-              const updated = [...prev, newActivity];
-              return updated.length > 100 ? updated.slice(-100) : updated;
-            });
-          } else if (data.type === "reviewReady") {
-            setReviewData(data.reviewData);
-            setProject((prev) => prev ? { ...prev, status: "awaiting_review" } : null);
-            setIsProcessing(false);
-            eventSource.close();
-          } else if (data.type === "error") {
-            setProject((prev) =>
-              prev
-                ? { 
-                    ...prev, 
-                    status: "failed", 
-                    errorMessage: data.error,
-                    errorSuggestion: data.suggestion,
-                    errorType: data.errorType,
-                  }
-                : null
-            );
-            setIsProcessing(false);
-            eventSource.close();
-          } else if (data.type === "editPlan") {
-            setProject((prev) => prev ? { ...prev, editPlan: data.editPlan } : null);
-          } else if (data.type === "stockMedia") {
-            setProject((prev) => prev ? { ...prev, stockMedia: data.stockMedia } : null);
-          } else if (data.type === "transcript") {
-            setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
+          const params = new URLSearchParams({
+            prompt: loadedProject.prompt || "",
+            addCaptions: String(storedOptions?.addCaptions ?? true),
+            addBroll: String(storedOptions?.addBroll ?? true), 
+            removeSilence: String(storedOptions?.removeSilence ?? true),
+            generateAiImages: String(storedOptions?.generateAiImages ?? false),
+            addTransitions: String(storedOptions?.addTransitions ?? false),
+            reconnect: "true",
+          });
+          
+          const storedLastEventId = sessionStorage.getItem(sessionKey);
+          if (storedLastEventId) {
+            params.append("lastEventId", storedLastEventId);
           }
-        };
-        
-        eventSource.onerror = () => {
-          console.log("Processing SSE connection lost, fetching current status...");
-          eventSource.close();
-          eventSourceRef.current = null;
           
-          // Fetch current project status to update UI correctly
-          fetch(`/api/videos/${loadedProject.id}`)
-            .then(res => res.json())
-            .then(data => {
-              setProject(data);
-              // Check if processing completed while disconnected
-              if (data.status === "awaiting_review") {
-                setIsProcessing(false);
-                if (data.reviewData) {
-                  setReviewData(data.reviewData);
-                }
-              } else if (data.status === "completed") {
-                setIsProcessing(false);
-                if (data.outputPath) {
-                  setPreviewUrl(data.outputPath);
-                }
-              } else if (data.status === "failed") {
-                setIsProcessing(false);
-              } else if (processingStates.includes(data.status)) {
-                // Still processing - auto-reconnect after a short delay
-                setTimeout(() => {
-                  console.log("Reconnecting to processing stream...");
-                  const retryParams = new URLSearchParams({
-                    prompt: loadedProject.prompt || "",
-                    addCaptions: String(storedOptions?.addCaptions ?? true),
-                    addBroll: String(storedOptions?.addBroll ?? true), 
-                    removeSilence: String(storedOptions?.removeSilence ?? true),
-                    generateAiImages: String(storedOptions?.generateAiImages ?? false),
-                    addTransitions: String(storedOptions?.addTransitions ?? false),
-                    reconnect: "true",
-                  });
-                  const storedEventId = sessionStorage.getItem(sessionKey);
-                  if (storedEventId) {
-                    retryParams.append("lastEventId", storedEventId);
-                  }
-                  const retryEventSource = new EventSource(
-                    `/api/videos/${loadedProject.id}/process?${retryParams.toString()}`
-                  );
-                  eventSourceRef.current = retryEventSource;
-                  retryEventSource.onmessage = eventSource.onmessage;
-                  retryEventSource.onerror = eventSource.onerror;
-                }, 2000);
-              }
-            })
-            .catch(err => {
-              console.error("Failed to fetch project status:", err);
+          const eventSource = new EventSource(
+            `/api/videos/${projectId}/process?${params.toString()}`
+          );
+          eventSourceRef.current = eventSource;
+          
+          eventSource.onmessage = (event) => {
+            reconnectAttemptsRef.current = 0; // Reset on successful message
+            if (event.lastEventId) {
+              sessionStorage.setItem(sessionKey, event.lastEventId);
+            }
+            const data = JSON.parse(event.data);
+            
+            if (data.type === "status") {
+              setProject((prev) => prev ? { ...prev, status: data.status } : null);
+            } else if (data.type === "activity") {
+              setActivities((prev) => {
+                const newActivity = { message: data.message, timestamp: data.timestamp };
+                const updated = [...prev, newActivity];
+                return updated.length > 100 ? updated.slice(-100) : updated;
+              });
+            } else if (data.type === "reviewReady") {
+              setReviewData(data.reviewData);
+              setProject((prev) => prev ? { ...prev, status: "awaiting_review" } : null);
               setIsProcessing(false);
-            });
+              eventSource.close();
+              eventSourceRef.current = null;
+            } else if (data.type === "error") {
+              setProject((prev) =>
+                prev
+                  ? { 
+                      ...prev, 
+                      status: "failed", 
+                      errorMessage: data.error,
+                      errorSuggestion: data.suggestion,
+                      errorType: data.errorType,
+                    }
+                  : null
+              );
+              setIsProcessing(false);
+              eventSource.close();
+              eventSourceRef.current = null;
+            } else if (data.type === "editPlan") {
+              setProject((prev) => prev ? { ...prev, editPlan: data.editPlan } : null);
+            } else if (data.type === "stockMedia") {
+              setProject((prev) => prev ? { ...prev, stockMedia: data.stockMedia } : null);
+            } else if (data.type === "transcript") {
+              setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
+            }
+          };
+          
+          eventSource.onerror = () => {
+            console.log("Processing SSE connection lost, fetching current status...");
+            eventSource.close();
+            eventSourceRef.current = null;
+            
+            fetch(`/api/videos/${projectId}`)
+              .then(res => res.json())
+              .then(data => {
+                setProject(data);
+                if (data.status === "awaiting_review") {
+                  setIsProcessing(false);
+                  if (data.reviewData) {
+                    setReviewData(data.reviewData);
+                  }
+                } else if (data.status === "completed") {
+                  setIsProcessing(false);
+                  if (data.outputPath) {
+                    setPreviewUrl(data.outputPath);
+                  }
+                } else if (data.status === "failed") {
+                  setIsProcessing(false);
+                } else if (processingStates.includes(data.status)) {
+                  // Check retry limit
+                  if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+                    console.log("Max reconnection attempts reached");
+                    setIsProcessing(false);
+                    return;
+                  }
+                  // Still processing - reconnect with exponential backoff
+                  reconnectAttemptsRef.current++;
+                  const delay = Math.min(2000 * Math.pow(1.5, reconnectAttemptsRef.current - 1), 10000);
+                  console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+                  reconnectTimeoutRef.current = setTimeout(() => {
+                    connectProcessSSE(projectId);
+                  }, delay);
+                }
+              })
+              .catch(err => {
+                console.error("Failed to fetch project status:", err);
+                setIsProcessing(false);
+              });
+          };
         };
+        
+        connectProcessSSE(loadedProject.id);
       }
     }
   }, [loadedProject, project]);
@@ -395,6 +411,9 @@ export default function Editor() {
       }
       if (xhrRef.current) {
         xhrRef.current.abort();
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
       }
     };
   }, []);

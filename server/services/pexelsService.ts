@@ -151,6 +151,8 @@ export async function fetchStockMediaWithVariants(
         searchVideos(query, videosPerQuery),
       ]);
       
+      pexelsLogger.debug(`Query "${query.slice(0, 40)}...": ${photos.length} photos, ${videos.length} videos`);
+      
       return {
         query,
         photos,

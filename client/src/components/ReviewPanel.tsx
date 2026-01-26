@@ -104,10 +104,26 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     enabled: !hasHydratedAutosave,
   });
 
+  // Validate autosave data has required structure before hydrating
+  const isValidAutosaveData = (data: ReviewData | null): data is ReviewData => {
+    if (!data) return false;
+    if (!data.editPlan || !Array.isArray(data.editPlan.actions)) return false;
+    if (!Array.isArray(data.transcript)) return false;
+    if (!Array.isArray(data.stockMedia)) return false;
+    if (!Array.isArray(data.aiImages)) return false;
+    return true;
+  };
+
   // Hydrate local state from autosave if available (only if user hasn't started interacting)
   useEffect(() => {
     if (!hasHydratedAutosave && hasAutosave && autosaveData && !userHasInteracted) {
-      setLocalReviewData(autosaveData);
+      // Validate autosave data structure before applying
+      if (isValidAutosaveData(autosaveData)) {
+        setLocalReviewData(autosaveData);
+        console.log("Hydrated valid autosave data");
+      } else {
+        console.warn("Autosave data has invalid structure, using server reviewData instead");
+      }
       setHasHydratedAutosave(true);
     } else if (!hasHydratedAutosave && !isLoadingAutosave) {
       setHasHydratedAutosave(true);

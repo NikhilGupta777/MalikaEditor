@@ -221,8 +221,60 @@ function getEditStyleGuidance(context?: VideoContext): string {
 }
 
 export function validateAndFixBrollActions(actions: EditAction[], duration: number): EditAction[] {
-  const brollActions = actions.filter(a => a.type === "insert_stock");
-  const otherActions = actions.filter(a => a.type !== "insert_stock");
+  // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
+  const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
+  
+  // First, validate all actions for basic timestamp integrity
+  const sanitizedActions: EditAction[] = [];
+  
+  for (const action of actions) {
+    // Validate and fix cut/keep actions
+    if (action.type === "cut" || action.type === "keep") {
+      let start = action.start;
+      let end = action.end;
+      
+      // Skip actions with missing or invalid timestamps
+      if (start === undefined || end === undefined) {
+        aiLogger.debug(`Skipping ${action.type} action with missing timestamps`);
+        continue;
+      }
+      
+      // Ensure non-negative
+      start = Math.max(0, start);
+      end = Math.max(0, end);
+      
+      // Ensure start < end (swap if needed)
+      if (start >= end) {
+        if (start === end) {
+          aiLogger.debug(`Skipping ${action.type} action with zero duration at ${start}s`);
+          continue;
+        }
+        // Swap if start > end
+        [start, end] = [end, start];
+        aiLogger.debug(`Swapped ${action.type} action timestamps: ${action.start}s-${action.end}s -> ${start}s-${end}s`);
+      }
+      
+      // Clamp to video duration
+      end = Math.min(end, validDuration);
+      if (start >= validDuration) {
+        aiLogger.debug(`Skipping ${action.type} action starting after video end (${start}s > ${validDuration}s)`);
+        continue;
+      }
+      
+      sanitizedActions.push({
+        ...action,
+        start,
+        end,
+      });
+    } else {
+      // Pass through other action types for B-roll processing below
+      sanitizedActions.push(action);
+    }
+  }
+  
+  // Now process B-roll actions specifically
+  const brollActions = sanitizedActions.filter(a => a.type === "insert_stock");
+  const otherActions = sanitizedActions.filter(a => a.type !== "insert_stock");
   
   const brollWithTiming = brollActions.map((a, index) => ({
     ...a,
@@ -233,9 +285,6 @@ export function validateAndFixBrollActions(actions: EditAction[], duration: numb
   
   const validatedBroll: EditAction[] = [];
   let lastEnd = -3;
-  
-  // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
-  const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
   
   for (const action of brollWithTiming) {
     const start = Math.max(0, action.start || 0);

@@ -880,6 +880,26 @@ export async function registerRoutes(
       
       // If we have review data, apply user modifications
       if (reviewData && reviewData.userApproved) {
+        // VALIDATION: Ensure reviewData has required arrays before accessing
+        if (!reviewData.editPlan || !Array.isArray(reviewData.editPlan.actions)) {
+          routesLogger.warn(`[Render] Invalid reviewData: missing editPlan.actions for project ${id}`);
+          sendEvent("error", { error: "Review data is corrupted. Please re-process the video." });
+          clearInterval(heartbeatInterval);
+          res.end();
+          return;
+        }
+        if (!Array.isArray(reviewData.transcript)) {
+          routesLogger.warn(`[Render] Invalid reviewData: missing transcript array for project ${id}`);
+          // Fall back to original transcript
+          reviewData.transcript = [];
+        }
+        if (!Array.isArray(reviewData.stockMedia)) {
+          reviewData.stockMedia = [];
+        }
+        if (!Array.isArray(reviewData.aiImages)) {
+          reviewData.aiImages = [];
+        }
+        
         // DETAILED LOGGING: Track exactly what we received
         const allActions = reviewData.editPlan.actions;
         const cutActions = allActions.filter(a => a.type === 'cut');

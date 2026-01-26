@@ -134,9 +134,26 @@ app.use(
 
 app.use(express.urlencoded({ extended: false, limit: "1gb" }));
 
-// Health check endpoint - responds immediately for deployment checks
+// Health check endpoints - respond immediately for deployment checks
+// Cloud Run checks / endpoint, so we handle it specially
 app.get("/health", (_req, res) => {
   res.status(200).send("OK");
+});
+
+// For Cloud Run health checks that hit /, respond quickly with just the status
+// This runs before other middleware to ensure fast response
+app.use((req, res, next) => {
+  // Only intercept root path for health checks (identified by common health check user agents)
+  const userAgent = req.headers["user-agent"] || "";
+  const isHealthCheck = 
+    userAgent.includes("GoogleHC") || 
+    userAgent.includes("kube-probe") ||
+    req.headers["x-health-check"] === "true";
+  
+  if (req.path === "/" && isHealthCheck) {
+    return res.status(200).send("OK");
+  }
+  next();
 });
 
 app.use(sessionMiddleware);

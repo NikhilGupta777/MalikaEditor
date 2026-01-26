@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
 import session from "express-session";
 import bcrypt from "bcrypt";
+import connectPgSimple from "connect-pg-simple";
+import { pool } from "../db";
 import { storage } from "../storage";
 import type { User } from "@shared/schema";
 
@@ -26,7 +28,18 @@ function getSessionSecret(): string {
 
 const SESSION_SECRET = getSessionSecret();
 
+// Use PostgreSQL session store in production for scalability
+const PgSession = connectPgSimple(session);
+const sessionStore = process.env.NODE_ENV === "production" 
+  ? new PgSession({
+      pool,
+      tableName: "session",
+      createTableIfMissing: true,
+    })
+  : undefined;
+
 export const sessionMiddleware = session({
+  store: sessionStore,
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,

@@ -132,7 +132,7 @@ app.use(
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "1gb" }));
 
 app.use(sessionMiddleware);
 

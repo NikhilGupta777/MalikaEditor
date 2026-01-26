@@ -386,12 +386,14 @@ export default function Editor() {
             if (xhr.status >= 200 && xhr.status < 300) {
               resolve(new Response(xhr.responseText));
             } else {
-              reject(new Error(xhr.statusText));
+              reject(new Error(xhr.statusText || "Upload failed"));
             }
           };
-          xhr.onerror = () => reject(new Error("Upload failed"));
+          xhr.onerror = () => reject(new Error("Upload failed. Check your internet connection."));
           xhr.onabort = () => reject(new Error("Upload cancelled"));
+          xhr.ontimeout = () => reject(new Error("Upload timed out. Please try again."));
           xhr.open("POST", "/api/videos/upload");
+          xhr.timeout = 30 * 60 * 1000; // 30 minutes for large files
           xhr.send(formData);
         });
 

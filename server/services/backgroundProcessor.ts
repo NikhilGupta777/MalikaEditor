@@ -386,6 +386,11 @@ async function runProcessingPipeline(
       
       const { stockItems, aiImages: selectedAiImages } = convertSelectionsToStockMediaItems(selectionResult.selections);
       
+      processorLogger.info(`Media conversion result: ${stockItems.length} stock items, ${selectedAiImages.length} AI images`);
+      if (stockItems.length > 0) {
+        processorLogger.debug(`Stock items selected: ${stockItems.map(s => `${s.type}:${s.query?.slice(0,30)}`).join(', ')}`);
+      }
+      
       const aiStockItems: StockMediaItem[] = selectedAiImages.map((img, idx) => ({
         id: `ai_${Date.now()}_${idx}`,
         type: 'ai_generated' as const,

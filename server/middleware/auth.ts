@@ -68,22 +68,10 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 export async function requireAuth(
   req: AuthenticatedRequest,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): Promise<void> {
-  if (!req.session.userId) {
-    res.status(401).json({ error: "Authentication required" });
-    return;
-  }
-
-  const user = await storage.getUser(req.session.userId);
-  if (!user) {
-    req.session.destroy(() => {});
-    res.status(401).json({ error: "Session expired" });
-    return;
-  }
-
-  req.user = user;
+  // Authentication disabled - allow all requests
   next();
 }
 

@@ -88,6 +88,12 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Current Segment Highlighting**: Active segment highlighted during video playback.
 - **Dual Edit Modes**: Tabs for AI-assisted editing and manual transcript editing.
 
+#### Data Validation & Integrity
+- **Edit Action Validation**: All cut/keep actions are sanitized for timestamp integrity (start < end, non-negative, clamped to video duration).
+- **ReviewData Validation**: Render endpoint validates reviewData arrays before processing, prevents crashes from corrupted data.
+- **Autosave Validation**: ReviewPanel validates autosave structure before hydrating, falls back to server data if corrupted.
+- **Media Asset Preflight**: AI images validated for format/existence, stock downloads wrapped in try-catch with graceful skip.
+
 #### Error Handling & Scalability
 - **Error Handling**: User-friendly messages with recovery suggestions.
 - **Scalability**: Designed for future integration with background job queues, worker processes, and cloud object storage.

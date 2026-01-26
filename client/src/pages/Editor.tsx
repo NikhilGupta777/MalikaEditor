@@ -986,7 +986,7 @@ export default function Editor() {
                   />
                   
                   {/* Actions for stuck/interrupted projects */}
-                  {!isProcessing && (
+                  {!isProcessing && !isRendering && (
                     <Card className="border-amber-500/50 bg-amber-500/5">
                       <CardContent className="p-4">
                         <div className="flex items-center gap-2 mb-3">

@@ -19,7 +19,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
 
   if (hasOpenAIKey) {
-    aiLogger.info("Primary: Replit AI OpenAI gpt-4o-mini-transcribe (with synthesized word timing)");
+    aiLogger.info("Primary: Replit AI OpenAI gpt-4o-mini-transcribe (with word-level timestamps)");
   }
 
   if (hasGeminiKey) {
@@ -157,27 +157,170 @@ function estimateSyllables(word: string): number {
 }
 
 // Calculate speaking time weight for a word based on syllables and complexity
+// IMPROVED: More accurate speech rate modeling based on average speaking rates
+// Average speaking rate: 125-150 words per minute = ~400-500ms per word
+// Average syllables per word: 1.5 = ~250-350ms per syllable
 function calculateWordWeight(word: string): number {
   const syllables = estimateSyllables(word);
-  const baseWeight = syllables * 0.15; // ~150ms per syllable
   
-  // Add time for punctuation (natural pauses)
+  // Base time per syllable (200ms is more accurate for natural speech)
+  // Short words get slightly more time per syllable (articulation overhead)
+  const syllableTime = word.length <= 4 ? 0.22 : 0.18;
+  const baseWeight = syllables * syllableTime;
+  
+  // Add minimum word duration to account for word boundaries (~80ms)
+  const wordBoundary = 0.08;
+  
+  // Add time for punctuation (natural pauses) - slightly increased for realism
   let pauseWeight = 0;
   if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) {
-    pauseWeight = 0.4; // Longer pause at sentence end
+    pauseWeight = 0.5; // Longer pause at sentence end (~500ms)
   } else if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
-    pauseWeight = 0.2; // Medium pause at clause boundaries
+    pauseWeight = 0.25; // Medium pause at clause boundaries (~250ms)
   } else if (word.endsWith('...') || word.includes('—')) {
-    pauseWeight = 0.5; // Longer pause for ellipsis/em-dash
+    pauseWeight = 0.6; // Longer pause for ellipsis/em-dash (~600ms)
   }
   
-  return baseWeight + pauseWeight;
+  // Numbers and acronyms take longer to say
+  if (/^\d+$/.test(word) || /^[A-Z]{2,}$/.test(word)) {
+    return baseWeight * 1.5 + wordBoundary + pauseWeight;
+  }
+  
+  return baseWeight + wordBoundary + pauseWeight;
 }
 
 // Calculate total weight for a sentence
 function calculateSentenceWeight(sentence: string): number {
   const words = sentence.trim().split(/\s+/).filter(w => w.length > 0);
   return words.reduce((sum, word) => sum + calculateWordWeight(word), 0);
+}
+
+// OpenAI word timestamp interface
+interface OpenAIWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+// OpenAI segment timestamp interface
+interface OpenAISegment {
+  id: number;
+  text: string;
+  start: number;
+  end: number;
+  words?: OpenAIWord[];
+}
+
+// Create segments from OpenAI word-level timestamps for accurate caption timing
+function createSegmentsFromOpenAIWords(
+  words: OpenAIWord[],
+  segments?: OpenAISegment[]
+): TranscriptSegment[] {
+  if (!words || words.length === 0) return [];
+  
+  // If we have segments with words embedded, use segment boundaries
+  if (segments && segments.length > 0 && segments[0].words) {
+    return segments.map(seg => ({
+      start: seg.start,
+      end: seg.end,
+      text: seg.text.trim(),
+      words: (seg.words || []).map(w => ({
+        word: w.word,
+        start: w.start,
+        end: w.end,
+      })),
+    }));
+  }
+  
+  // Group words into sentence-like segments based on punctuation and timing gaps
+  const result: TranscriptSegment[] = [];
+  let currentWords: OpenAIWord[] = [];
+  let currentText: string[] = [];
+  
+  const GAP_THRESHOLD = 1.0; // 1 second gap triggers new segment
+  
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const prevWord = i > 0 ? words[i - 1] : null;
+    
+    // Check for sentence break conditions
+    const hasLargeGap = prevWord ? (word.start - prevWord.end) > GAP_THRESHOLD : false;
+    const endsWithPunctuation = prevWord ? /[.!?]$/.test(prevWord.word) : false;
+    const shouldBreak = hasLargeGap || (endsWithPunctuation && currentWords.length >= 3);
+    
+    if (shouldBreak && currentWords.length > 0) {
+      // Save current segment
+      result.push({
+        start: currentWords[0].start,
+        end: currentWords[currentWords.length - 1].end,
+        text: currentText.join(' ').trim(),
+        words: currentWords.map(w => ({
+          word: w.word,
+          start: w.start,
+          end: w.end,
+        })),
+      });
+      currentWords = [];
+      currentText = [];
+    }
+    
+    currentWords.push(word);
+    currentText.push(word.word);
+  }
+  
+  // Don't forget the last segment
+  if (currentWords.length > 0) {
+    result.push({
+      start: currentWords[0].start,
+      end: currentWords[currentWords.length - 1].end,
+      text: currentText.join(' ').trim(),
+      words: currentWords.map(w => ({
+        word: w.word,
+        start: w.start,
+        end: w.end,
+      })),
+    });
+  }
+  
+  aiLogger.debug(`Created ${result.length} segments from ${words.length} OpenAI word timestamps`);
+  return result;
+}
+
+// Create segments from OpenAI segment-level timestamps with synthesized word timing
+function createSegmentsFromOpenAISegments(
+  segments: OpenAISegment[],
+  audioDuration?: number
+): TranscriptSegment[] {
+  if (!segments || segments.length === 0) return [];
+  
+  return segments.map(seg => {
+    const segmentDuration = seg.end - seg.start;
+    const words = seg.text.trim().split(/\s+/).filter(w => w.length > 0);
+    
+    // Synthesize word timing within segment bounds using improved algorithm
+    const wordWeights = words.map(w => calculateWordWeight(w));
+    const totalWeight = wordWeights.reduce((sum, w) => sum + w, 0);
+    
+    let wordTime = seg.start;
+    const wordTimings = words.map((word, i) => {
+      const weight = wordWeights[i];
+      const wordDuration = (weight / totalWeight) * segmentDuration;
+      const timing = {
+        word: word,
+        start: wordTime,
+        end: wordTime + wordDuration,
+      };
+      wordTime += wordDuration;
+      return timing;
+    });
+    
+    return {
+      start: seg.start,
+      end: seg.end,
+      text: seg.text.trim(),
+      words: wordTimings,
+    };
+  });
 }
 
 // Create segments with improved word-level timing using syllable-based estimation
@@ -280,7 +423,8 @@ async function transcribeWithOpenAI(
       const transcriptionParams: any = {
         file,
         model: AI_CONFIG.models.transcription.primary,
-        response_format: "json",
+        response_format: "verbose_json",  // Use verbose_json to get word-level timestamps
+        timestamp_granularities: ["word", "segment"],  // Request both word and segment timestamps
       };
       
       if (languageHint) {
@@ -298,17 +442,30 @@ async function transcribeWithOpenAI(
 
       aiLogger.info(`OpenAI transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
-      // Since gpt-4o-mini-transcribe doesn't provide word-level timestamps,
-      // we synthesize them based on text length and audio duration
-      // CRITICAL: Only use duration-based timing if we have actual duration
-      // Using incorrect duration causes severely misaligned captions
+      // Check if we got word-level timestamps from OpenAI
+      if (response.words && Array.isArray(response.words) && response.words.length > 0) {
+        // Use actual word timestamps from OpenAI for accurate caption timing
+        aiLogger.info(`Got ${response.words.length} word-level timestamps from OpenAI`);
+        const segments = createSegmentsFromOpenAIWords(response.words, response.segments);
+        aiLogger.info(`Created ${segments.length} transcript segments with actual word timing`);
+        return segments;
+      }
+      
+      // Check if we got segment-level timestamps
+      if (response.segments && Array.isArray(response.segments) && response.segments.length > 0) {
+        aiLogger.info(`Got ${response.segments.length} segment-level timestamps from OpenAI (no word timestamps)`);
+        const segments = createSegmentsFromOpenAISegments(response.segments, audioDuration);
+        aiLogger.info(`Created ${segments.length} transcript segments with segment timing`);
+        return segments;
+      }
+      
+      // Fallback: Synthesize timing based on text length and audio duration
+      aiLogger.warn("OpenAI returned no timestamps, falling back to synthesized timing");
       if (audioDuration && audioDuration > 0) {
         const segments = createSegmentsFromTextWithDuration(text, audioDuration);
         aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing (duration: ${audioDuration.toFixed(1)}s)`);
         return segments;
       } else {
-        // Fallback: Use estimated timing without word-level sync
-        // This prevents wildly incorrect karaoke timing
         aiLogger.warn("No audio duration provided - using estimated timestamps (karaoke timing may be imprecise)");
         const segments = createSegmentsFromText(text);
         aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);

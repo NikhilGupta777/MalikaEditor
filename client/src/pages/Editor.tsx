@@ -170,6 +170,63 @@ export default function Editor() {
           })
           .catch(err => console.error("Failed to load review data:", err));
       }
+      // Auto-reconnect to processing if project is in a processing state
+      const processingStates = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images"];
+      if (processingStates.includes(loadedProject.status)) {
+        console.log("Reconnecting to in-progress processing...");
+        setIsProcessing(true);
+        
+        // Use stored editOptions from reviewData or project, fallback to defaults
+        const storedOptions = loadedProject.reviewData?.editOptions;
+        const params = new URLSearchParams({
+          prompt: loadedProject.prompt || "",
+          addCaptions: String(storedOptions?.addCaptions ?? true),
+          addBroll: String(storedOptions?.addBroll ?? true), 
+          removeSilence: String(storedOptions?.removeSilence ?? true),
+          generateAiImages: String(storedOptions?.generateAiImages ?? false),
+          addTransitions: String(storedOptions?.addTransitions ?? false),
+          reconnect: "true",
+        });
+        
+        const eventSource = new EventSource(
+          `/api/videos/${loadedProject.id}/process?${params.toString()}`
+        );
+        eventSourceRef.current = eventSource;
+        
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          
+          if (data.type === "status") {
+            setProject((prev) => prev ? { ...prev, status: data.status } : null);
+          } else if (data.type === "activity") {
+            setActivities((prev) => {
+              const newActivity = { message: data.message, timestamp: data.timestamp };
+              const updated = [...prev, newActivity];
+              return updated.length > 100 ? updated.slice(-100) : updated;
+            });
+          } else if (data.type === "reviewReady") {
+            setReviewData(data.reviewData);
+            setProject((prev) => prev ? { ...prev, status: "awaiting_review" } : null);
+            setIsProcessing(false);
+            eventSource.close();
+          } else if (data.type === "error") {
+            setError({ message: data.error, suggestion: data.suggestion, errorType: data.errorType });
+            setIsProcessing(false);
+            eventSource.close();
+          } else if (data.type === "editPlan") {
+            setProject((prev) => prev ? { ...prev, editPlan: data.editPlan } : null);
+          } else if (data.type === "stockMedia") {
+            setProject((prev) => prev ? { ...prev, stockMedia: data.stockMedia } : null);
+          } else if (data.type === "transcript") {
+            setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
+          }
+        };
+        
+        eventSource.onerror = () => {
+          console.log("SSE connection lost, will retry on refresh");
+          eventSource.close();
+        };
+      }
     }
   }, [loadedProject, project]);
 

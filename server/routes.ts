@@ -29,6 +29,7 @@ const processQuerySchema = z.object({
   generateAiImages: booleanQueryParam(false),
   addTransitions: booleanQueryParam(false),
   skipReview: booleanQueryParam(false),
+  reconnect: booleanQueryParam(false),
 });
 
 // Helper to format Zod errors for user-friendly 400 responses
@@ -66,6 +67,13 @@ import { editPlanSchema, reviewDataSchema } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
 import { registerAuthRoutes } from "./routes/auth";
+import { 
+  startProcessingJob as startBackgroundProcessing, 
+  subscribeToJob, 
+  getJobActivities, 
+  isJobActive,
+  setOnJobComplete
+} from "./services/backgroundProcessor";
 
 // Multi-processing tracker (max 3 concurrent video processing jobs)
 const MAX_CONCURRENT_PROCESSING = 3;
@@ -258,6 +266,12 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   await ensureDirs();
+  
+  // Wire up background processor to release slots when jobs complete
+  setOnJobComplete((projectId) => {
+    endProcessingJob(projectId);
+    routesLogger.info(`Released processing slot for project ${projectId}`);
+  });
   
   // Health check endpoint - no authentication required for load balancer checks
   app.get("/api/health", (req, res) => {
@@ -454,7 +468,7 @@ export async function registerRoutes(
     const { id } = paramResult.data;
     
     // Check multi-processing limit
-    if (!canStartProcessing()) {
+    if (!canStartProcessing() && !isJobActive(id)) {
       const status = getProcessingStatus();
       return res.status(429).json({ 
         error: `Maximum ${MAX_CONCURRENT_PROCESSING} videos can be processed at once. Please wait for a slot.`,
@@ -468,9 +482,9 @@ export async function registerRoutes(
       return res.status(400).json({ error: formatZodError(queryResult.error) });
     }
     
-    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions, skipReview } = queryResult.data;
+    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions, reconnect } = queryResult.data;
     
-    const editOptions: EditOptions = {
+    const editOptions = {
       addCaptions,
       addBroll,
       removeSilence,
@@ -481,14 +495,6 @@ export async function registerRoutes(
     const project = await storage.getVideoProject(id);
     if (!project) {
       return res.status(404).json({ error: "Project not found" });
-    }
-    
-    // Start tracking this processing job
-    if (!startProcessingJob(id)) {
-      return res.status(429).json({ 
-        error: "Processing slot no longer available. Please try again.",
-        processingStatus: getProcessingStatus()
-      });
     }
 
     const videoPath = path.join(
@@ -502,29 +508,13 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Video file not found. Please re-upload your video." });
     }
 
+    // Setup SSE for real-time updates
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    // Create AbortController for cancelling operations on client disconnect
-    const abortController = new AbortController();
-    const abortSignal = abortController.signal;
     let connectionClosed = false;
-    
-    req.on("close", () => {
-      connectionClosed = true;
-      abortController.abort();
-      endProcessingJob(id); // Release processing slot
-      routesLogger.info(`Client disconnected during video processing (project ${id}), aborting operations...`);
-    });
-
-    // Helper to check if operation should be aborted
-    const checkAborted = () => {
-      if (abortSignal.aborted) {
-        throw new Error("ABORTED: Client disconnected");
-      }
-    };
 
     const sendEvent = (type: string, data: Record<string, unknown>) => {
       if (!connectionClosed) {
@@ -538,401 +528,83 @@ export async function registerRoutes(
       }
     }, 15000);
 
-    const updateStatus = async (status: ProcessingStatus) => {
-      if (abortSignal.aborted) return; // Don't update status if aborted
-      await storage.updateVideoProject(id, { status });
-      sendEvent("status", { status });
-    };
+    const jobAlreadyRunning = isJobActive(id);
+    const completedStatuses = ["awaiting_review", "completed", "failed", "cancelled"];
+    const isAlreadyCompleted = completedStatuses.includes(project.status);
 
-    const sendActivity = (message: string, details?: Record<string, unknown>) => {
-      sendEvent("activity", { message, timestamp: Date.now(), ...details });
-    };
-
-    let tempFiles: string[] = [];
-    let transcript: { start: number; end: number; text: string }[] = [];
-
-    try {
-      await storage.updateVideoProject(id, { prompt });
-
-      await updateStatus("analyzing");
-      sendActivity("Reading video metadata...");
-      const metadata = await getVideoMetadata(videoPath);
-      sendActivity(`Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width}x${metadata.height}`, { duration: metadata.duration });
-      checkAborted();
-
-      const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
-      sendActivity(`Extracting ${numFrames} key frames for AI analysis...`);
-      const framePaths = await extractFrames(videoPath, numFrames);
-      sendActivity(`Extracted ${framePaths.length} frames successfully`);
-      tempFiles.push(path.dirname(framePaths[0]));
-      checkAborted();
-
-      let silentSegments: { start: number; end: number }[] = [];
-      if (editOptions.removeSilence) {
-        sendActivity("Scanning audio for silent segments...");
-        silentSegments = await detectSilence(videoPath);
-        sendActivity(`Found ${silentSegments.length} silent segments to remove`, { silentCount: silentSegments.length });
-        checkAborted();
+    // If reconnecting, only subscribe to existing job - don't start new processing
+    if (reconnect && jobAlreadyRunning) {
+      routesLogger.info(`Reconnecting to existing processing job for project ${id}`);
+      sendEvent("activity", { message: "Reconnecting to your processing session...", timestamp: Date.now() });
+      
+      // Send current project status
+      sendEvent("status", { status: project.status });
+      
+      // Send any missed activities
+      const activities = getJobActivities(id);
+      for (const activity of activities.slice(-10)) {
+        sendEvent("activity", activity);
       }
-
-      await updateStatus("transcribing");
-      sendActivity("Extracting audio track...");
-      const audioPath = await extractAudio(videoPath);
-      tempFiles.push(audioPath);
-      checkAborted();
-
-      // Pre-check for silent audio to provide early feedback
-      sendActivity("Checking audio levels...");
-      const silenceCheck = await detectSilence(videoPath, -40, 0.5);
-      const totalSilentTime = silenceCheck.reduce((sum, s) => sum + (s.end - s.start), 0);
-      const silenceRatio = metadata.duration > 0 ? totalSilentTime / metadata.duration : 0;
-      
-      if (silenceRatio > 0.95) {
-        // Audio is almost entirely silent
-        sendActivity("Audio appears to be mostly silent - transcription may produce limited results");
-        routesLogger.warn(`Video audio is ${(silenceRatio * 100).toFixed(0)}% silent`);
-        
-        // If captions were requested, warn user
-        if (editOptions.addCaptions) {
-          sendActivity("Note: Captions may be limited due to low audio content");
-        }
+    } else if (reconnect && isAlreadyCompleted) {
+      // Reconnect request but project already completed - just send status
+      routesLogger.info(`Reconnect for already-completed project ${id} (status: ${project.status})`);
+      sendEvent("status", { status: project.status });
+      if (project.status === "awaiting_review" && project.reviewData) {
+        sendEvent("reviewReady", { reviewData: project.reviewData });
       }
-
-      sendActivity("Running speech-to-text AI (this may take a moment)...");
-      transcript = await transcribeAudio(audioPath, metadata.duration);
-      
-      // Handle empty transcription result
-      if (transcript.length === 0) {
-        const silentMessage = silenceRatio > 0.8 
-          ? "No speech detected - audio appears to be silent or background noise only"
-          : "No speech detected - transcription returned empty";
-        sendActivity(silentMessage);
-        routesLogger.warn(`Transcription returned empty for project ${id}`);
-        
-        // If captions were requested but we have no transcript, adjust options
-        if (editOptions.addCaptions) {
-          sendActivity("Captions cannot be added without detectable speech - continuing without captions");
-          editOptions.addCaptions = false;
-        }
-      } else {
-        sendActivity(`Transcribed ${transcript.length} speech segments with timestamps`, { segments: transcript.length });
-      }
-      checkAborted();
-
-      // Use deep video analysis for comprehensive AI-powered insights
-      sendActivity("Starting deep AI video analysis...");
-      sendActivity("AI is watching your video to understand content, emotions, and key moments...");
-      routesLogger.info("Performing deep video analysis...");
-      const deepAnalysisResult = await analyzeVideoDeep(
-        framePaths,
-        metadata.duration,
-        silentSegments,
-        transcript
-      );
-      checkAborted();
-
-      const { videoAnalysis: analysis, semanticAnalysis, fillerSegments, qualityInsights } = deepAnalysisResult;
-      
-      sendActivity(`AI detected ${semanticAnalysis.keyMoments?.length || 0} key moments in your video`);
-      sendActivity(`Found ${fillerSegments.length} filler words (um, uh, like...)`, { fillerCount: fillerSegments.length });
-      sendActivity(`Hook strength score: ${qualityInsights.hookStrength}/100`, { hookScore: qualityInsights.hookStrength });
-      if (semanticAnalysis.mainTopics?.length > 0) {
-        sendActivity(`Main topics identified: ${semanticAnalysis.mainTopics.slice(0, 3).join(", ")}`);
-      }
-      if (semanticAnalysis.brollWindows?.length > 0) {
-        sendActivity(`Identified ${semanticAnalysis.brollWindows.length} opportunities for B-roll`, { brollOpportunities: semanticAnalysis.brollWindows.length });
-      }
-
-      // Detect language and translate if needed for non-English content
-      if (transcript.length > 0) {
-        const detectedLanguage = detectTranscriptLanguage(transcript);
-        if (analysis.context) {
-          analysis.context.languageDetected = detectedLanguage;
-        }
-      }
-
-      await storage.updateVideoProject(id, {
-        analysis: { ...analysis, semanticAnalysis },
-        transcript,
-        duration: Math.round(metadata.duration),
-      });
-
-      // Send transcript to frontend for interactive editing
-      sendEvent("transcript", { transcript });
-
-      // Send enhanced analysis data to frontend including filler segments and quality insights
-      sendEvent("enhancedAnalysis", {
-        fillerSegments,
-        qualityInsights,
-        hookScore: qualityInsights.hookStrength,
-        structureAnalysis: semanticAnalysis.structureAnalysis,
-        topicFlow: semanticAnalysis.topicFlow,
-        hookMoments: semanticAnalysis.hookMoments,
-        keyMoments: semanticAnalysis.keyMoments,
-      });
-
-      await updateStatus("planning");
-      sendActivity("Creating intelligent edit plan using multi-pass AI system...");
-      sendActivity("Pass 1: Analyzing narrative structure (intro/body/outro)...");
-      
-      routesLogger.info("Deep analysis complete:", {
-        topics: semanticAnalysis.mainTopics,
-        brollWindows: semanticAnalysis.brollWindows.length,
-        fillerCount: fillerSegments.length,
-        hookStrength: qualityInsights.hookStrength,
-      });
-      
-      const enhancedPrompt = `${prompt}
-      
-User has selected these options:
-- Add Captions: ${editOptions.addCaptions ? "Yes" : "No"}
-- Add B-Roll Stock Footage: ${editOptions.addBroll ? "Yes" : "No"}  
-- Remove Silent Parts: ${editOptions.removeSilence ? "Yes" : "No"}
-- Generate AI Images: ${editOptions.generateAiImages ? "Yes" : "No"}
-
-Please create an edit plan that follows these preferences. Do NOT include any transition effects - transitions are not supported.`;
-
-      checkAborted();
-      sendActivity("Pass 2: Scoring content quality and engagement levels...");
-      sendActivity("Pass 3: Optimizing B-roll placement and distribution...");
-      // Use smart multi-pass edit planning for better results
-      const editPlan = await generateSmartEditPlan(
-        enhancedPrompt,
-        analysis,
-        transcript,
-        semanticAnalysis,
-        fillerSegments
-      );
-      checkAborted();
-      
-      sendActivity("Pass 4: Quality review - validating edit plan...");
-      sendActivity(`Edit plan created with ${editPlan.actions?.length || 0} edit actions`, { actionCount: editPlan.actions?.length || 0 });
-      const stockQueryCount = editPlan.stockQueries?.length || 0;
-      if (stockQueryCount > 0) {
-        sendActivity(`Generated ${stockQueryCount} B-roll search queries`);
-      }
-
-      await storage.updateVideoProject(id, { editPlan });
-      sendEvent("editPlan", { editPlan });
-
-      let stockMedia: StockMediaItem[] = [];
-      if (editOptions.addBroll) {
-        await updateStatus("fetching_stock");
-        const stockQueries = editPlan.stockQueries || [];
-        sendActivity(`Searching Pexels for ${stockQueries.length} B-roll clips...`);
-        for (let i = 0; i < Math.min(3, stockQueries.length); i++) {
-          sendActivity(`Searching: "${stockQueries[i].substring(0, 50)}..."`);
-        }
-        checkAborted();
-        stockMedia = await fetchStockMedia(stockQueries);
-        sendActivity(`Found ${stockMedia.length} stock media clips`, { stockCount: stockMedia.length });
-        checkAborted();
-        await storage.updateVideoProject(id, { stockMedia });
-        sendEvent("stockMedia", { stockMedia });
-      }
-      
-      // Generate AI images if option is enabled and semantic analysis is available
-      let aiGeneratedImages: StockMediaItem[] = [];
-      if (editOptions.generateAiImages && semanticAnalysis && semanticAnalysis.brollWindows.length > 0) {
-        await updateStatus("generating_ai_images");
-        sendActivity("Preparing to generate custom AI images...");
-        checkAborted();
-        routesLogger.info("Generating AI images based on video content...");
-        
-        try {
-          // Calculate optimal number of AI images based on video duration
-          // Target: ~1 AI image per 8-10 seconds of video, minimum 3, maximum 12
-          const videoDuration = metadata.duration;
-          const optimalImages = Math.min(12, Math.max(3, Math.ceil(videoDuration / 8)));
-          sendActivity(`Targeting ${optimalImages} AI images for ${videoDuration.toFixed(0)}s video...`);
-          routesLogger.info(`Video is ${videoDuration.toFixed(1)}s, targeting ${optimalImages} AI images`);
-          
-          sendActivity("Sending image prompts to Gemini AI...");
-          const generatedImages = await generateAiImagesForVideo(
-            semanticAnalysis,
-            analysis.context,
-            optimalImages,
-            videoDuration  // Pass video duration for distribution logic
-          );
-          checkAborted();
-          
-          // Convert to StockMediaItem format and save to files with timing info
-          for (let i = 0; i < generatedImages.length; i++) {
-            const img = generatedImages[i];
-            const ext = img.mimeType.includes("png") ? "png" : "jpg";
-            const imagePath = path.join(OUTPUT_DIR, `ai_image_${id}_${i}.${ext}`);
-            
-            // Save base64 to file
-            await fs.writeFile(imagePath, Buffer.from(img.base64Data, "base64"));
-            
-            // Timing comes directly from the generated image (derived from filtered candidates)
-            aiGeneratedImages.push({
-              type: "ai_generated",
-              query: img.prompt,
-              url: imagePath, // Local path for processing
-              aiPrompt: img.prompt,
-              generatedAt: Date.now(),
-              startTime: img.startTime,
-              endTime: img.endTime,
-              duration: img.duration,
-            });
-            
-            routesLogger.debug(`AI image ${i}: "${img.prompt.substring(0, 40)}..." at ${img.startTime.toFixed(1)}s-${img.endTime.toFixed(1)}s`);
-          }
-          
-          sendActivity(`Successfully generated ${aiGeneratedImages.length} AI images`, { aiImageCount: aiGeneratedImages.length });
-          routesLogger.info(`Generated ${aiGeneratedImages.length} AI images`);
-          sendEvent("aiImages", { count: aiGeneratedImages.length });
-          
-          // Add AI images to stock media for B-roll overlay
-          stockMedia = [...stockMedia, ...aiGeneratedImages];
-          await storage.updateVideoProject(id, { stockMedia });
-        } catch (aiError) {
-          sendActivity("AI image generation encountered an issue, continuing with stock media...");
-          routesLogger.error("AI image generation failed, continuing with stock media:", aiError);
-          sendEvent("aiImagesError", { error: "AI image generation failed, using stock media only" });
-        }
-      }
-
-      // Pause for user review if skipReview is false (default behavior)
-      if (!skipReview) {
-        sendActivity("Preparing edit preview for your review...");
-        
-        // Prepare review data with all gathered information
-        const reviewData = prepareReviewData(
-          transcript,
-          editPlan,
-          stockMedia,
-          metadata.duration,
-          editOptions
-        );
-        
-        // Store review data and update status
-        await storage.updateVideoProject(id, { 
-          reviewData,
-          status: "awaiting_review" as ProcessingStatus,
-        });
-        
-        await updateStatus("awaiting_review");
-        sendActivity("Analysis complete! Review your edit plan before rendering.");
-        
-        // Release processing slot since analysis phase is complete
-        endProcessingJob(id);
-        
-        // Send review data to frontend
-        sendEvent("reviewReady", { 
-          reviewData,
-          message: "Please review the transcript, edit plan, and media selections before proceeding." 
-        });
-        
-        // End the SSE connection - user will trigger rendering separately
-        clearInterval(heartbeatInterval);
-        res.end();
-        return;
-      }
-
-      await updateStatus("editing");
-      sendActivity("Preparing to apply all edit actions...");
-      checkAborted();
-      await updateStatus("rendering");
-      sendActivity("Starting FFmpeg rendering engine...");
-      sendActivity("Cutting segments, adding overlays, and encoding video...");
-
-      const editResult = await applyEdits(
-        videoPath, 
-        editPlan, 
-        transcript,
-        stockMedia,
-        editOptions,
-        undefined, // outputFileName - use default
-        semanticAnalysis
-      );
-      checkAborted(); // Check after rendering
-      
-      sendActivity("Video rendering complete! Finalizing output...");
-      
-      // Send SSE event with AI image placement stats
-      if (editOptions.generateAiImages) {
-        sendActivity(`Applied ${editResult.aiImagesApplied} AI images, ${editResult.stockMediaApplied} stock clips`);
-        sendEvent("aiImageStats", {
-          applied: editResult.aiImagesApplied,
-          skipped: editResult.aiImagesSkipped,
-          stockApplied: editResult.stockMediaApplied,
-          totalOverlays: editResult.brollOverlaysTotal,
-        });
-      }
-      
-      sendActivity("Verifying output video...");
-      const outputMetadata = await getVideoMetadata(editResult.outputPath);
-
-      const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
-      sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s, ready for download!`);
-      await storage.updateVideoProject(id, {
-        status: "completed",
-        outputPath: publicOutputPath,
-        duration: Math.round(outputMetadata.duration),
-      });
-
-      sendEvent("complete", {
-        outputPath: publicOutputPath,
-        duration: Math.round(outputMetadata.duration),
-        aiImageStats: editOptions.generateAiImages ? {
-          applied: editResult.aiImagesApplied,
-          skipped: editResult.aiImagesSkipped,
-        } : undefined,
-      });
-
-      // Release processing slot on successful completion
-      endProcessingJob(id);
-      
-      await cleanupTempFiles(tempFiles);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Processing failed";
-      const isAborted = errorMessage.includes("ABORTED") || abortSignal.aborted;
-      
-      if (isAborted) {
-        // Client disconnected - only mark as cancelled if not already completed
-        routesLogger.info(`Client disconnected during video processing (project ${id}), aborting operations...`);
-        
-        // Check current project status - don't overwrite if already succeeded
-        const currentProject = await storage.getVideoProject(id);
-        if (currentProject && !["awaiting_review", "completed"].includes(currentProject.status)) {
-          await storage.updateVideoProject(id, {
-            status: "cancelled",
-            errorMessage: "Processing cancelled: client disconnected",
-          });
-        } else {
-          routesLogger.info(`Project ${id} already completed (${currentProject?.status}), not marking as cancelled`);
-        }
-        // Don't send error event since client is gone
-      } else {
-        // Actual processing error
-        routesLogger.error("Processing error:", error);
-        
-        const friendlyError = formatErrorForSSE(error instanceof Error ? error : new Error(errorMessage));
-        
-        await storage.updateVideoProject(id, {
-          status: "failed",
-          errorMessage: friendlyError.error,
-        });
-
-        sendEvent("error", {
-          error: friendlyError.error,
-          suggestion: friendlyError.suggestion,
-          errorType: friendlyError.errorType,
-        });
-      }
-
-      await cleanupTempFiles(tempFiles);
-      
-      // Release processing slot on failure
-      endProcessingJob(id);
-    } finally {
       clearInterval(heartbeatInterval);
-      if (!connectionClosed) {
-        res.end();
+      res.end();
+      return;
+    } else if (!jobAlreadyRunning && !isAlreadyCompleted) {
+      // Start new background processing job only if not already completed
+      if (!startProcessingJob(id)) {
+        clearInterval(heartbeatInterval);
+        return res.status(429).json({ 
+          error: "Processing slot no longer available. Please try again.",
+          processingStatus: getProcessingStatus()
+        });
       }
+      
+      routesLogger.info(`Starting background processing for project ${id}`);
+      startBackgroundProcessing(id, prompt, editOptions);
+    } else if (jobAlreadyRunning) {
+      // Job is running but this is not a reconnect - subscribe to updates
+      routesLogger.info(`Subscribing to in-progress job for project ${id}`);
+      sendEvent("activity", { message: "Resuming your processing session...", timestamp: Date.now() });
+    } else {
+      // Project is already complete - don't start processing
+      routesLogger.info(`Project ${id} already in terminal state: ${project.status}`);
+      sendEvent("status", { status: project.status });
+      clearInterval(heartbeatInterval);
+      res.end();
+      return;
     }
+
+    // Subscribe to job updates - this will receive events from background processor
+    const unsubscribe = subscribeToJob(id, (event) => {
+      if (!connectionClosed) {
+        sendEvent(event.type, event.data);
+        
+        // End SSE when processing is complete or failed
+        if (event.type === "status" && 
+            ["awaiting_review", "completed", "failed"].includes(event.data.status as string)) {
+          setTimeout(() => {
+            if (!connectionClosed) {
+              clearInterval(heartbeatInterval);
+              res.end();
+            }
+          }, 500);
+        }
+      }
+    });
+
+    // Handle client disconnect - processing continues in background
+    req.on("close", () => {
+      connectionClosed = true;
+      unsubscribe();
+      clearInterval(heartbeatInterval);
+      routesLogger.info(`Client disconnected from project ${id}, processing continues in background`);
+    });
   });
 
   // Approve review and continue rendering

@@ -5,6 +5,51 @@ import type { EditPlan, VideoAnalysis, TranscriptSegment, ReviewData } from "@sh
 
 const reviewLogger = createLogger("ai-pre-render-review");
 
+function repairJSON(text: string): string | null {
+  let json = text.trim();
+  
+  const jsonMatch = json.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  json = jsonMatch[0];
+  
+  json = json.replace(/,\s*}/g, '}');
+  json = json.replace(/,\s*]/g, ']');
+  json = json.replace(/'/g, '"');
+  json = json.replace(/(\w+):/g, '"$1":');
+  json = json.replace(/""/g, '"');
+  json = json.replace(/:\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}\]])/g, ': "$1"$2');
+  
+  const openBraces = (json.match(/{/g) || []).length;
+  const closeBraces = (json.match(/}/g) || []).length;
+  const openBrackets = (json.match(/\[/g) || []).length;
+  const closeBrackets = (json.match(/]/g) || []).length;
+  
+  for (let i = 0; i < openBrackets - closeBrackets; i++) {
+    json += ']';
+  }
+  for (let i = 0; i < openBraces - closeBraces; i++) {
+    json += '}';
+  }
+  
+  return json;
+}
+
+function tryParseJSON(text: string): any | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const repaired = repairJSON(text);
+    if (repaired) {
+      try {
+        return JSON.parse(repaired);
+      } catch (e) {
+        reviewLogger.debug("JSON repair failed", { original: text.slice(0, 200), repaired: repaired.slice(0, 200) });
+      }
+    }
+    return null;
+  }
+}
+
 export interface PreRenderReviewResult {
   confidence: number;
   approved: boolean;
@@ -90,43 +135,64 @@ Respond in JSON format:
   "summary": "Brief 1-2 sentence summary of the review"
 }`;
 
-  try {
-    const client = getGeminiClient();
-    const response = await client.models.generateContent({
-      model: AI_CONFIG.models.reviewPass,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.3,
-        maxOutputTokens: 1500,
-      },
-    });
+  const maxRetries = 2;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const client = getGeminiClient();
+      
+      const retryPrompt = attempt > 1 
+        ? prompt + "\n\nIMPORTANT: Return ONLY valid JSON, no markdown, no extra text. Start with { and end with }."
+        : prompt;
+      
+      const response = await client.models.generateContent({
+        model: AI_CONFIG.models.reviewPass,
+        contents: [{ role: "user", parts: [{ text: retryPrompt }] }],
+        config: {
+          temperature: attempt > 1 ? 0.1 : 0.3,
+          maxOutputTokens: 1500,
+        },
+      });
 
-    const text = response.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    
-    if (!jsonMatch) {
-      reviewLogger.warn("Could not parse pre-render review response, using defaults");
-      return getDefaultReviewResult();
+      const text = response.text || "";
+      
+      if (!text.trim()) {
+        reviewLogger.warn(`Attempt ${attempt}: Empty response from AI`);
+        if (attempt < maxRetries) continue;
+        return getDefaultReviewResult();
+      }
+      
+      const result = tryParseJSON(text);
+      
+      if (!result) {
+        reviewLogger.warn(`Attempt ${attempt}: Could not parse JSON response`, { 
+          textPreview: text.slice(0, 300) 
+        });
+        if (attempt < maxRetries) continue;
+        return getDefaultReviewResult();
+      }
+      
+      reviewLogger.info(`Pre-render review complete: confidence=${result.confidence}%, approved=${result.approved}`);
+      
+      return {
+        confidence: result.confidence ?? 75,
+        approved: result.approved ?? true,
+        issues: Array.isArray(result.issues) ? result.issues : [],
+        suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
+        editQualityScore: result.editQualityScore ?? 70,
+        narrativeFlowScore: result.narrativeFlowScore ?? 70,
+        pacingScore: result.pacingScore ?? 70,
+        summary: result.summary ?? "Review completed successfully.",
+      };
+    } catch (error) {
+      reviewLogger.error(`Pre-render review attempt ${attempt} failed:`, error);
+      if (attempt >= maxRetries) {
+        return getDefaultReviewResult();
+      }
     }
-
-    const result = JSON.parse(jsonMatch[0]);
-    
-    reviewLogger.info(`Pre-render review complete: confidence=${result.confidence}%, approved=${result.approved}`);
-    
-    return {
-      confidence: result.confidence ?? 75,
-      approved: result.approved ?? true,
-      issues: Array.isArray(result.issues) ? result.issues : [],
-      suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
-      editQualityScore: result.editQualityScore ?? 70,
-      narrativeFlowScore: result.narrativeFlowScore ?? 70,
-      pacingScore: result.pacingScore ?? 70,
-      summary: result.summary ?? "Review completed successfully.",
-    };
-  } catch (error) {
-    reviewLogger.error("Pre-render review failed:", error);
-    return getDefaultReviewResult();
   }
+  
+  return getDefaultReviewResult();
 }
 
 function getDefaultReviewResult(): PreRenderReviewResult {

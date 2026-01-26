@@ -234,11 +234,18 @@ export function validateAndFixBrollActions(actions: EditAction[], duration: numb
   const validatedBroll: EditAction[] = [];
   let lastEnd = -3;
   
+  // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
+  const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
+  
   for (const action of brollWithTiming) {
     const start = Math.max(0, action.start || 0);
     const actionDuration = action.duration || 4;
     
-    if (start >= lastEnd + 3 && start < duration - 1) {
+    // Check: must be 3+ seconds after last B-roll AND before video end
+    const hasGap = start >= lastEnd + 3;
+    const beforeEnd = start < validDuration - 1;
+    
+    if (hasGap && beforeEnd) {
       validatedBroll.push({
         ...action,
         start,
@@ -246,7 +253,7 @@ export function validateAndFixBrollActions(actions: EditAction[], duration: numb
       });
       lastEnd = start + actionDuration;
     } else {
-      aiLogger.debug(`Skipping overlapping B-roll at ${start}s (previous ended at ${lastEnd}s)`);
+      aiLogger.debug(`Skipping B-roll at ${start}s: hasGap=${hasGap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, videoDuration=${validDuration}s)`);
     }
   }
   

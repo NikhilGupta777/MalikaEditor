@@ -37,7 +37,11 @@ const CHAPTERS_DIR = "/tmp/chapters";
 export function generateChaptersFromEditPlan(input: ChapterExtractionInput): ChapterInfo[] {
   const { editPlan, semanticAnalysis, videoDuration, outputTimeMapping } = input;
   const chapters: ChapterInfo[] = [];
-  const usedTimestamps = new Set<number>();
+  
+  // Minimum chapter duration: scale based on video length
+  // Short videos (<60s): 5s minimum, Long videos (>300s): 15s minimum
+  const minChapterDuration = Math.max(5, Math.min(15, videoDuration / 20));
+  const maxChapters = Math.max(3, Math.floor(videoDuration / minChapterDuration));
   
   const mapSourceToOutputTime = (sourceTime: number): number | null => {
     if (!outputTimeMapping || outputTimeMapping.length === 0) {
@@ -52,18 +56,24 @@ export function generateChaptersFromEditPlan(input: ChapterExtractionInput): Cha
     return null;
   };
   
-  const addChapter = (title: string, sourceTime: number, type: ChapterInfo["type"]) => {
+  // Check if timestamp is too close to existing chapters
+  const isTooClose = (time: number): boolean => {
+    return chapters.some(ch => Math.abs(ch.startTime - time) < minChapterDuration);
+  };
+  
+  const addChapter = (title: string, sourceTime: number, type: ChapterInfo["type"], priority: number = 0) => {
     const outputTime = mapSourceToOutputTime(sourceTime);
-    if (outputTime === null || outputTime < 0 || outputTime >= videoDuration) {
+    if (outputTime === null || outputTime < 0 || outputTime >= videoDuration - 2) {
       return;
     }
     
     const roundedTime = Math.round(outputTime * 10) / 10;
-    if (usedTimestamps.has(roundedTime)) {
+    
+    // Skip if too close to existing chapter
+    if (isTooClose(roundedTime)) {
       return;
     }
     
-    usedTimestamps.add(roundedTime);
     chapters.push({
       title: title.slice(0, 80),
       startTime: roundedTime,
@@ -72,49 +82,46 @@ export function generateChaptersFromEditPlan(input: ChapterExtractionInput): Cha
     });
   };
   
+  // Priority 1: Structure-based chapters (intro, main, outro)
   if (semanticAnalysis?.structureAnalysis) {
     const structure = semanticAnalysis.structureAnalysis;
     
     if (structure.introEnd !== undefined && structure.introEnd > 0) {
-      addChapter("Introduction", 0, "intro");
+      addChapter("Introduction", 0, "intro", 3);
     }
     
-    if (structure.mainStart !== undefined) {
-      addChapter("Main Content", structure.mainStart, "section");
-    }
-    
-    if (structure.outroStart !== undefined) {
-      addChapter("Conclusion", structure.outroStart, "outro");
+    if (structure.outroStart !== undefined && structure.outroStart > minChapterDuration) {
+      addChapter("Conclusion", structure.outroStart, "outro", 3);
     }
   }
   
+  // Priority 2: High importance key moments only (limit to avoid too many)
   if (semanticAnalysis?.keyMoments && semanticAnalysis.keyMoments.length > 0) {
-    for (const moment of semanticAnalysis.keyMoments) {
-      if (moment.importance === "high" || moment.importance === "medium") {
-        const title = moment.description || "Key Point";
-        addChapter(title, moment.timestamp, "keypoint");
-      }
+    const highPriority = semanticAnalysis.keyMoments
+      .filter(m => m.importance === "high")
+      .slice(0, Math.max(2, maxChapters - 2));
+    
+    for (const moment of highPriority) {
+      const title = moment.description || "Key Point";
+      addChapter(title, moment.timestamp, "keypoint", 2);
     }
   }
   
-  if (semanticAnalysis?.topicFlow && semanticAnalysis.topicFlow.length > 0) {
-    for (const topic of semanticAnalysis.topicFlow) {
-      if (topic.name && topic.start >= 0) {
-        addChapter(topic.name, topic.start, "section");
-      }
+  // Priority 3: Topic flow (only if we have room and topics are distinct)
+  if (chapters.length < maxChapters && semanticAnalysis?.topicFlow && semanticAnalysis.topicFlow.length > 0) {
+    const remainingSlots = maxChapters - chapters.length;
+    const topics = semanticAnalysis.topicFlow
+      .filter(t => t.name && t.start >= minChapterDuration)
+      .slice(0, remainingSlots);
+    
+    for (const topic of topics) {
+      addChapter(topic.name, topic.start, "section", 1);
     }
-  }
-  
-  if (editPlan?.keyPoints && editPlan.keyPoints.length > 0) {
-    const interval = videoDuration / (editPlan.keyPoints.length + 1);
-    editPlan.keyPoints.forEach((point, idx) => {
-      const estimatedTime = interval * (idx + 1);
-      addChapter(point, estimatedTime, "keypoint");
-    });
   }
   
   chapters.sort((a, b) => a.startTime - b.startTime);
   
+  // Calculate end times
   for (let i = 0; i < chapters.length - 1; i++) {
     chapters[i].endTime = chapters[i + 1].startTime;
   }
@@ -123,7 +130,8 @@ export function generateChaptersFromEditPlan(input: ChapterExtractionInput): Cha
     chapters[chapters.length - 1].endTime = videoDuration;
   }
   
-  if (chapters.length === 0 && videoDuration > 30) {
+  // Default chapter if none generated
+  if (chapters.length === 0 && videoDuration > 10) {
     chapters.push({
       title: "Video",
       startTime: 0,
@@ -132,15 +140,13 @@ export function generateChaptersFromEditPlan(input: ChapterExtractionInput): Cha
     });
   }
   
-  const validChapters = chapters.filter((ch, idx) => {
+  // Final filter: remove any remaining short chapters
+  const validChapters = chapters.filter(ch => {
     const duration = ch.endTime - ch.startTime;
-    if (duration < 2) {
-      videoLogger.debug(`[Chapters] Removing short chapter: "${ch.title}" (${duration.toFixed(1)}s)`);
-      return false;
-    }
-    return true;
+    return duration >= minChapterDuration * 0.5; // Allow slightly shorter than min
   });
   
+  // Recalculate end times after filtering
   for (let i = 0; i < validChapters.length - 1; i++) {
     validChapters[i].endTime = validChapters[i + 1].startTime;
   }
@@ -148,7 +154,7 @@ export function generateChaptersFromEditPlan(input: ChapterExtractionInput): Cha
     validChapters[validChapters.length - 1].endTime = videoDuration;
   }
   
-  videoLogger.info(`[Chapters] Generated ${validChapters.length} chapters for ${videoDuration.toFixed(1)}s video`);
+  videoLogger.info(`[Chapters] Generated ${validChapters.length} chapters for ${videoDuration.toFixed(1)}s video (min duration: ${minChapterDuration.toFixed(1)}s)`);
   validChapters.forEach((ch, i) => {
     videoLogger.debug(`  [${i}] ${ch.startTime.toFixed(1)}s - ${ch.endTime.toFixed(1)}s: "${ch.title}" (${ch.type})`);
   });

@@ -82,20 +82,29 @@ export async function searchVideos(
   }
 
   try {
+    // Try broader search terms for better video results
+    const searchQuery = query.length > 50 ? query.split(' ').slice(0, 5).join(' ') : query;
+    
     const response = await axios.get(`${PEXELS_BASE_URL}/videos/search`, {
       headers: {
         Authorization: PEXELS_API_KEY,
       },
       params: {
-        query,
+        query: searchQuery,
         per_page: perPage,
         orientation: "landscape",
-        size: "medium",
       },
     });
 
-    return response.data.videos
+    const videos = response.data.videos || [];
+    
+    if (videos.length === 0) {
+      pexelsLogger.debug(`No videos found for query: "${searchQuery.slice(0, 50)}..."`);
+    }
+
+    return videos
       .map((video: PexelsVideo) => {
+        // Prefer HD, then SD, then any available file
         const hdFile = video.video_files.find((f) => f.quality === "hd") ||
           video.video_files.find((f) => f.quality === "sd") ||
           video.video_files[0];
@@ -111,7 +120,10 @@ export async function searchVideos(
       })
       .filter((item: { url: string }) => item.url && item.url.length > 0);
   } catch (error) {
-    pexelsLogger.error("Pexels video search error", { query, error: error instanceof Error ? error.message : String(error) });
+    pexelsLogger.error("Pexels video search error", { 
+      query: query.slice(0, 50), 
+      error: error instanceof Error ? error.message : String(error) 
+    });
     return [];
   }
 }

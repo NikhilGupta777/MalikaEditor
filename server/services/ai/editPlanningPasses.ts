@@ -618,13 +618,19 @@ function validateBrollSpacing(
   const sorted = [...placements].sort((a, b) => a.start - b.start);
   const validated: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> = [];
   let lastEnd = -5;
+  
+  // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
+  const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
 
   for (const placement of sorted) {
-    if (placement.start >= lastEnd + 3 && placement.start < duration - 1) {
+    const hasGap = placement.start >= lastEnd + 3;
+    const beforeEnd = placement.start < validDuration - 1;
+    
+    if (hasGap && beforeEnd) {
       validated.push({ ...placement, priority: placement.priority as "high" | "medium" | "low" });
       lastEnd = placement.start + placement.duration;
     } else {
-      aiLogger.debug(`Pass 3: Skipping overlapping B-roll at ${placement.start}s`);
+      aiLogger.debug(`Pass 3: Skipping B-roll at ${placement.start}s: hasGap=${hasGap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, duration=${validDuration}s)`);
     }
   }
 

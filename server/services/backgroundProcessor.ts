@@ -268,11 +268,24 @@ async function runProcessingPipeline(
     const hookStrength = analysis.semanticAnalysis?.hookMoments?.[0]?.score || 0;
     addActivity(projectId, `Deep analysis complete: ${brollWindowCount} B-roll windows, hook strength: ${hookStrength}`);
 
-    await storage.updateVideoProject(projectId, {
-      analysis: { 
-        ...analysis, 
-        semanticAnalysis: analysis.semanticAnalysis 
+    // Ensure analysis has valid duration (fallback to metadata.duration or transcript end)
+    const transcriptEnd = transcript[transcript.length - 1]?.end || 0;
+    const validDuration = (analysis.videoAnalysis?.duration && !isNaN(analysis.videoAnalysis.duration))
+      ? analysis.videoAnalysis.duration
+      : (metadata.duration || transcriptEnd || 60);
+    
+    const sanitizedAnalysis = {
+      ...analysis,
+      videoAnalysis: {
+        ...analysis.videoAnalysis,
+        duration: validDuration,
+        frames: analysis.videoAnalysis?.frames || [],
       },
+      semanticAnalysis: analysis.semanticAnalysis,
+    };
+    
+    await storage.updateVideoProject(projectId, {
+      analysis: sanitizedAnalysis,
     });
 
     notifySubscribers(projectId, "enhancedAnalysis", {
@@ -293,18 +306,12 @@ async function runProcessingPipeline(
     addActivity(projectId, "Creating intelligent edit plan...");
     const fillerSegments: { start: number; end: number; word: string }[] = [];
     
-    // Ensure videoAnalysis has duration set (use metadata.duration as fallback)
-    const videoAnalysisWithDuration = {
-      ...analysis.videoAnalysis,
-      duration: analysis.videoAnalysis.duration || metadata.duration || 0,
-      frames: analysis.videoAnalysis.frames || [],
-    };
-    
+    // Use the already sanitized analysis with valid duration
     const editPlan = await generateSmartEditPlan(
       prompt,
-      videoAnalysisWithDuration,
+      sanitizedAnalysis.videoAnalysis,
       transcript,
-      analysis.semanticAnalysis || {},
+      sanitizedAnalysis.semanticAnalysis || {},
       fillerSegments
     );
     addActivity(projectId, `Edit plan ready: ${editPlan.actions?.length || 0} actions planned`);

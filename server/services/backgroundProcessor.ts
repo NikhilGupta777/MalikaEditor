@@ -214,9 +214,17 @@ async function runProcessingPipeline(
     await updateStatus("planning");
     addActivity(projectId, "Creating intelligent edit plan...");
     const fillerSegments: { start: number; end: number; word: string }[] = [];
+    
+    // Ensure videoAnalysis has duration set (use metadata.duration as fallback)
+    const videoAnalysisWithDuration = {
+      ...analysis.videoAnalysis,
+      duration: analysis.videoAnalysis.duration || metadata.duration || 0,
+      frames: analysis.videoAnalysis.frames || [],
+    };
+    
     const editPlan = await generateSmartEditPlan(
       prompt,
-      analysis,
+      videoAnalysisWithDuration,
       transcript,
       analysis.semanticAnalysis || {},
       fillerSegments
@@ -255,12 +263,12 @@ async function runProcessingPipeline(
           metadata.duration
         );
         
-        const aiStockItems: StockMediaItem[] = aiImages.map(img => ({
-          id: img.id || `ai_${Date.now()}`,
+        const aiStockItems: StockMediaItem[] = aiImages.map((img, idx) => ({
+          id: `ai_${Date.now()}_${idx}`,
           type: 'ai_generated' as const,
-          url: img.localPath || '',
+          url: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
           query: img.prompt,
-          thumbnailUrl: img.localPath || '',
+          thumbnailUrl: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
           width: 1024,
           height: 1024,
           source: 'imagen',

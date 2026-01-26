@@ -1269,7 +1269,8 @@ export async function registerRoutes(
   app.post("/api/videos/:id/retry", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      const { stage } = req.body; // 'transcription', 'analysis', 'planning', 'stock', 'ai_images'
+      // Safely extract stage from body with default
+      const stage = req.body?.stage || 'full'; // 'transcription', 'analysis', 'planning', 'stock', 'ai_images', 'full'
       
       const project = await storage.getVideoProject(id);
       if (!project) {
@@ -1285,7 +1286,8 @@ export async function registerRoutes(
       res.json({ 
         success: true, 
         message: "Project reset for retry. Start processing again.",
-        projectId: id 
+        projectId: id,
+        stage
       });
     } catch (error) {
       routesLogger.error("Failed to retry project:", error);

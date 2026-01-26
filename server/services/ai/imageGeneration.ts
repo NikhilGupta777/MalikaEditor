@@ -116,9 +116,9 @@ export async function generateAiImagesForVideo(
       );
       
       if (segmentCandidates.length > 0) {
-        const priorityOrder = { high: 0, medium: 1, low: 2 };
+        const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
         const best = segmentCandidates.sort((a, b) => 
-          priorityOrder[a.priority] - priorityOrder[b.priority]
+          (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1)
         )[0];
         aiImageCandidates.push(best);
       } else {
@@ -134,9 +134,9 @@ export async function generateAiImagesForVideo(
     
     aiImageCandidates.sort((a, b) => a.start - b.start);
   } else {
-    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
     aiImageCandidates = validCandidates
-      .sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority])
+      .sort((a, b) => (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1))
       .slice(0, maxImages);
   }
 

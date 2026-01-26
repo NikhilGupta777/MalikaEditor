@@ -116,6 +116,45 @@ export async function searchVideos(
   }
 }
 
+export interface StockMediaVariants {
+  query: string;
+  photos: StockMediaItem[];
+  videos: StockMediaItem[];
+  allItems: StockMediaItem[];
+}
+
+export async function fetchStockMediaWithVariants(
+  queries: string[],
+  photosPerQuery: number = 3,
+  videosPerQuery: number = 3
+): Promise<StockMediaVariants[]> {
+  const uniqueQueries = Array.from(new Set(queries)).slice(0, 8);
+  
+  pexelsLogger.info(`Fetching ${photosPerQuery} photos + ${videosPerQuery} videos per query for ${uniqueQueries.length} queries`);
+
+  const results = await Promise.all(
+    uniqueQueries.map(async (query) => {
+      const [photos, videos] = await Promise.all([
+        searchPhotos(query, photosPerQuery),
+        searchVideos(query, videosPerQuery),
+      ]);
+      
+      return {
+        query,
+        photos,
+        videos,
+        allItems: [...photos, ...videos],
+      };
+    })
+  );
+
+  const totalPhotos = results.reduce((sum, r) => sum + r.photos.length, 0);
+  const totalVideos = results.reduce((sum, r) => sum + r.videos.length, 0);
+  pexelsLogger.info(`Fetched ${totalPhotos} photos + ${totalVideos} videos across ${uniqueQueries.length} queries`);
+
+  return results;
+}
+
 export async function fetchStockMedia(
   queries: string[]
 ): Promise<StockMediaItem[]> {
@@ -123,8 +162,8 @@ export async function fetchStockMedia(
 
   const results = await Promise.all(
     uniqueQueries.flatMap((query) => [
-      searchPhotos(query, 2),
-      searchVideos(query, 1),
+      searchPhotos(query, 3),
+      searchVideos(query, 3),
     ])
   );
 

@@ -92,8 +92,10 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Scalability**: Designed for future integration with background job queues, worker processes, and cloud object storage.
 - **Background Processing**: Videos continue processing even if users disconnect. Uses a background processor with job queue and subscriber pattern for real-time SSE updates.
 - **Event Replay System**: SSE events include unique IDs for replaying missed events on reconnect.
+- **SSE Auto-Reconnection**: If the connection drops during processing or rendering, the client automatically reconnects with exponential backoff (2s, 3s, 4.5s...) up to 5 attempts, fetching current status first to avoid duplicate streams.
 - **Persistence & Multi-User Support**: PostgreSQL storage, project history, 1-hour project expiration, max 3 concurrent processing jobs.
 - **Error Recovery**: Failed projects show retry/re-run options.
+- **Auto-Accept Timer**: 2-minute timer only starts after autosave data has been loaded, preventing premature auto-approval.
 
 ## External Dependencies
 

@@ -34,10 +34,11 @@ Preferred communication style: Simple, everyday language.
 The AI services are modularized for transcription, video analysis, semantic analysis, edit planning, and image generation.
 
 #### Centralized AI Configuration
-- **Configuration File**: `server/config/ai.ts` centralizes all AI model names, limits, and timing constants
+- **Configuration File**: `server/config/ai.ts` centralizes all AI model names and operational constants
 - **Model Names**: All AI model references (transcription, analysis, edit planning, image generation, media selection, review) use `AI_CONFIG.models.*`
-- **Limits**: Configurable limits for concurrent image generation, B-roll windows, AI images, stock queries, retries, and Gemini file size
-- **Timing**: Centralized timing constants for minimum word duration, B-roll gaps, transitions, and segment duration
+- **AI Autonomy**: The AI freely decides overlay counts (B-roll windows, AI images, stock queries) based on content analysis - no arbitrary caps or limits
+- **Operational Limits**: Only concurrency limits (3 concurrent API calls) and retries (3) remain to prevent API rate limiting
+- **Timing**: Reference timing constants for prompt guidance only (not enforced in code)
 
 #### Core AI Capabilities
 - **Deep Video Understanding**: Utilizes Gemini API for multi-layer analysis including scene detection, emotion flow, speaker detection, visual importance scoring, and key moment detection.

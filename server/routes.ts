@@ -77,7 +77,8 @@ import {
   getActiveJobCount,
   getActiveJobsInfo,
   getEventsSince,
-  getLastEventId
+  getLastEventId,
+  MAX_CONCURRENT_JOBS
 } from "./services/backgroundProcessor";
 
 // Use unified slot management from backgroundProcessor
@@ -88,7 +89,7 @@ function canStartProcessing(): boolean {
 function getProcessingStatus(): { current: number; max: number; jobs: { id: number; startTime: Date; status: string }[] } {
   return {
     current: getActiveJobCount(),
-    max: 3,
+    max: MAX_CONCURRENT_JOBS,
     jobs: getActiveJobsInfo()
   };
 }
@@ -462,7 +463,7 @@ export async function registerRoutes(
     if (!canStartProcessing() && !isJobActive(id)) {
       const status = getProcessingStatus();
       return res.status(429).json({ 
-        error: `Maximum ${MAX_CONCURRENT_PROCESSING} videos can be processed at once. Please wait for a slot.`,
+        error: `Maximum ${MAX_CONCURRENT_JOBS} videos can be processed at once. Please wait for a slot.`,
         processingStatus: status
       });
     }

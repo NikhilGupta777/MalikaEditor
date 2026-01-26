@@ -86,7 +86,9 @@ export async function convertToWav(audioBuffer: Buffer): Promise<Buffer> {
           completed = true;
           try {
             ffmpegProcess.kill("SIGKILL");
-          } catch {}
+          } catch {
+            // Process may have already exited - ignore
+          }
           cleanup();
           reject(new Error(`ffmpeg audio conversion timed out after ${AUDIO_CONVERSION_TIMEOUT_MS}ms`));
         }

@@ -245,7 +245,9 @@ function runFfmpegWithTimeout(
         if (ffmpegProcess) {
           try {
             ffmpegProcess.kill("SIGKILL");
-          } catch {}
+          } catch {
+            // Process may have already exited - ignore
+          }
         }
         cleanupTempFilesSync(tempFiles);
         reject(new FFmpegTimeoutError(`FFmpeg process timed out after ${timeoutMs}ms`, tempFiles));
@@ -305,8 +307,12 @@ function runFfprobeWithTimeout(
 function cleanupTempFilesSync(paths: string[]): void {
   for (const p of paths) {
     try {
-      fs.unlink(p).catch(() => {});
-    } catch {}
+      fs.unlink(p).catch(() => {
+        // File may already be deleted - ignore
+      });
+    } catch {
+      // Sync error accessing path - ignore
+    }
   }
 }
 
@@ -504,7 +510,9 @@ export async function detectSilence(
         if (ffmpegProcess) {
           try {
             ffmpegProcess.kill("SIGKILL");
-          } catch {}
+          } catch {
+            // Process may have already exited - ignore
+          }
         }
         reject(new FFmpegTimeoutError(`Silence detection timed out after ${FFMPEG_SHORT_TIMEOUT_MS}ms`));
       }
@@ -2049,7 +2057,8 @@ export async function cleanupTempFiles(paths: string[]): Promise<void> {
       } else {
         await fs.unlink(filePath);
       }
-    } catch (e) {
+    } catch {
+      // File may already be deleted or doesn't exist - ignore
     }
   }
 }

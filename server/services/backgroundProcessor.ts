@@ -53,7 +53,7 @@ const activeJobs = new Map<number, ProcessingJob>();
 const jobSubscribers = new Map<number, Set<(event: SSEEvent) => void>>();
 
 // Slot management - export functions for routes.ts to use
-const MAX_CONCURRENT_JOBS = 3;
+export const MAX_CONCURRENT_JOBS = 3;
 
 export function canStartNewJob(): boolean {
   const activeCount = Array.from(activeJobs.values()).filter(
@@ -417,7 +417,8 @@ async function runProcessingPipeline(
         } else {
           await fs.unlink(file);
         }
-      } catch {
+      } catch (cleanupErr) {
+        // File may already be deleted or doesn't exist - ignore
       }
     }
 
@@ -446,7 +447,8 @@ async function runProcessingPipeline(
         } else {
           await fs.unlink(file);
         }
-      } catch {
+      } catch (cleanupErr) {
+        // File may already be deleted or doesn't exist - ignore
       }
     }
   } finally {

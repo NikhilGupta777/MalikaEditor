@@ -1,9 +1,9 @@
 export const AI_CONFIG = {
   models: {
     transcription: {
-      // whisper-1 supports verbose_json with word-level timestamps
-      // gpt-4o-mini-transcribe does NOT support verbose_json or word timestamps
-      primary: "whisper-1",
+      // Replit AI Integration only supports gpt-4o-mini-transcribe with 'json' format
+      // Word-level timestamps are synthesized from segment timing
+      primary: "gpt-4o-mini-transcribe",
       fallback: "gemini-2.5-flash",
     },
     analysis: "gemini-2.5-flash",

@@ -19,7 +19,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
 
   if (hasOpenAIKey) {
-    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with word-level timestamps)`);
+    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with synthesized word timing)`);
   }
 
   if (hasGeminiKey) {
@@ -503,8 +503,9 @@ async function transcribeWithOpenAI(
       const transcriptionParams: any = {
         file,
         model: AI_CONFIG.models.transcription.primary,
-        response_format: "verbose_json",  // Use verbose_json to get word-level timestamps
-        timestamp_granularities: ["word", "segment"],  // Request both word and segment timestamps
+        // Replit AI Integration only supports 'json' format for gpt-4o-mini-transcribe
+        // Word timing will be synthesized from text and audio duration
+        response_format: "json",
       };
       
       if (languageHint) {
@@ -555,6 +556,16 @@ async function transcribeWithOpenAI(
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       aiLogger.error(`OpenAI transcription attempt ${attempt}/${MAX_RETRIES} failed:`, errorMessage);
+      
+      // Check for model-not-found or format-not-supported errors - these won't be fixed by retrying
+      const isModelError = errorMessage.toLowerCase().includes("model") || 
+                          errorMessage.toLowerCase().includes("not compatible") ||
+                          errorMessage.toLowerCase().includes("response_format");
+      
+      if (isModelError) {
+        aiLogger.warn(`Model or format error detected - will fall back to Gemini`);
+        break;
+      }
       
       if (!isRetryableError(error)) {
         aiLogger.warn("Non-retryable error detected, skipping remaining retries");

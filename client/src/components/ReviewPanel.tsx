@@ -129,9 +129,9 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     },
   });
 
-  // Auto-accept timer countdown - only start after autosave hydration completes
+  // Auto-accept timer countdown
   useEffect(() => {
-    if (isLoading || hasAutoApprovedRef.current || !hasHydratedAutosave) return;
+    if (isLoading || hasAutoApprovedRef.current) return;
 
     timerRef.current = setInterval(() => {
       setTimeRemaining(prev => {
@@ -156,7 +156,7 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
         clearInterval(timerRef.current);
       }
     };
-  }, [isLoading, onApprove, hasHydratedAutosave]);
+  }, [isLoading, onApprove]);
 
   // Reset timer when user interacts (any checkbox toggle or text edit)
   // This gives user another 2 minutes from their last action

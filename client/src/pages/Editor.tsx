@@ -175,14 +175,8 @@ export default function Editor() {
         console.log("Reconnecting to in-progress rendering...");
         setIsRendering(true);
         
-        const renderSessionKey = `sse_lastEventId_render_${loadedProject.id}`;
-        const storedLastEventId = sessionStorage.getItem(renderSessionKey);
-        
         const params = new URLSearchParams();
         params.append("reconnect", "true");
-        if (storedLastEventId) {
-          params.append("lastEventId", storedLastEventId);
-        }
         
         const eventSource = new EventSource(
           `/api/videos/${loadedProject.id}/render?${params.toString()}`
@@ -190,9 +184,6 @@ export default function Editor() {
         eventSourceRef.current = eventSource;
         
         eventSource.onmessage = (event) => {
-          if (event.lastEventId) {
-            sessionStorage.setItem(renderSessionKey, event.lastEventId);
-          }
           const data = JSON.parse(event.data);
           
           if (data.type === "status") {
@@ -215,7 +206,6 @@ export default function Editor() {
             setPreviewUrl(data.outputPath);
             setIsRendering(false);
             setActivities([]);
-            sessionStorage.removeItem(renderSessionKey);
             eventSource.close();
             eventSourceRef.current = null;
           } else if (data.type === "error") {
@@ -223,79 +213,25 @@ export default function Editor() {
               prev ? { ...prev, status: "failed", errorMessage: data.error } : null
             );
             setIsRendering(false);
-            sessionStorage.removeItem(renderSessionKey);
             eventSource.close();
             eventSourceRef.current = null;
           }
         };
         
         eventSource.onerror = () => {
-          console.log("Render SSE connection lost, will poll for status");
+          console.log("Render SSE connection lost, will retry on refresh");
           eventSource.close();
           eventSourceRef.current = null;
-          // Start polling fallback to check status periodically
-          const pollInterval = setInterval(() => {
-            fetch(`/api/videos/${loadedProject.id}`)
-              .then(res => res.json())
-              .then(data => {
-                if (data.status === "completed") {
-                  clearInterval(pollInterval);
-                  setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
-                  setPreviewUrl(data.outputPath);
-                  setIsRendering(false);
-                  sessionStorage.removeItem(renderSessionKey);
-                } else if (data.status === "failed") {
-                  clearInterval(pollInterval);
-                  setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
-                  setIsRendering(false);
-                  sessionStorage.removeItem(renderSessionKey);
-                }
-              })
-              .catch(err => console.error("Polling error:", err));
-          }, 5000);
-        };
-      }
-    }
-  }, [project, id]);
-
-  // Poll for status when rendering to catch completion even if SSE disconnects
-  useEffect(() => {
-    if (!project || !isRendering) return;
-    
-    const pollStatus = async () => {
-      try {
-        const res = await fetch(`/api/videos/${project.id}`);
-        const data = await res.json();
-        if (data.status === "completed") {
-          setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
-          setPreviewUrl(data.outputPath);
           setIsRendering(false);
-        } else if (data.status === "failed") {
-          setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
-          setIsRendering(false);
-        }
-      } catch (err) {
-        console.error("Status poll error:", err);
-      }
-    };
-    
-    // Poll every 10 seconds as a safety net
-    const interval = setInterval(pollStatus, 10000);
-    return () => clearInterval(interval);
-  }, [project?.id, isRendering]);
-
-  // Keep track of original useEffect cleanup  
-  const _tempCleanup = () => {
-    if (project && project.status === "rendering") {
-      // Fetch current project status to update UI
-      fetch(`/api/videos/${project.id}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.status === "completed") {
-            setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
-            setPreviewUrl(data.outputPath);
-          } else if (data.status === "failed") {
-            setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
+          // Fetch current project status to update UI
+          fetch(`/api/videos/${loadedProject.id}`)
+            .then(res => res.json())
+            .then(data => {
+              if (data.status === "completed") {
+                setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
+                setPreviewUrl(data.outputPath);
+              } else if (data.status === "failed") {
+                setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
               }
             })
             .catch(() => {

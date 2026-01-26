@@ -29,6 +29,7 @@ function AuthenticatedRouter() {
   return (
     <Switch>
       <Route path="/" component={Editor} />
+      <Route path="/project/:id" component={Editor} />
       <Route component={NotFound} />
     </Switch>
   );

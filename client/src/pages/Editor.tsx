@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
@@ -112,6 +113,10 @@ type EditMode = "ai" | "manual";
 
 export default function Editor() {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const [matchProject, params] = useRoute("/project/:id");
+  const projectIdFromUrl = matchProject && params?.id ? parseInt(params.id, 10) : null;
+  
   const [project, setProject] = useState<VideoProject | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -131,6 +136,40 @@ export default function Editor() {
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const [isRendering, setIsRendering] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  
+  // Load project from URL if project ID is present
+  const { data: loadedProject, isLoading: isLoadingProject } = useQuery<VideoProject>({
+    queryKey: ["/api/videos", projectIdFromUrl],
+    queryFn: async () => {
+      const response = await fetch(`/api/videos/${projectIdFromUrl}`);
+      if (!response.ok) {
+        throw new Error("Failed to load project");
+      }
+      return response.json();
+    },
+    enabled: !!projectIdFromUrl && !project,
+  });
+  
+  // Set project from loaded data
+  useEffect(() => {
+    if (loadedProject && !project) {
+      setProject(loadedProject);
+      if (loadedProject.originalPath) {
+        setPreviewUrl(loadedProject.originalPath);
+      }
+      // Load review data if in awaiting_review status
+      if (loadedProject.status === "awaiting_review") {
+        fetch(`/api/videos/${loadedProject.id}/review`)
+          .then(res => res.json())
+          .then(data => {
+            if (data.reviewData) {
+              setReviewData(data.reviewData);
+            }
+          })
+          .catch(err => console.error("Failed to load review data:", err));
+      }
+    }
+  }, [loadedProject, project]);
 
   useEffect(() => {
     return () => {
@@ -421,7 +460,9 @@ export default function Editor() {
     setCurrentTime(0);
     setEditMode("ai");
     setReviewData(null);
-  }, []);
+    setActivities([]);
+    setLocation("/");
+  }, [setLocation]);
 
   const handleReviewApprove = useCallback(async (updatedReviewData: ReviewData) => {
     if (!project) return;
@@ -744,7 +785,7 @@ export default function Editor() {
                   
                   <HistoryPanel 
                     onViewProject={(projectId) => {
-                      window.location.href = `/project/${projectId}`;
+                      setLocation(`/project/${projectId}`);
                     }}
                     className="mt-4"
                   />
@@ -763,17 +804,52 @@ export default function Editor() {
 
               {/* Processing Status - for non-failed states */}
               {project && project.status !== "pending" && project.status !== "completed" && project.status !== "awaiting_review" && project.status !== "failed" && (
-                <ProcessingStatus
-                  status={project.status}
-                  error={project.errorMessage ?? undefined}
-                  errorSuggestion={project.errorSuggestion ?? undefined}
-                  errorType={project.errorType ?? undefined}
-                  aiImageStats={project.aiImageStats}
-                  transcriptSegments={project.transcript?.length}
-                  scenesDetected={project.semanticAnalysis?.keyMoments?.length}
-                  stockMediaCount={project.stockMedia?.length}
-                  editActionsCount={project.editPlan?.actions?.length}
-                />
+                <div className="space-y-4">
+                  <ProcessingStatus
+                    status={project.status}
+                    error={project.errorMessage ?? undefined}
+                    errorSuggestion={project.errorSuggestion ?? undefined}
+                    errorType={project.errorType ?? undefined}
+                    aiImageStats={project.aiImageStats}
+                    transcriptSegments={project.transcript?.length}
+                    scenesDetected={project.semanticAnalysis?.keyMoments?.length}
+                    stockMediaCount={project.stockMedia?.length}
+                    editActionsCount={project.editPlan?.actions?.length}
+                  />
+                  
+                  {/* Actions for stuck/interrupted projects */}
+                  {!isProcessing && (
+                    <Card className="border-amber-500/50 bg-amber-500/5">
+                      <CardContent className="p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <AlertCircle className="h-4 w-4 text-amber-500" />
+                          <span className="text-sm font-medium">Project may be stuck</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mb-3">
+                          This project was interrupted. You can retry processing or start a new project.
+                        </p>
+                        <div className="flex gap-2">
+                          <Button 
+                            size="sm" 
+                            onClick={handleRetryProcessing}
+                            data-testid="button-retry-stuck"
+                          >
+                            <RotateCcw className="h-4 w-4 mr-1" />
+                            Retry Processing
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            onClick={handleNewProject}
+                            data-testid="button-new-project"
+                          >
+                            New Project
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
               )}
 
               {/* Error Display with recovery buttons - for failed state */}

@@ -1051,19 +1051,26 @@ async function concatSegmentsSimple(
   }
 }
 
+interface TransitionResult {
+  effectiveDurations: number[]; // Actual transition duration applied at each boundary
+  totalReduction: number; // Sum of all effective durations (total time reduced)
+}
+
 async function concatSegmentsWithTransitions(
   segmentPaths: string[],
   outputPath: string,
   transitionDuration: number = 0.5,
   tempFiles: string[]
-): Promise<void> {
+): Promise<TransitionResult> {
+  const effectiveDurations: number[] = [];
+  
   if (segmentPaths.length === 0) {
     throw new Error("No segments to concatenate");
   }
   
   if (segmentPaths.length === 1) {
     await fs.copyFile(segmentPaths[0], outputPath);
-    return;
+    return { effectiveDurations: [], totalReduction: 0 };
   }
 
   videoLogger.info(`Concatenating ${segmentPaths.length} segments with crossfade transitions (${transitionDuration}s)`);
@@ -1078,7 +1085,7 @@ async function concatSegmentsWithTransitions(
       : path.join(OUTPUT_DIR, `trans_${uuidv4()}_${i}.mp4`);
     
     try {
-      await concatTwoWithTransition(
+      const actualDuration = await concatTwoWithTransition(
         currentPath,
         nextSegment,
         intermediatePath,
@@ -1086,7 +1093,8 @@ async function concatSegmentsWithTransitions(
         transitionDuration
       );
       
-      videoLogger.debug(`Applied crossfade transition between segment ${i-1} and ${i}`);
+      effectiveDurations.push(actualDuration);
+      videoLogger.debug(`Applied crossfade transition between segment ${i-1} and ${i} (effective: ${actualDuration.toFixed(2)}s)`);
       
       if (!isLastPair) {
         tempFiles.push(intermediatePath);
@@ -1098,7 +1106,10 @@ async function concatSegmentsWithTransitions(
     }
   }
   
-  videoLogger.info(`Successfully concatenated ${segmentPaths.length} segments with transitions`);
+  const totalReduction = effectiveDurations.reduce((sum, d) => sum + d, 0);
+  videoLogger.info(`Successfully concatenated ${segmentPaths.length} segments with transitions (total reduction: ${totalReduction.toFixed(2)}s)`);
+  
+  return { effectiveDurations, totalReduction };
 }
 
 async function burnSubtitles(
@@ -1920,9 +1931,12 @@ async function applyEditsInternal(
     
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
     
+    // Track actual transition durations for precise mapping
+    let transitionResult: TransitionResult = { effectiveDurations: [], totalReduction: 0 };
+    
     if (useTransitions) {
       videoLogger.info(`Applying crossfade transitions between ${segmentPaths.length} segments...`);
-      await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, transitionDurationTarget, tempFiles);
+      transitionResult = await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, transitionDurationTarget, tempFiles);
     } else {
       await concatSegmentsSimple(segmentPaths, baseVideoPath);
     }
@@ -1930,15 +1944,8 @@ async function applyEditsInternal(
     tempFiles.push(baseVideoPath);
     videoLogger.info(`Created concatenated base video from ${segmentsToKeep.length} segments${useTransitions ? ' with transitions' : ''}`);
     
-    // AFTER concatenation: Calculate output mapping based on actual result
-    // Get actual base video duration to compute proportional mapping
-    const actualBaseDuration = await getFileDuration(baseVideoPath);
-    const rawTotalDuration = segmentsToKeep.reduce((sum, s) => sum + (s.end - s.start), 0);
-    const totalTransitionReduction = rawTotalDuration - actualBaseDuration;
-    const numTransitions = segmentsToKeep.length - 1;
-    // Distribute reduction evenly across transitions (approximate but handles dynamic reductions)
-    const avgTransitionOverlap = numTransitions > 0 ? totalTransitionReduction / numTransitions : 0;
-    
+    // Calculate output mapping using ACTUAL transition durations (not averaged)
+    // This ensures precise B-roll/AI image placement
     let outputTime = 0;
     for (let i = 0; i < segmentsToKeep.length; i++) {
       const seg = segmentsToKeep[i];
@@ -1949,14 +1956,16 @@ async function applyEditsInternal(
       });
       
       const segDuration = seg.end - seg.start;
-      if (useTransitions && i < segmentsToKeep.length - 1) {
-        outputTime += segDuration - avgTransitionOverlap;
+      // Use actual transition duration for this specific boundary
+      if (useTransitions && i < segmentsToKeep.length - 1 && transitionResult.effectiveDurations[i] !== undefined) {
+        outputTime += segDuration - transitionResult.effectiveDurations[i];
       } else {
         outputTime += segDuration;
       }
     }
     
-    videoLogger.debug(`Output time mapping: raw=${rawTotalDuration.toFixed(2)}s, actual=${actualBaseDuration.toFixed(2)}s, reduction=${totalTransitionReduction.toFixed(2)}s (${numTransitions} transitions)`);
+    const rawTotalDuration = segmentsToKeep.reduce((sum, s) => sum + (s.end - s.start), 0);
+    videoLogger.debug(`Output time mapping: raw=${rawTotalDuration.toFixed(2)}s, reduction=${transitionResult.totalReduction.toFixed(2)}s (${transitionResult.effectiveDurations.length} transitions: [${transitionResult.effectiveDurations.map(d => d.toFixed(2)).join(', ')}]s)`);
   }
 
   // Get base video duration
@@ -2130,20 +2139,27 @@ async function applyEditsInternal(
         }
       }
       
-      if (outputTime !== null) {
-        // Check if this time overlaps with any AI image (using actual durations)
-        const stockDuration = action.duration || 4;
-        const overlapsAi = brollOverlays.some(o => 
-          intervalsOverlap(outputTime, outputTime + stockDuration, o.startTime, o.startTime + o.duration)
+      if (outputTime !== null && outputTime >= 0 && outputTime < baseMetadata.duration) {
+        // Calculate initial duration
+        let duration = Math.min(
+          action.duration || (action.end && action.start ? action.end - action.start : 4),
+          mediaItem.item.duration || 5,
+          5
         );
         
-        if (!overlapsAi) {
-          const duration = Math.min(
-            action.duration || (action.end && action.start ? action.end - action.start : 4),
-            mediaItem.item.duration || 5,
-            5
-          );
-          
+        // Clamp duration if extends beyond video end (same safety as AI images)
+        if (outputTime + duration > baseMetadata.duration) {
+          const overflow = (outputTime + duration) - baseMetadata.duration;
+          duration = Math.max(0.5, duration - overflow);
+          videoLogger.debug(`[Stock] Clamped duration to ${duration.toFixed(2)}s to fit before video end`);
+        }
+        
+        // Check if this time overlaps with any AI image (using actual durations)
+        const overlapsAi = brollOverlays.some(o => 
+          intervalsOverlap(outputTime, outputTime + duration, o.startTime, o.startTime + o.duration)
+        );
+        
+        if (!overlapsAi && duration > 0) {
           brollOverlays.push({
             localPath: mediaItem.localPath,
             type: mediaItem.item.type as "video" | "image" | "ai_generated",
@@ -2153,7 +2169,7 @@ async function applyEditsInternal(
           });
           stockIdx++;
           stockMediaApplied++;
-        } else {
+        } else if (overlapsAi) {
           videoLogger.debug(`Skipping stock at ${outputTime.toFixed(2)}s - overlaps with AI image`);
         }
       }
@@ -2166,7 +2182,18 @@ async function applyEditsInternal(
       
       for (let i = 0; i < remainingStock.length; i++) {
         const startTime = interval * (i + 1);
-        const duration = Math.min(remainingStock[i].item.duration || 5, 3);
+        let duration = Math.min(remainingStock[i].item.duration || 5, 3);
+        
+        // Clamp duration if extends beyond video end
+        if (startTime + duration > baseMetadata.duration) {
+          const overflow = (startTime + duration) - baseMetadata.duration;
+          duration = Math.max(0.5, duration - overflow);
+        }
+        
+        // Skip if start time is beyond video or duration too short
+        if (startTime >= baseMetadata.duration || duration < 0.5) {
+          continue;
+        }
         
         // Avoid overlapping with existing overlays
         const overlapsExisting = brollOverlays.some(o => 
@@ -2249,20 +2276,26 @@ async function applyEditsInternal(
         const adjustedStart = mapping.outputStart + (overlapStart - mapping.sourceStart);
         const adjustedEnd = mapping.outputStart + (overlapEnd - mapping.sourceStart);
         
-        // Adjust word timings as well - use overlap window for correct mapping
+        // Adjust word timings as well - use partial overlap logic
+        // Include words that have ANY overlap with the segment, not just fully contained
         let adjustedWords: WordTiming[] | undefined;
         if (cap.words && cap.words.length > 0) {
           adjustedWords = cap.words
-            // Only include words that fall within the overlap window
-            .filter(w => w.start >= overlapStart && w.end <= overlapEnd)
-            .map(w => ({
-              word: w.word,
-              // Map from source time (relative to mapping.sourceStart) to output time
-              start: mapping.outputStart + (w.start - mapping.sourceStart),
-              end: mapping.outputStart + (w.end - mapping.sourceStart),
-            }))
-            // Ensure adjusted times are within the adjusted caption bounds
-            .filter(w => w.start >= adjustedStart && w.end <= adjustedEnd);
+            // Include words with ANY overlap (partial overlap allowed)
+            .filter(w => w.end > overlapStart && w.start < overlapEnd)
+            .map(w => {
+              // Clamp word timing to segment boundaries
+              const clampedStart = Math.max(w.start, overlapStart);
+              const clampedEnd = Math.min(w.end, overlapEnd);
+              return {
+                word: w.word,
+                // Map from source time (relative to mapping.sourceStart) to output time
+                start: mapping.outputStart + (clampedStart - mapping.sourceStart),
+                end: mapping.outputStart + (clampedEnd - mapping.sourceStart),
+              };
+            })
+            // Ensure minimum word duration after clamping
+            .filter(w => w.end - w.start >= 0.01);
         }
         
         adjustedCaptions.push({

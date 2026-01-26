@@ -46,13 +46,14 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Multi-Pass Edit Planning**: An optimized 2-pass intelligent edit system (consolidated Structure+Quality+B-roll Pass, then Quality Review Pass) reduces API calls while generating comprehensive edit plans. Falls back to sequential 4-pass if needed.
 - **Transcript-Based Editing**: Allows users to edit video by manipulating an interactive, color-coded transcript with real-time preview, including auto-removal of filler words and manual override for AI suggestions.
 - **Additional AI Features**: Includes Karaoke-style captions and AI image generation based on transcript content.
+- **Caption Rendering**: ASS format with karaoke-style word-by-word highlighting, phrases grouped 2-3 words respecting segment boundaries.
 - **AI Response Normalization**: Centralized module (`server/services/ai/normalization.ts`) ensures robustness against varied AI responses using Zod schema integration and graceful fallbacks.
 - **AI Self-Learning System**: Before rendering, AI (Gemini 1.5 Flash) reviews the edit plan, provides confidence scores, quality assessments, and issue detection. User approval/rejection decisions are stored in a PostgreSQL `edit_feedback` table for continuous learning.
 
 ### Video Processing Pipeline
 1.  **Upload**: Video stored temporarily.
 2.  **Analysis**: Frames extracted, analyzed with Gemini Vision.
-3.  **Transcription**: Audio extracted and transcribed with synthesized word-level timing.
+3.  **Transcription**: Audio extracted and transcribed with word-level timing (OpenAI verbose_json provides real timestamps, fallback to improved syllable-based synthesis).
 4.  **Planning**: AI generates edit plan using multi-pass system.
 5.  **Stock Media**: Fetches media from Pexels.
 6.  **AI Images**: Generates custom AI images.

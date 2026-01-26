@@ -144,6 +144,9 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - **Slot Tracking**: Proper slot reservation and release via `slotReserved` flag and `onJobComplete` callback
 - **Reconnection Safety**: Completed/failed projects cannot be accidentally restarted; frontend checks status before subscribing
 - **Job Cleanup**: Jobs and subscribers cleaned up after 5 minutes to allow reconnection window
+- **Unified Slot Management**: Job slot tracking centralized in backgroundProcessor.ts with exported functions (canStartNewJob, getActiveJobCount, getActiveJobsInfo)
+- **Event Replay System**: SSE events include unique incrementing IDs stored in eventHistory buffer (max 100 events); getEventsSince() enables replay of missed events on reconnect
+- **Client-Side Persistence**: Editor.tsx stores lastEventId in sessionStorage; on page refresh, sends lastEventId to server which replays missed events for seamless recovery
 
 ### Persistence & Multi-User Support
 - **PostgreSQL Storage**: Migrated from in-memory to persistent PostgreSQL database storage via DatabaseStorage class

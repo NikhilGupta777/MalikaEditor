@@ -132,21 +132,78 @@ function splitIntoNaturalSegments(text: string): string[] {
   return result;
 }
 
-// Create segments with synthesized word-level timing based on actual audio duration
+// Estimate syllable count for a word (approximation for timing)
+function estimateSyllables(word: string): number {
+  const cleaned = word.toLowerCase().replace(/[^a-z]/g, '');
+  if (cleaned.length === 0) return 1;
+  if (cleaned.length <= 3) return 1;
+  
+  // Count vowel groups as approximate syllables
+  const vowelGroups = cleaned.match(/[aeiouy]+/g);
+  let syllables = vowelGroups ? vowelGroups.length : 1;
+  
+  // Adjust for silent e at end
+  if (cleaned.endsWith('e') && syllables > 1) {
+    syllables--;
+  }
+  
+  // Adjust for common suffixes
+  if (cleaned.endsWith('le') && cleaned.length > 2 && !/[aeiouy]/.test(cleaned.charAt(cleaned.length - 3))) {
+    syllables++;
+  }
+  
+  return Math.max(1, syllables);
+}
+
+// Calculate speaking time weight for a word based on syllables and complexity
+function calculateWordWeight(word: string): number {
+  const syllables = estimateSyllables(word);
+  const baseWeight = syllables * 0.15; // ~150ms per syllable
+  
+  // Add time for punctuation (natural pauses)
+  let pauseWeight = 0;
+  if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) {
+    pauseWeight = 0.4; // Longer pause at sentence end
+  } else if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
+    pauseWeight = 0.2; // Medium pause at clause boundaries
+  } else if (word.endsWith('...') || word.includes('—')) {
+    pauseWeight = 0.5; // Longer pause for ellipsis/em-dash
+  }
+  
+  return baseWeight + pauseWeight;
+}
+
+// Calculate total weight for a sentence
+function calculateSentenceWeight(sentence: string): number {
+  const words = sentence.trim().split(/\s+/).filter(w => w.length > 0);
+  return words.reduce((sum, word) => sum + calculateWordWeight(word), 0);
+}
+
+// Create segments with improved word-level timing using syllable-based estimation
 function createSegmentsFromTextWithDuration(text: string, audioDuration: number): TranscriptSegment[] {
-  // Split into sentences
-  const sentences = text.split(/(?<=[.!?।])\s+/).filter((s: string) => s.trim());
+  // Split into sentences using natural language boundaries
+  const sentences = splitIntoNaturalSegments(text);
   
   if (sentences.length === 0) {
     if (text.trim()) {
-      // Single segment with word-level timing
-      const words = text.trim().split(/\s+/);
-      const wordDuration = audioDuration / Math.max(words.length, 1);
-      const wordTimings = words.map((word, i) => ({
-        word: word,
-        start: i * wordDuration,
-        end: (i + 1) * wordDuration,
-      }));
+      // Single segment with syllable-weighted word timing
+      const words = text.trim().split(/\s+/).filter(w => w.length > 0);
+      const totalWeight = words.reduce((sum, word) => sum + calculateWordWeight(word), 0);
+      const effectiveDuration = audioDuration * 0.95; // Leave small buffer
+      
+      let currentTime = 0;
+      const wordTimings = words.map(word => {
+        const weight = calculateWordWeight(word);
+        const wordDuration = (weight / totalWeight) * effectiveDuration;
+        const timing = {
+          word: word,
+          start: currentTime,
+          end: currentTime + wordDuration,
+        };
+        currentTime += wordDuration;
+        return timing;
+      });
+      
       return [{
         start: 0,
         end: audioDuration,
@@ -157,24 +214,40 @@ function createSegmentsFromTextWithDuration(text: string, audioDuration: number)
     return [];
   }
   
-  // Calculate total characters for proportional timing
-  const totalChars = sentences.reduce((sum, s) => sum + s.length, 0);
+  // Calculate total weight across all sentences for proportional timing
+  const sentenceWeights = sentences.map(s => calculateSentenceWeight(s));
+  const totalWeight = sentenceWeights.reduce((sum, w) => sum + w, 0);
+  
+  // Reserve time for inter-sentence gaps (natural pauses between sentences)
+  const gapTime = 0.15; // 150ms between segments
+  const totalGapTime = (sentences.length - 1) * gapTime;
+  const availableSpeakingTime = audioDuration - totalGapTime;
+  
   let currentTime = 0;
   
-  return sentences.map((sentence: string) => {
-    // Proportional duration based on sentence length
-    const proportion = sentence.length / totalChars;
-    const segmentDuration = Math.max(1.0, proportion * audioDuration * 0.95); // 95% to leave gaps
+  return sentences.map((sentence: string, idx: number) => {
+    // Calculate segment duration proportionally based on syllable weight
+    const sentenceWeight = sentenceWeights[idx];
+    const proportion = sentenceWeight / totalWeight;
+    const segmentDuration = Math.max(0.5, proportion * availableSpeakingTime);
     
-    // Create word-level timing for this segment
+    // Create word-level timing using syllable-weighted distribution
     const words = sentence.trim().split(/\s+/).filter(w => w.length > 0);
-    const wordDuration = segmentDuration / Math.max(words.length, 1);
+    const wordWeights = words.map(w => calculateWordWeight(w));
+    const segmentTotalWeight = wordWeights.reduce((sum, w) => sum + w, 0);
     
-    const wordTimings = words.map((word, i) => ({
-      word: word,
-      start: currentTime + (i * wordDuration),
-      end: currentTime + ((i + 1) * wordDuration),
-    }));
+    let wordTime = currentTime;
+    const wordTimings = words.map((word, i) => {
+      const wordWeight = wordWeights[i];
+      const wordDuration = (wordWeight / segmentTotalWeight) * segmentDuration;
+      const timing = {
+        word: word,
+        start: wordTime,
+        end: wordTime + wordDuration,
+      };
+      wordTime += wordDuration;
+      return timing;
+    });
     
     const segment: TranscriptSegment = {
       start: currentTime,
@@ -183,7 +256,7 @@ function createSegmentsFromTextWithDuration(text: string, audioDuration: number)
       words: wordTimings,
     };
     
-    currentTime += segmentDuration + 0.2; // Small gap between segments
+    currentTime += segmentDuration + gapTime;
     return segment;
   }).filter((s: TranscriptSegment) => s.text.length > 0);
 }

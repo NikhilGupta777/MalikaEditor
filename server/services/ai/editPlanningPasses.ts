@@ -97,6 +97,13 @@ export interface StructuredPlan {
   narrativeArc: "linear" | "problem_solution" | "story" | "tutorial" | "listicle" | "conversational";
 }
 
+// Combined result from consolidated pass (reduces 3 API calls to 1)
+export interface ConsolidatedAnalysisResult {
+  structuredPlan: StructuredPlan;
+  qualityMap: QualityMap;
+  brollPlan: OptimizedBrollPlan;
+}
+
 export interface QualityMap {
   segmentScores: Array<{
     start: number;
@@ -646,6 +653,205 @@ function getDefaultBrollPlan(
     .map(f => ({ start: f.start, end: f.end, word: f.word, action: "cut" as const }));
 
   return { brollPlacements, fillerActions, cutActions: [] };
+}
+
+// CONSOLIDATED PASS: Combines Passes 1-3 into a single API call for efficiency
+export async function executeConsolidatedAnalysis(
+  analysis: VideoAnalysis,
+  transcript: TranscriptSegment[],
+  semanticAnalysis: SemanticAnalysis,
+  fillerSegments: { start: number; end: number; word: string }[]
+): Promise<ConsolidatedAnalysisResult> {
+  const duration = analysis.duration || 0;
+  const genre = analysis.context?.genre || "general";
+  const tone = analysis.context?.tone || "casual";
+  
+  const transcriptText = transcript.slice(0, 40).map(t => 
+    `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
+  ).join("\n");
+
+  const keyMomentsSummary = [
+    ...(analysis.keyMoments || []).map(k => `[${safeFixed(k.timestamp)}s] ${k.type}: ${k.description}`),
+    ...(semanticAnalysis.keyMoments || []).map(k => `[${safeFixed(k.timestamp)}s] ${k.description}`),
+  ].slice(0, 10).join("\n");
+
+  const brollWindowsSummary = semanticAnalysis.brollWindows.slice(0, 10).map(b =>
+    `[${safeFixed(b.start)}s-${safeFixed(b.end)}s] "${b.suggestedQuery}" - ${b.context}`
+  ).join("\n");
+
+  const prompt = `You are an expert video editor. Perform a COMPREHENSIVE analysis of this video in a single pass.
+
+VIDEO METADATA:
+- Duration: ${safeFixed(duration)} seconds
+- Genre: ${genre}
+- Tone: ${tone}
+- Existing narrative hints: ${JSON.stringify(analysis.narrativeStructure || {})}
+
+SEMANTIC ANALYSIS:
+- Main topics: ${semanticAnalysis.mainTopics.join(", ")}
+- Overall tone: ${semanticAnalysis.overallTone}
+- Content summary: ${semanticAnalysis.contentSummary}
+
+KEY MOMENTS DETECTED:
+${keyMomentsSummary || "None"}
+
+EXISTING B-ROLL WINDOWS (from transcript analysis):
+${brollWindowsSummary || "None"}
+
+FILLER WORDS (${fillerSegments.length} total):
+${fillerSegments.slice(0, 15).map(f => `[${safeFixed(f.start)}s] "${f.word}"`).join(", ")}
+
+TRANSCRIPT:
+${transcriptText}
+
+ANALYZE AND PROVIDE:
+
+1. STRUCTURE ANALYSIS - Identify intro/main/outro sections and key structural markers
+2. QUALITY ASSESSMENT - Score segments (0-100) for engagement and value
+3. B-ROLL OPTIMIZATION - Plan optimal B-roll placements with ULTRA-SPECIFIC queries
+
+B-ROLL RULES:
+- DISTRIBUTE EVENLY across entire video timeline (not clustered at start)
+- Target ${Math.min(12, Math.max(4, Math.ceil(duration / 8)))} placements
+- Each 3-5 seconds duration
+- Minimum 3 second spacing between clips
+- Match ${genre} content with ${tone} imagery
+- Use ${getBrollStyleHint(genre)}
+
+Respond in JSON only (no markdown):
+{
+  "structure": {
+    "introSection": {"start": 0, "end": number} | null,
+    "mainContentSection": {"start": number, "end": number},
+    "outroSection": {"start": number, "end": number} | null,
+    "sectionMarkers": [{"timestamp": number, "type": "intro_end|section_change|climax|outro_start|transition", "description": "string"}],
+    "narrativeArc": "linear|problem_solution|story|tutorial|listicle|conversational"
+  },
+  "quality": {
+    "segmentScores": [{"start": number, "end": number, "engagementScore": 0-100, "valueLevel": "must_keep|high|medium|low|cut_candidate", "reason": "string"}],
+    "hookStrength": 0-100,
+    "overallEngagement": 0-100,
+    "lowValueSegments": [{"start": number, "end": number, "reason": "string"}],
+    "mustKeepSegments": [{"start": number, "end": number, "reason": "string"}]
+  },
+  "broll": {
+    "brollPlacements": [{"start": number, "duration": 3-5, "query": "SPECIFIC search query", "transcriptContext": "what speaker says", "priority": "high|medium|low", "reason": "string"}],
+    "fillerActions": [{"start": number, "end": number, "word": "string", "action": "cut|overlay"}],
+    "cutActions": [{"start": number, "end": number, "reason": "string"}]
+  }
+}`;
+
+  try {
+    const response = await withRetry(
+      () => getGeminiClient().models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+      }),
+      "consolidatedAnalysis",
+      AI_RETRY_OPTIONS
+    );
+
+    const text = response.text || "";
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
+    
+    if (jsonStart === -1 || jsonEnd === -1) {
+      aiLogger.warn("Consolidated analysis: No JSON found, using defaults");
+      return getDefaultConsolidatedResult(duration, analysis, semanticAnalysis, fillerSegments);
+    }
+
+    const jsonText = text.slice(jsonStart, jsonEnd + 1)
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, "")
+      .replace(/\\n/g, " ")
+      .trim();
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (e) {
+      try {
+        const cleanedJson = jsonText.replace(/,\s*([\]}])/g, '$1');
+        parsed = JSON.parse(cleanedJson);
+      } catch (innerE) {
+        aiLogger.error("Consolidated analysis: JSON parse failed, using defaults");
+        return getDefaultConsolidatedResult(duration, analysis, semanticAnalysis, fillerSegments);
+      }
+    }
+
+    // Extract and validate structure
+    const structuredPlan: StructuredPlan = {
+      introSection: parsed.structure?.introSection || null,
+      mainContentSection: parsed.structure?.mainContentSection || { start: 0, end: duration },
+      outroSection: parsed.structure?.outroSection || null,
+      sectionMarkers: (parsed.structure?.sectionMarkers || []).map((m: any) => ({
+        timestamp: m.timestamp,
+        type: normalizeSectionType(m.type),
+        description: m.description || "",
+      })),
+      narrativeArc: normalizeNarrativeArc(parsed.structure?.narrativeArc || "linear"),
+    };
+
+    // Extract and validate quality map
+    const qualityData = parsed.quality || {};
+    const qualityMap: QualityMap = {
+      segmentScores: (qualityData.segmentScores || []).map((s: any) => ({
+        start: s.start,
+        end: s.end,
+        engagementScore: s.engagementScore || 60,
+        valueLevel: normalizeValueLevel(s.valueLevel || "medium"),
+        reason: s.reason || "",
+      })),
+      hookStrength: qualityData.hookStrength || 60,
+      overallEngagement: qualityData.overallEngagement || 60,
+      lowValueSegments: qualityData.lowValueSegments || [],
+      mustKeepSegments: qualityData.mustKeepSegments || [],
+    };
+
+    // Extract and validate B-roll plan
+    const brollData = parsed.broll || {};
+    const brollPlacements = validateBrollSpacing(
+      (brollData.brollPlacements || []).map((b: any) => ({
+        start: Math.max(0, b.start),
+        duration: Math.min(6, Math.max(2, b.duration || 4)),
+        query: b.query || "background footage",
+        transcriptContext: b.transcriptContext || "",
+        priority: normalizePriority(b.priority || "medium"),
+        reason: b.reason || "",
+      })),
+      duration
+    );
+
+    const brollPlan: OptimizedBrollPlan = {
+      brollPlacements,
+      fillerActions: (brollData.fillerActions || []).map((f: any) => ({
+        start: f.start,
+        end: f.end,
+        word: f.word,
+        action: normalizeFillerAction(f.action || "cut"),
+      })),
+      cutActions: brollData.cutActions || [],
+    };
+
+    aiLogger.info(`Consolidated analysis complete: ${structuredPlan.sectionMarkers.length} markers, ${qualityMap.segmentScores.length} scored segments, ${brollPlan.brollPlacements.length} B-roll placements`);
+
+    return { structuredPlan, qualityMap, brollPlan };
+  } catch (error) {
+    aiLogger.error("Consolidated analysis error:", error);
+    return getDefaultConsolidatedResult(duration, analysis, semanticAnalysis, fillerSegments);
+  }
+}
+
+function getDefaultConsolidatedResult(
+  duration: number,
+  analysis: VideoAnalysis,
+  semanticAnalysis: SemanticAnalysis,
+  fillerSegments: { start: number; end: number; word: string }[]
+): ConsolidatedAnalysisResult {
+  const structuredPlan = getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
+  const qualityMap = getDefaultQualityMap(duration, semanticAnalysis);
+  const brollPlan = getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
+  
+  return { structuredPlan, qualityMap, brollPlan };
 }
 
 export async function executePass4QualityReview(

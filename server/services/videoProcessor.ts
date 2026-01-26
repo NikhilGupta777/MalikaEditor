@@ -2358,26 +2358,52 @@ async function applyEditsInternal(
         if (cap.words && cap.words.length > 0) {
           adjustedWords = cap.words
             // Include words with ANY overlap (partial overlap allowed)
-            .filter(w => w.end > overlapStart && w.start < overlapEnd)
+            // Use word midpoint to determine inclusion - more robust for boundary cases
+            .filter(w => {
+              const wordMidpoint = (w.start + w.end) / 2;
+              // Include word if its midpoint is in the segment OR it has significant overlap (>30%)
+              const wordDuration = w.end - w.start;
+              const overlapAmount = Math.min(w.end, overlapEnd) - Math.max(w.start, overlapStart);
+              const overlapRatio = wordDuration > 0 ? overlapAmount / wordDuration : 0;
+              
+              return (wordMidpoint >= overlapStart && wordMidpoint <= overlapEnd) || overlapRatio >= 0.3;
+            })
             .map(w => {
               // Clamp word timing to segment boundaries
               const clampedStart = Math.max(w.start, overlapStart);
               const clampedEnd = Math.min(w.end, overlapEnd);
+              
+              // Ensure minimum duration for display - expand if needed
+              const MIN_WORD_DURATION = 0.08; // 80ms minimum for readability
+              let adjustedWordStart = mapping.outputStart + (clampedStart - mapping.sourceStart);
+              let adjustedWordEnd = mapping.outputStart + (clampedEnd - mapping.sourceStart);
+              
+              // Expand short words to minimum duration
+              if (adjustedWordEnd - adjustedWordStart < MIN_WORD_DURATION) {
+                const midpoint = (adjustedWordStart + adjustedWordEnd) / 2;
+                adjustedWordStart = midpoint - MIN_WORD_DURATION / 2;
+                adjustedWordEnd = midpoint + MIN_WORD_DURATION / 2;
+              }
+              
               return {
                 word: w.word,
-                // Map from source time (relative to mapping.sourceStart) to output time
-                start: mapping.outputStart + (clampedStart - mapping.sourceStart),
-                end: mapping.outputStart + (clampedEnd - mapping.sourceStart),
+                start: Math.max(0, adjustedWordStart),
+                end: adjustedWordEnd,
               };
             })
-            // Ensure minimum word duration after clamping
-            .filter(w => w.end - w.start >= 0.01);
+            // Remove only truly invalid words
+            .filter(w => w.end > w.start);
         }
+        
+        // Rebuild text from adjusted words if words were modified
+        const adjustedText = adjustedWords && adjustedWords.length > 0
+          ? adjustedWords.map(w => w.word).join(' ')
+          : cap.text;
         
         adjustedCaptions.push({
           start: adjustedStart,
           end: adjustedEnd,
-          text: cap.text,
+          text: adjustedText,
           words: adjustedWords,
         });
       }

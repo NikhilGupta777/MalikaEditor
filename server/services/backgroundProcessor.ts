@@ -221,24 +221,33 @@ async function runProcessingPipeline(
     const metadata = await getVideoMetadata(videoPath);
     addActivity(projectId, `Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width}x${metadata.height}`);
 
+    // PARALLEL PHASE 1: Extract frames, audio, and detect silence simultaneously
+    // These operations are all independent reads from the video file
     const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
-    addActivity(projectId, `Extracting ${numFrames} key frames for AI analysis...`);
-    const framePaths = await extractFrames(videoPath, numFrames);
-    addActivity(projectId, `Extracted ${framePaths.length} frames successfully`);
+    addActivity(projectId, `Starting parallel extraction: ${numFrames} frames + audio${editOptions.removeSilence ? ' + silence detection' : ''}...`);
+    
+    const parallelExtractionStart = Date.now();
+    
+    const [framePaths, audioPath, silentSegments] = await Promise.all([
+      // Frame extraction
+      extractFrames(videoPath, numFrames),
+      // Audio extraction  
+      extractAudio(videoPath),
+      // Silence detection (if enabled)
+      editOptions.removeSilence ? detectSilence(videoPath) : Promise.resolve([]),
+    ]);
+    
+    const parallelExtractionTime = ((Date.now() - parallelExtractionStart) / 1000).toFixed(1);
+    addActivity(projectId, `Parallel extraction complete in ${parallelExtractionTime}s: ${framePaths.length} frames extracted`);
     tempFiles.push(path.dirname(framePaths[0]));
-
-    let silentSegments: { start: number; end: number }[] = [];
+    tempFiles.push(audioPath);
+    
     if (editOptions.removeSilence) {
-      addActivity(projectId, "Scanning audio for silent segments...");
-      silentSegments = await detectSilence(videoPath);
       addActivity(projectId, `Found ${silentSegments.length} silent segments to remove`);
     }
 
+    // PHASE 2: Transcription (requires audio)
     await updateStatus("transcribing");
-    addActivity(projectId, "Extracting audio track...");
-    const audioPath = await extractAudio(videoPath);
-    tempFiles.push(audioPath);
-
     addActivity(projectId, "Transcribing audio with AI...");
     const transcript = await transcribeAudio(audioPath, metadata.duration);
     addActivity(projectId, `Transcription complete: ${transcript.length} segments`);
@@ -303,7 +312,6 @@ async function runProcessingPipeline(
     notifySubscribers(projectId, "editPlan", { editPlan });
 
     await updateStatus("fetching_stock");
-    addActivity(projectId, "Fetching stock media variants for B-roll...");
     let stockMedia: StockMediaItem[] = [];
     let aiImageCount = 0;
     
@@ -312,39 +320,43 @@ async function runProcessingPipeline(
       brollWindows.map(w => w.suggestedQuery).filter(Boolean) || [];
     
     if (editOptions.addBroll && stockQueries.length > 0) {
-      const stockVariants = await fetchStockMediaWithVariants(
-        stockQueries.slice(0, 8),
-        3,
-        3
-      );
+      // PARALLEL PHASE 3: Fetch stock media AND generate AI images simultaneously
+      // These are completely independent operations
+      const shouldGenerateAi = editOptions.generateAiImages && analysis.semanticAnalysis;
       
+      addActivity(projectId, `Fetching stock media${shouldGenerateAi ? ' + generating AI images' : ''} in parallel...`);
+      const mediaFetchStart = Date.now();
+      
+      // Run stock fetch and AI generation in parallel
+      const [stockVariants, aiImagesResult] = await Promise.all([
+        // Stock media fetching
+        fetchStockMediaWithVariants(stockQueries.slice(0, 8), 3, 3),
+        // AI image generation (if enabled)
+        shouldGenerateAi
+          ? generateAiImagesForVideo(
+              analysis.semanticAnalysis!,
+              undefined,
+              3,
+              metadata.duration
+            ).catch((aiError: Error) => {
+              processorLogger.error("AI image generation failed:", aiError);
+              addActivity(projectId, "AI image generation failed, continuing with stock media only");
+              notifySubscribers(projectId, "aiImagesError", { 
+                message: "AI image generation failed, continuing with stock media only" 
+              });
+              return [] as Awaited<ReturnType<typeof generateAiImagesForVideo>>;
+            })
+          : Promise.resolve([] as Awaited<ReturnType<typeof generateAiImagesForVideo>>),
+      ]);
+      
+      const mediaFetchTime = ((Date.now() - mediaFetchStart) / 1000).toFixed(1);
       const totalPhotos = stockVariants.reduce((sum, v) => sum + v.photos.length, 0);
       const totalVideos = stockVariants.reduce((sum, v) => sum + v.videos.length, 0);
-      addActivity(projectId, `Found ${totalPhotos} photos + ${totalVideos} videos from ${stockVariants.length} queries`);
       
-      let generatedAiImages: Awaited<ReturnType<typeof generateAiImagesForVideo>> = [];
+      const generatedAiImages = aiImagesResult || [];
+      aiImageCount = generatedAiImages.length;
       
-      if (editOptions.generateAiImages && analysis.semanticAnalysis) {
-        await updateStatus("generating_ai_images");
-        addActivity(projectId, "Generating AI images for overlays...");
-        
-        try {
-          generatedAiImages = await generateAiImagesForVideo(
-            analysis.semanticAnalysis,
-            undefined,
-            3,
-            metadata.duration
-          );
-          aiImageCount = generatedAiImages.length;
-          addActivity(projectId, `Generated ${aiImageCount} AI images`);
-        } catch (aiError) {
-          processorLogger.error("AI image generation failed:", aiError);
-          addActivity(projectId, "AI image generation failed, continuing with stock media only");
-          notifySubscribers(projectId, "aiImagesError", { 
-            message: "AI image generation failed, continuing with stock media only" 
-          });
-        }
-      }
+      addActivity(projectId, `Parallel media fetch complete in ${mediaFetchTime}s: ${totalPhotos} photos + ${totalVideos} videos + ${aiImageCount} AI images`);
       
       addActivity(projectId, "AI selecting best media for each B-roll window...");
       const selectionResult = await selectBestMediaForWindows(

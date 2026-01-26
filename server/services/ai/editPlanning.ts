@@ -7,11 +7,13 @@ import {
   executePass2QualityAssessment,
   executePass3BrollOptimization,
   executePass4QualityReview,
+  executeConsolidatedAnalysis,
   getBrollStyleHint,
   type StructuredPlan,
   type QualityMap,
   type OptimizedBrollPlan,
   type ReviewedEditPlan,
+  type ConsolidatedAnalysisResult,
 } from "./editPlanningPasses";
 import type {
   VideoAnalysis,
@@ -477,34 +479,53 @@ export async function generateSmartEditPlan(
   semanticAnalysis: SemanticAnalysis,
   fillerSegments: { start: number; end: number; word: string }[]
 ): Promise<EditPlan> {
-  aiLogger.info("Starting multi-pass smart edit planning...");
+  aiLogger.info("Starting optimized smart edit planning (2-pass consolidated approach)...");
   const startTime = Date.now();
 
-  aiLogger.info("Pass 1: Analyzing video structure...");
-  const structuredPlan = await executePass1StructureAnalysis(analysis, transcript, semanticAnalysis);
-  aiLogger.debug(`Pass 1 complete: ${structuredPlan.narrativeArc} structure with ${structuredPlan.sectionMarkers.length} markers`);
+  let structuredPlan: StructuredPlan;
+  let qualityMap: QualityMap;
+  let brollPlan: OptimizedBrollPlan;
 
-  aiLogger.info("Pass 2: Assessing segment quality...");
-  const qualityMap = await executePass2QualityAssessment(
-    analysis, transcript, semanticAnalysis, structuredPlan, fillerSegments
-  );
-  aiLogger.debug(`Pass 2 complete: ${qualityMap.segmentScores.length} segments scored, hook strength: ${qualityMap.hookStrength}`);
+  // Try consolidated analysis first (1 API call instead of 3)
+  try {
+    aiLogger.info("Consolidated Pass: Analyzing structure, quality, and B-roll in single call...");
+    const consolidated = await executeConsolidatedAnalysis(
+      analysis, transcript, semanticAnalysis, fillerSegments
+    );
+    structuredPlan = consolidated.structuredPlan;
+    qualityMap = consolidated.qualityMap;
+    brollPlan = consolidated.brollPlan;
+    aiLogger.info(`Consolidated analysis complete: ${structuredPlan.narrativeArc} structure, ${qualityMap.segmentScores.length} scored segments, ${brollPlan.brollPlacements.length} B-roll placements`);
+  } catch (consolidatedError) {
+    // Fallback to sequential passes if consolidated fails
+    aiLogger.warn("Consolidated analysis failed, falling back to sequential passes:", consolidatedError);
+    
+    aiLogger.info("Pass 1: Analyzing video structure...");
+    structuredPlan = await executePass1StructureAnalysis(analysis, transcript, semanticAnalysis);
+    aiLogger.debug(`Pass 1 complete: ${structuredPlan.narrativeArc} structure with ${structuredPlan.sectionMarkers.length} markers`);
 
-  aiLogger.info("Pass 3: Optimizing B-roll placement...");
-  const brollPlan = await executePass3BrollOptimization(
-    analysis, transcript, semanticAnalysis, structuredPlan, qualityMap, fillerSegments
-  );
-  aiLogger.debug(`Pass 3 complete: ${brollPlan.brollPlacements.length} B-roll placements, ${brollPlan.fillerActions.length} filler actions`);
+    aiLogger.info("Pass 2: Assessing segment quality...");
+    qualityMap = await executePass2QualityAssessment(
+      analysis, transcript, semanticAnalysis, structuredPlan, fillerSegments
+    );
+    aiLogger.debug(`Pass 2 complete: ${qualityMap.segmentScores.length} segments scored, hook strength: ${qualityMap.hookStrength}`);
 
-  aiLogger.info("Pass 4: Quality review and refinement...");
+    aiLogger.info("Pass 3: Optimizing B-roll placement...");
+    brollPlan = await executePass3BrollOptimization(
+      analysis, transcript, semanticAnalysis, structuredPlan, qualityMap, fillerSegments
+    );
+    aiLogger.debug(`Pass 3 complete: ${brollPlan.brollPlacements.length} B-roll placements, ${brollPlan.fillerActions.length} filler actions`);
+  }
+
+  aiLogger.info("Final Pass: Quality review and refinement...");
   let reviewedPlan;
   try {
     reviewedPlan = await executePass4QualityReview(
       analysis, structuredPlan, qualityMap, brollPlan, prompt
     );
-    aiLogger.debug(`Pass 4 complete: ${reviewedPlan.actions.length} final actions, overall score: ${reviewedPlan.qualityMetrics.overallScore}`);
+    aiLogger.debug(`Final pass complete: ${reviewedPlan.actions.length} final actions, overall score: ${reviewedPlan.qualityMetrics.overallScore}`);
   } catch (error) {
-    aiLogger.error("Pass 4 failed, using B-roll plan directly:", error);
+    aiLogger.error("Final pass failed, using B-roll plan directly:", error);
     reviewedPlan = {
       actions: brollPlan.brollPlacements.map(p => ({
         type: "insert_stock" as const,
@@ -519,7 +540,7 @@ export async function generateSmartEditPlan(
         pacing: "moderate",
         brollRelevance: "medium" 
       },
-      warnings: ["Pass 4 refinement failed"]
+      warnings: ["Final pass refinement failed"]
     };
   }
 

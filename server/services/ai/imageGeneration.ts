@@ -142,43 +142,67 @@ export async function generateAiImagesForVideo(
 
   aiLogger.debug(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${maxImages})`);
 
-  let failureCount = 0;
-  const errors: Error[] = [];
+  // Parallel generation with controlled concurrency
+  const CONCURRENCY_LIMIT = 3; // Limit parallel requests to avoid rate limiting
+  const errors: { candidate: typeof aiImageCandidates[0]; error: Error }[] = [];
   
-  for (const candidate of aiImageCandidates) {
-    try {
-      const imagePrompt = `${candidate.suggestedQuery}. Context: ${candidate.context}`;
-      const result = await generateAiImage(imagePrompt, videoContext);
+  // Process in batches for controlled parallelism
+  for (let batchStart = 0; batchStart < aiImageCandidates.length; batchStart += CONCURRENCY_LIMIT) {
+    const batch = aiImageCandidates.slice(batchStart, batchStart + CONCURRENCY_LIMIT);
+    
+    aiLogger.debug(`Processing AI image batch ${Math.floor(batchStart / CONCURRENCY_LIMIT) + 1}/${Math.ceil(aiImageCandidates.length / CONCURRENCY_LIMIT)} (${batch.length} images)`);
+    
+    // Generate images in parallel within the batch
+    const batchResults = await Promise.allSettled(
+      batch.map(async (candidate) => {
+        const imagePrompt = `${candidate.suggestedQuery}. Context: ${candidate.context}`;
+        const result = await generateAiImage(imagePrompt, videoContext);
+        
+        return {
+          prompt: candidate.suggestedQuery,
+          base64Data: result.base64Data,
+          mimeType: result.mimeType,
+          startTime: candidate.start,
+          endTime: candidate.end,
+          duration: Math.min(candidate.end - candidate.start, 5),
+          context: candidate.context,
+        } as GeneratedAiImage;
+      })
+    );
+    
+    // Process batch results
+    for (let i = 0; i < batchResults.length; i++) {
+      const result = batchResults[i];
+      const candidate = batch[i];
       
-      generatedImages.push({
-        prompt: candidate.suggestedQuery,
-        base64Data: result.base64Data,
-        mimeType: result.mimeType,
-        startTime: candidate.start,
-        endTime: candidate.end,
-        duration: Math.min(candidate.end - candidate.start, 5),
-        context: candidate.context,
-      });
-    } catch (error) {
-      failureCount++;
-      const err = error instanceof Error ? error : new Error(String(error));
-      errors.push(err);
-      aiLogger.error(`Failed to generate AI image for: ${candidate.suggestedQuery}`, error);
+      if (result.status === 'fulfilled') {
+        generatedImages.push(result.value);
+      } else {
+        const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+        errors.push({ candidate, error: err });
+        aiLogger.warn(`Failed to generate AI image for: "${candidate.suggestedQuery.substring(0, 50)}..." - ${err.message}`);
+      }
     }
   }
 
+  const successCount = generatedImages.length;
+  const failureCount = errors.length;
+  
   if (failureCount > 0) {
-    aiLogger.warn(`AI image generation completed with ${failureCount}/${aiImageCandidates.length} failures`);
+    aiLogger.warn(`AI image generation: ${successCount}/${aiImageCandidates.length} succeeded, ${failureCount} failed`);
   }
   
+  // Only throw if ALL images failed AND we had candidates
   if (aiImageCandidates.length > 0 && generatedImages.length === 0) {
     const aggregateError = new Error(
-      `All ${failureCount} AI image generation attempts failed. First error: ${errors[0]?.message || 'Unknown error'}`
+      `All ${failureCount} AI image generation attempts failed. First error: ${errors[0]?.error?.message || 'Unknown error'}`
     );
     aiLogger.error("All AI image generation attempts failed", aggregateError);
-    throw aggregateError;
+    // Don't throw - return empty array to allow video processing to continue without AI images
+    aiLogger.warn("Continuing without AI images - video will use stock media only");
+    return [];
   }
 
-  aiLogger.info(`Generated ${generatedImages.length} AI images for video`);
+  aiLogger.info(`Generated ${generatedImages.length} AI images for video (${failureCount} failures, continuing with partial success)`);
   return generatedImages;
 }

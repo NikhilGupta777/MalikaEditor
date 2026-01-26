@@ -264,10 +264,46 @@ RESPOND WITH JSON ONLY:
   const usedInThisBatch = new Set<string>();
 
   try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in response");
+    // Robust JSON extraction with multiple fallback strategies
+    let parsed: any = null;
     
-    const parsed = JSON.parse(jsonMatch[0]);
+    // Strategy 1: Find JSON block boundaries
+    const jsonStart = response.indexOf('{');
+    const jsonEnd = response.lastIndexOf('}');
+    
+    if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
+      throw new Error("No JSON object boundaries found in response");
+    }
+    
+    let jsonText = response.slice(jsonStart, jsonEnd + 1);
+    
+    // Clean up common AI response issues
+    jsonText = jsonText
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
+      .replace(/\\n/g, " ") // Normalize escaped newlines
+      .replace(/,\s*([\]}])/g, '$1') // Remove trailing commas
+      .trim();
+    
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (firstParseError) {
+      // Strategy 2: Try to extract just the windowSelections array
+      selectorLogger.debug("First JSON parse failed, trying array extraction");
+      const arrayMatch = response.match(/"windowSelections"\s*:\s*\[([\s\S]*?)\]/);
+      if (arrayMatch) {
+        try {
+          const arrayContent = `[${arrayMatch[1].replace(/,\s*$/, '')}]`;
+          const selections = JSON.parse(arrayContent);
+          parsed = { windowSelections: selections };
+        } catch (arrayParseError) {
+          throw firstParseError; // Use original error
+        }
+      } else {
+        throw firstParseError;
+      }
+    }
+    
+    if (!parsed) throw new Error("Failed to parse response as JSON");
     
     if (!parsed.windowSelections || !Array.isArray(parsed.windowSelections)) {
       throw new Error("Invalid response structure");
@@ -363,6 +399,45 @@ RESPOND WITH JSON ONLY:
   return selections;
 }
 
+// Semantic similarity scoring using word overlap and synonyms
+function computeSemanticScore(query: string, candidateText: string): number {
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const candidateWords = candidateText.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  
+  // Direct word matches
+  let directMatches = 0;
+  for (const qw of queryWords) {
+    if (candidateWords.some(cw => cw === qw || cw.includes(qw) || qw.includes(cw))) {
+      directMatches += 10;
+    }
+  }
+  
+  // Semantic category matching
+  const categoryMap: Record<string, string[]> = {
+    business: ["office", "corporate", "meeting", "businessman", "professional", "work", "entrepreneur", "startup", "company"],
+    technology: ["computer", "laptop", "phone", "digital", "software", "code", "programming", "developer", "tech", "screen"],
+    nature: ["outdoor", "landscape", "mountain", "forest", "beach", "ocean", "sunset", "sunrise", "sky", "tree", "water"],
+    people: ["person", "man", "woman", "team", "group", "family", "crowd", "audience", "presenter", "speaker"],
+    food: ["cooking", "kitchen", "chef", "restaurant", "eating", "meal", "recipe", "ingredient", "healthy", "dish"],
+    fitness: ["exercise", "workout", "gym", "running", "athlete", "sport", "training", "health", "yoga", "stretching"],
+    education: ["learning", "student", "teacher", "classroom", "school", "university", "study", "reading", "book", "lecture"],
+    travel: ["journey", "trip", "vacation", "destination", "airport", "hotel", "adventure", "tourist", "explore", "city"],
+    creative: ["art", "design", "creative", "artist", "painting", "drawing", "music", "photography", "film", "studio"],
+    medical: ["health", "hospital", "doctor", "medical", "healthcare", "medicine", "wellness", "patient", "clinic", "nurse"],
+  };
+  
+  let categoryScore = 0;
+  for (const [category, keywords] of Object.entries(categoryMap)) {
+    const queryHasCategory = queryWords.some(w => keywords.includes(w));
+    const candidateHasCategory = candidateWords.some(w => keywords.includes(w));
+    if (queryHasCategory && candidateHasCategory) {
+      categoryScore += 8;
+    }
+  }
+  
+  return directMatches + categoryScore;
+}
+
 function fallbackSelectForWindow(
   window: BrollWindow,
   candidates: MediaCandidate[],
@@ -370,20 +445,31 @@ function fallbackSelectForWindow(
 ): SelectedMedia | null {
   if (candidates.length === 0) return null;
   
-  const queryWords = window.suggestedQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-  
+  // Enhanced scoring with semantic matching
   const scoredCandidates = candidates.map(c => {
     let score = 0;
     
     const candidateText = (c.query + " " + (c.description || "")).toLowerCase();
-    for (const word of queryWords) {
-      if (candidateText.includes(word)) score += 10;
+    
+    // Semantic similarity score
+    score += computeSemanticScore(window.suggestedQuery, candidateText);
+    
+    // Context matching (if available)
+    if (window.context) {
+      score += computeSemanticScore(window.context, candidateText) * 0.5;
     }
     
-    if (c.source === "ai") score += 5;
+    // Priority bonus
+    if (window.priority === "high") score += 3;
+    else if (window.priority === "medium") score += 1;
     
-    if (windowDuration > 3 && c.type === "video") score += 3;
-    if (windowDuration <= 3 && c.type !== "video") score += 2;
+    // Source and type preferences
+    if (c.source === "ai") score += 5; // Prefer AI images as they're custom
+    
+    // Duration-appropriate media selection
+    if (windowDuration > 4 && c.type === "video") score += 4;
+    if (windowDuration <= 3 && c.type !== "video") score += 3;
+    if (c.type === "video" && c.duration && c.duration >= windowDuration * 0.8) score += 2;
     
     return { candidate: c, score };
   }).sort((a, b) => b.score - a.score);
@@ -391,19 +477,36 @@ function fallbackSelectForWindow(
   const selectedMedia: MediaCandidate[] = [];
   const clipsNeeded = windowDuration > 6 ? Math.min(Math.floor(windowDuration / 3), 3) : 1;
   
-  for (let i = 0; i < Math.min(clipsNeeded, scoredCandidates.length); i++) {
-    selectedMedia.push(scoredCandidates[i].candidate);
+  // Select top-scoring candidates without duplicates
+  const usedTypes = new Set<string>();
+  for (let i = 0; i < scoredCandidates.length && selectedMedia.length < clipsNeeded; i++) {
+    const candidate = scoredCandidates[i].candidate;
+    
+    // For multiple clips, prefer variety in types
+    if (selectedMedia.length > 0 && clipsNeeded > 1) {
+      const typeKey = `${candidate.source}-${candidate.type}`;
+      if (usedTypes.has(typeKey) && i < scoredCandidates.length - 1) {
+        continue; // Skip to get more variety
+      }
+      usedTypes.add(typeKey);
+    }
+    
+    selectedMedia.push(candidate);
   }
 
+  // Fallback to first available if nothing selected
   if (selectedMedia.length === 0 && candidates.length > 0) {
     selectedMedia.push(candidates[0]);
   }
+
+  const bestScore = scoredCandidates[0]?.score || 0;
+  const confidence = bestScore > 20 ? "high" : bestScore > 10 ? "medium" : "low";
 
   return {
     windowIndex: 0,
     window,
     selectedMedia,
-    reasoning: "Fallback selection based on content matching",
+    reasoning: `Smart fallback selection (${confidence} confidence, score: ${bestScore})`,
     allowMultipleClips: selectedMedia.length > 1,
   };
 }

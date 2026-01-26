@@ -217,6 +217,127 @@ export function detectFillerWords(
   return fillerSegments;
 }
 
+interface BrollWindow {
+  start: number;
+  end: number;
+  context: string;
+  suggestedQuery: string;
+  priority: Priority;
+  reason: string;
+}
+
+// Ensures B-roll windows are evenly distributed across the video timeline
+// Redistributes clustered windows to fill gaps in timeline coverage
+function enforceEvenBrollDistribution(
+  windows: BrollWindow[],
+  duration: number
+): BrollWindow[] {
+  if (windows.length === 0 || duration <= 0) return windows;
+  
+  // Sort by start time
+  const sorted = [...windows].sort((a, b) => a.start - b.start);
+  
+  // Divide video into thirds
+  const thirdDuration = duration / 3;
+  const segments = [
+    { start: 0, end: thirdDuration, windows: [] as BrollWindow[] },
+    { start: thirdDuration, end: thirdDuration * 2, windows: [] as BrollWindow[] },
+    { start: thirdDuration * 2, end: duration, windows: [] as BrollWindow[] },
+  ];
+  
+  // Categorize windows by segment
+  for (const window of sorted) {
+    const midpoint = (window.start + window.end) / 2;
+    for (const segment of segments) {
+      if (midpoint >= segment.start && midpoint < segment.end) {
+        segment.windows.push(window);
+        break;
+      }
+    }
+  }
+  
+  // Check distribution - each segment should have at least 1-2 windows
+  const minPerSegment = Math.max(1, Math.floor(windows.length / 4));
+  const maxPerSegment = Math.ceil(windows.length * 0.6); // No more than 60% in one segment
+  
+  let redistributionNeeded = false;
+  for (const segment of segments) {
+    if (segment.windows.length > maxPerSegment || segment.windows.length < minPerSegment) {
+      redistributionNeeded = true;
+      break;
+    }
+  }
+  
+  if (!redistributionNeeded) {
+    aiLogger.debug(`B-roll distribution OK: [${segments[0].windows.length}, ${segments[1].windows.length}, ${segments[2].windows.length}]`);
+    return sorted;
+  }
+  
+  // Redistribute: take excess from heavy segments and assign to light ones
+  const excess: BrollWindow[] = [];
+  
+  // Collect excess windows from oversaturated segments
+  for (const segment of segments) {
+    while (segment.windows.length > maxPerSegment) {
+      // Remove lowest priority windows first
+      segment.windows.sort((a, b) => {
+        const priorityOrder = { high: 3, medium: 2, low: 1 };
+        return priorityOrder[a.priority] - priorityOrder[b.priority];
+      });
+      const removed = segment.windows.shift();
+      if (removed) excess.push(removed);
+    }
+  }
+  
+  // Redistribute excess to sparse segments
+  for (const segment of segments) {
+    while (segment.windows.length < minPerSegment && excess.length > 0) {
+      const windowToMove = excess.shift()!;
+      // Adjust timing to fit in this segment
+      const segmentMidpoint = (segment.start + segment.end) / 2;
+      const windowDuration = windowToMove.end - windowToMove.start;
+      const newStart = Math.max(segment.start + 2, segmentMidpoint - windowDuration / 2);
+      const newEnd = Math.min(segment.end - 2, newStart + windowDuration);
+      
+      segment.windows.push({
+        ...windowToMove,
+        start: newStart,
+        end: newEnd,
+      });
+    }
+  }
+  
+  // Put any remaining excess back into segments with room
+  for (const window of excess) {
+    const segmentWithRoom = segments.find(s => s.windows.length < maxPerSegment);
+    if (segmentWithRoom) {
+      segmentWithRoom.windows.push(window);
+    }
+  }
+  
+  // Merge all segments back and sort
+  const redistributed = [
+    ...segments[0].windows,
+    ...segments[1].windows,
+    ...segments[2].windows,
+  ].sort((a, b) => a.start - b.start);
+  
+  aiLogger.info(`B-roll redistributed: [${segments[0].windows.length}, ${segments[1].windows.length}, ${segments[2].windows.length}] (was uneven)`);
+  
+  // Ensure minimum spacing between adjacent windows
+  const finalWindows: BrollWindow[] = [];
+  let lastEnd = -5;
+  
+  for (const window of redistributed) {
+    if (window.start >= lastEnd + 3) {
+      finalWindows.push(window);
+      lastEnd = window.end;
+    }
+  }
+  
+  return finalWindows;
+}
+
 export async function analyzeTranscriptSemantics(
   transcript: TranscriptSegment[],
   videoContext?: VideoContext,
@@ -413,7 +534,7 @@ Respond in JSON format only (no markdown):
     
     const parsed = JSON.parse(jsonMatch[0]) as ParsedSemanticResponse;
     
-    const validatedBrollWindows = (parsed.brollWindows || [])
+    const rawBrollWindows = (parsed.brollWindows || [])
       .filter((b: RawBrollWindow) => b.start !== undefined && b.suggestedQuery)
       .filter((b: RawBrollWindow) => {
         const query = (b.suggestedQuery || "").toLowerCase();
@@ -429,6 +550,9 @@ Respond in JSON format only (no markdown):
         reason: b.reason || "Enhance visual interest",
       }))
       .slice(0, 15);
+    
+    // Validate and enforce even B-roll distribution across timeline
+    const validatedBrollWindows = enforceEvenBrollDistribution(rawBrollWindows, duration);
 
     const hookMoments = parsed.hookMoments?.map(h => ({
       timestamp: h.timestamp || 0,

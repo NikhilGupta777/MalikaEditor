@@ -323,9 +323,33 @@ async function runProcessingPipeline(
     let stockMedia: StockMediaItem[] = [];
     let aiImageCount = 0;
     
-    const brollWindows = analysis.semanticAnalysis?.brollWindows || [];
+    // Extract B-roll windows from edit plan actions (insert_stock, insert_ai_image) - these are the AI's actual decisions
+    // This is more accurate than semanticAnalysis.brollWindows which may have fewer windows
+    const editPlanBrollWindows = (editPlan.actions || [])
+      .filter((a: any) => (a.type === 'insert_stock' || a.type === 'insert_ai_image') && typeof a.start === 'number')
+      .map((a: any) => {
+        // Handle both end and duration formats
+        const end = typeof a.end === 'number' ? a.end : 
+                    typeof a.duration === 'number' ? a.start + a.duration : 
+                    a.start + 4; // Default 4s duration if neither
+        return {
+          start: a.start,
+          end,
+          suggestedQuery: a.stockQuery || a.query || a.prompt || '',
+          priority: a.priority || 'medium' as const,
+          context: a.reason || a.context || '',
+        };
+      })
+      .filter((w: any) => w.end > w.start); // Ensure valid windows
+    
+    // Use edit plan B-roll windows (preferred) or fall back to semantic analysis
+    const semanticBrollWindows = analysis.semanticAnalysis?.brollWindows || [];
+    const brollWindows = editPlanBrollWindows.length > 0 ? editPlanBrollWindows : semanticBrollWindows;
+    
+    processorLogger.info(`B-roll windows: ${editPlanBrollWindows.length} from edit plan, ${semanticBrollWindows.length} from semantic analysis, using ${brollWindows.length}`);
+    
     const stockQueries = editPlan.stockQueries || 
-      brollWindows.map(w => w.suggestedQuery).filter(Boolean) || [];
+      brollWindows.map((w: any) => w.suggestedQuery).filter(Boolean) || [];
     
     if (editOptions.addBroll && stockQueries.length > 0) {
       // PARALLEL PHASE 3: Fetch stock media AND generate AI images simultaneously

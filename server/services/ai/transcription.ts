@@ -61,9 +61,9 @@ function isRetryableError(error: unknown): boolean {
 }
 
 function createSegmentsFromText(text: string): TranscriptSegment[] {
-  const sentences = text.split(/(?<=[.!?।])\s+/).filter((s: string) => s.trim());
+  const segments = splitIntoNaturalSegments(text);
   
-  if (sentences.length === 0) {
+  if (segments.length === 0) {
     if (text.trim()) {
       return [{
         start: 0,
@@ -77,7 +77,7 @@ function createSegmentsFromText(text: string): TranscriptSegment[] {
   const charsPerSecond = 12.5;
   let currentTime = 0;
   
-  return sentences.map((sentence: string) => {
+  return segments.map((sentence: string) => {
     const duration = Math.max(1.5, sentence.length / charsPerSecond);
     const segment = {
       start: currentTime,
@@ -87,6 +87,49 @@ function createSegmentsFromText(text: string): TranscriptSegment[] {
     currentTime += duration + 0.3;
     return segment;
   }).filter((s: TranscriptSegment) => s.text.length > 0);
+}
+
+function splitIntoNaturalSegments(text: string): string[] {
+  const primarySplit = text.split(/(?<=[.!?।؟。！？])\s+/).filter((s: string) => s.trim());
+  
+  const result: string[] = [];
+  for (const segment of primarySplit) {
+    if (segment.length > 200) {
+      const subSegments = segment.split(/(?<=[,;:—–])\s+/).filter((s: string) => s.trim());
+      if (subSegments.length > 1) {
+        let combined = "";
+        for (const sub of subSegments) {
+          if (combined.length + sub.length > 150 && combined.length > 0) {
+            result.push(combined.trim());
+            combined = sub;
+          } else {
+            combined = combined ? `${combined} ${sub}` : sub;
+          }
+        }
+        if (combined.trim()) {
+          result.push(combined.trim());
+        }
+      } else {
+        const words = segment.split(/\s+/);
+        let chunk = "";
+        for (const word of words) {
+          if (chunk.split(/\s+/).length >= 15 && chunk.length > 0) {
+            result.push(chunk.trim());
+            chunk = word;
+          } else {
+            chunk = chunk ? `${chunk} ${word}` : word;
+          }
+        }
+        if (chunk.trim()) {
+          result.push(chunk.trim());
+        }
+      }
+    } else {
+      result.push(segment);
+    }
+  }
+  
+  return result;
 }
 
 // Create segments with synthesized word-level timing based on actual audio duration
@@ -145,22 +188,32 @@ function createSegmentsFromTextWithDuration(text: string, audioDuration: number)
   }).filter((s: TranscriptSegment) => s.text.length > 0);
 }
 
-async function transcribeWithOpenAI(audioPath: string, audioDuration?: number): Promise<TranscriptSegment[]> {
-  // Replit AI Integrations only supports gpt-4o-mini-transcribe with 'json' format
-  // whisper-1 and verbose_json are NOT available through the integration
+async function transcribeWithOpenAI(
+  audioPath: string, 
+  audioDuration?: number,
+  languageHint?: string
+): Promise<TranscriptSegment[]> {
   aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription...");
+  if (languageHint) {
+    aiLogger.info(`Language hint provided: ${languageHint}`);
+  }
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const audioBuffer = await fs.readFile(audioPath);
       const file = await toFile(audioBuffer, "audio.mp3");
 
-      // Use json format (only format supported by gpt-4o-mini-transcribe via Replit AI)
-      const response = await getOpenAIClient().audio.transcriptions.create({
+      const transcriptionParams: any = {
         file,
         model: "gpt-4o-mini-transcribe",
         response_format: "json",
-      }) as any;
+      };
+      
+      if (languageHint) {
+        transcriptionParams.language = languageHint;
+      }
+
+      const response = await getOpenAIClient().audio.transcriptions.create(transcriptionParams) as any;
 
       const text = response.text || "";
       
@@ -208,7 +261,11 @@ async function transcribeWithOpenAI(audioPath: string, audioDuration?: number): 
   return [];
 }
 
-async function transcribeWithGemini(audioPath: string, audioDuration?: number): Promise<TranscriptSegment[]> {
+async function transcribeWithGemini(
+  audioPath: string, 
+  audioDuration?: number,
+  languageHint?: string
+): Promise<TranscriptSegment[]> {
   const audioBuffer = await fs.readFile(audioPath);
   const fileSizeMB = audioBuffer.length / (1024 * 1024);
   
@@ -218,6 +275,9 @@ async function transcribeWithGemini(audioPath: string, audioDuration?: number): 
   }
   
   aiLogger.info(`Using Gemini 2.5 Flash for transcription (file size: ${fileSizeMB.toFixed(1)}MB)...`);
+  if (languageHint) {
+    aiLogger.info(`Language hint provided: ${languageHint}`);
+  }
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -231,6 +291,10 @@ async function transcribeWithGemini(audioPath: string, audioDuration?: number): 
                        ext === 'webm' ? 'audio/webm' :
                        'audio/mpeg';
 
+      const languageInstruction = languageHint 
+        ? `The audio is primarily in ${languageHint}. ` 
+        : "";
+      
       const gemini = getGeminiClient();
       const response = await gemini.models.generateContent({
         model: "gemini-2.5-flash",
@@ -245,8 +309,15 @@ async function transcribeWithGemini(audioPath: string, audioDuration?: number): 
                 }
               },
               {
-                text: `Transcribe this audio accurately and completely. Include every spoken word.
-If the audio contains speech in any language (Hindi, English, Spanish, or any other), transcribe it in the original language.
+                text: `${languageInstruction}Transcribe this audio accurately and completely. Include every spoken word.
+
+IMPORTANT INSTRUCTIONS:
+- Focus on the primary speaker's voice and clear speech
+- If there is background music or noise, prioritize transcribing the spoken words over ambient sounds
+- Filter out non-speech sounds like music, applause, or sound effects
+- If speech is unclear or mumbled, make your best interpretation of the words
+- If the audio contains speech in any language (Hindi, English, Spanish, or any other), transcribe it in the original language
+
 Return ONLY the transcription text, nothing else. No explanations, no timestamps, no formatting - just the exact words spoken.`
               }
             ]
@@ -298,17 +369,31 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
   return [];
 }
 
+export interface TranscriptionOptions {
+  languageHint?: string;
+  filterLowConfidence?: boolean;
+  confidenceThreshold?: number;
+}
+
 export async function transcribeAudio(
   audioPath: string,
-  audioDuration?: number
+  audioDuration?: number,
+  options?: TranscriptionOptions
 ): Promise<TranscriptSegment[]> {
-  aiLogger.info("Starting audio transcription...");
+  const languageHint = options?.languageHint;
+  const filterLowConfidence = options?.filterLowConfidence ?? true;
+  const confidenceThreshold = options?.confidenceThreshold ?? 0.5;
+  
+  aiLogger.info(`Starting audio transcription...${languageHint ? ` (language hint: ${languageHint})` : ""}`);
+  if (filterLowConfidence) {
+    aiLogger.debug(`Low-confidence filtering enabled (threshold: ${confidenceThreshold})`);
+  }
   
   const hasOpenAI = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   const hasGemini = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   
   if (hasOpenAI) {
-    const openAIResult = await transcribeWithOpenAI(audioPath, audioDuration);
+    const openAIResult = await transcribeWithOpenAI(audioPath, audioDuration, languageHint);
     if (openAIResult.length > 0) {
       aiLogger.info(`Transcription successful with OpenAI: ${openAIResult.length} segments extracted`);
       return openAIResult;
@@ -317,7 +402,7 @@ export async function transcribeAudio(
   }
   
   if (hasGemini) {
-    const geminiResult = await transcribeWithGemini(audioPath, audioDuration);
+    const geminiResult = await transcribeWithGemini(audioPath, audioDuration, languageHint);
     if (geminiResult.length > 0) {
       aiLogger.info(`Transcription successful with Gemini: ${geminiResult.length} segments extracted`);
       return geminiResult;

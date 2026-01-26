@@ -19,8 +19,9 @@ interface RawBrollWindow {
   start?: number;
   end?: number;
   context?: string;
+  currentTopic?: string;
   suggestedQuery?: string;
-  priority?: string; // Allow any string, will normalize
+  priority?: string;
   reason?: string;
 }
 
@@ -286,8 +287,13 @@ Create a timeline of topics discussed throughout the video:
    
    For each B-roll window, provide:
    - Exact start/end timestamps (must align with transcript segments)
-   - Context (what's being discussed)
-   - ULTRA-SPECIFIC search query (not "nature" but "peaceful sunrise over mountain lake with morning mist")
+   - Context (what's being discussed) - BE SPECIFIC about the current topic
+   - currentTopic (the main subject being discussed at this moment)
+   - ULTRA-SPECIFIC search query that:
+     * Contains an ACTION VERB (walking, typing, presenting, cooking, climbing, etc.)
+     * Contains a SPECIFIC SUBJECT (businessman, chef, student, athlete, etc.)
+     * Contains CONTEXTUAL DETAILS (setting, time, mood)
+     * Directly relates to the currentTopic being discussed
    - Priority (high = essential visual support, medium = enhances understanding, low = optional decoration)
    - Reason why B-roll helps here
 
@@ -296,12 +302,35 @@ Create a timeline of topics discussed throughout the video:
 9. **CONTENT SUMMARY** - 2-3 sentence summary of the video content
 
 CRITICAL ULTRA-SPECIFIC B-ROLL QUERY GUIDELINES:
-- Queries must describe EXACTLY what would visually represent the speaker's words
-- BAD: "nature" or "business" or "technology"
-- GOOD: "peaceful meditation mindfulness calm person meditating in serene garden"
-- GOOD: "modern office workers collaborating around glass table in bright startup space"
-- GOOD: "golden sunrise over misty mountain lake with pine trees reflecting in water"
-- Match the visual exactly to the SPOKEN CONTENT, not generic concepts
+
+REQUIRED QUERY STRUCTURE:
+Each query MUST include:
+1. An ACTION VERB (walking, typing, cooking, climbing, presenting, etc.)
+2. A SPECIFIC SUBJECT (businessman, chef, mountain climber, teacher, etc.)
+3. CONTEXTUAL DETAILS (location, time of day, mood, setting)
+
+NEGATIVE EXAMPLES - NEVER USE QUERIES LIKE THESE:
+- "person working" (too generic - WHO is working? WHAT are they doing?)
+- "abstract background" (meaningless visual, no connection to content)
+- "business" or "technology" (single word queries are useless)
+- "people talking" (generic, could be anything)
+- "nature scene" (vague, doesn't match specific content)
+- "office" (just a noun, no action or context)
+- "success" or "motivation" (abstract concepts, not searchable visuals)
+
+POSITIVE EXAMPLES - MODEL YOUR QUERIES AFTER THESE:
+- "software developer typing code on dual monitors in modern tech startup office"
+- "professional chef slicing fresh vegetables on wooden cutting board in restaurant kitchen"
+- "hiker ascending rocky mountain trail at golden hour with valley vista below"
+- "business team celebrating around whiteboard with charts showing growth metrics"
+- "student taking notes in university lecture hall with professor at podium"
+- "entrepreneur giving presentation to investors in glass-walled conference room"
+
+CONTEXT-AWARE REQUIREMENTS:
+- Reference the SPECIFIC TOPIC being discussed when the B-roll appears
+- If speaker mentions "building a startup", query should show startup-specific visuals
+- If speaker discusses "healthy eating", query should show specific healthy food preparation
+- Match the ENERGY of the content (calm content = calm visuals, excited content = dynamic visuals)
 
 B-ROLL TIMING RULES:
 - Duration: 3-5 seconds per B-roll (optimal for visual impact)
@@ -337,7 +366,8 @@ Respond in JSON format only (no markdown):
       "start": number,
       "end": number,
       "context": "what is being discussed",
-      "suggestedQuery": "ULTRA-SPECIFIC contextual search query (e.g., 'professional businessman walking through modern glass office with city skyline visible')",
+      "currentTopic": "the specific topic being discussed at this timestamp",
+      "suggestedQuery": "ULTRA-SPECIFIC query with ACTION VERB + SPECIFIC SUBJECT + CONTEXT (e.g., 'professional businessman walking through modern glass office with city skyline visible')",
       "priority": "low|medium|high",
       "reason": "why B-roll enhances this moment"
     }
@@ -385,10 +415,15 @@ Respond in JSON format only (no markdown):
     
     const validatedBrollWindows = (parsed.brollWindows || [])
       .filter((b: RawBrollWindow) => b.start !== undefined && b.suggestedQuery)
+      .filter((b: RawBrollWindow) => {
+        const query = (b.suggestedQuery || "").toLowerCase();
+        const genericQueries = ["person working", "abstract background", "business", "technology", "nature scene", "office", "people talking"];
+        return !genericQueries.some(generic => query === generic || query.split(" ").length < 4);
+      })
       .map((b: RawBrollWindow) => ({
         start: Math.max(0, b.start || 0),
         end: Math.min(duration, b.end || (b.start || 0) + 4),
-        context: b.context || "",
+        context: b.currentTopic ? `${b.currentTopic}: ${b.context || ""}` : (b.context || ""),
         suggestedQuery: b.suggestedQuery || "",
         priority: normalizePriority(b.priority || "medium"),
         reason: b.reason || "Enhance visual interest",

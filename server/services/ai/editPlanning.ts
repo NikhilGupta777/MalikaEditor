@@ -95,6 +95,56 @@ const EditPlanResponseSchema = z.object({
   }).optional(),
 });
 
+function getPacingGuidanceForDuration(durationSeconds: number): string {
+  if (durationSeconds < 120) {
+    return `PACING GUIDANCE (SHORT VIDEO - Under 2 minutes):
+- Keep cuts MINIMAL to maintain flow and avoid choppy feel
+- Only cut obvious dead air or major mistakes
+- Focus on smooth transitions rather than aggressive trimming
+- Preserve narrative momentum - short videos need every moment to count
+- B-roll should be sparse and highly impactful
+- Goal: Polish, don't truncate`;
+  } else if (durationSeconds < 600) {
+    return `PACING GUIDANCE (MEDIUM VIDEO - 2 to 10 minutes):
+- BALANCE cuts with viewer retention - remove filler but keep substance
+- Cut hesitations, repeated phrases, and tangents
+- Strategic B-roll at topic transitions and explanatory sections
+- Consider 2-3 "micro-chapters" for mental organization
+- Maintain energy through varied pacing
+- Goal: Tighten without losing engagement`;
+  } else {
+    return `PACING GUIDANCE (LONG VIDEO - Over 10 minutes):
+- More AGGRESSIVE editing to maintain viewer attention
+- Create clear chapter breaks every 3-5 minutes
+- Cut ruthlessly: tangents, redundant explanations, slow sections
+- Use B-roll frequently to maintain visual interest
+- Consider highlight moments that could work as standalone clips
+- Add text overlays at chapter transitions
+- Goal: Keep viewers engaged through varied, dynamic editing`;
+  }
+}
+
+function getContentTypeGuidance(genre?: string): string {
+  if (genre === "tutorial" || genre === "educational") {
+    return `TUTORIAL/EDUCATIONAL SPECIFIC RULES:
+- PRESERVE all instructional content - never cut during explanations
+- Cut: "um", "uh", long pauses, off-topic tangents
+- Keep: Step-by-step explanations, demonstrations, key takeaways
+- Add text overlays for important steps or commands
+- B-roll should illustrate concepts, not distract from learning
+- Pacing should match cognitive load - slow for complex topics`;
+  } else if (genre === "entertainment" || genre === "vlog" || genre === "comedy") {
+    return `ENTERTAINMENT SPECIFIC RULES:
+- PRIORITIZE energy and momentum over completeness
+- More aggressive cuts acceptable - fast pacing keeps viewers engaged
+- Cut: Slow moments, setup without payoff, repeated jokes
+- Keep: Punchlines, reactions, emotional peaks, personality moments
+- B-roll can be playful, reactive, and frequent
+- Match cuts to music/energy when possible`;
+  }
+  return "";
+}
+
 function getEditStyleGuidance(context?: VideoContext): string {
   if (!context) {
     return "Apply moderate editing that balances engagement with authenticity.";
@@ -213,6 +263,10 @@ export async function generateEditPlan(
   const extractedKeywords = semanticAnalysis?.extractedKeywords || [];
   const contentSummary = semanticAnalysis?.contentSummary || analysis.summary || "";
   
+  const videoDuration = analysis.duration;
+  const pacingGuidance = getPacingGuidanceForDuration(videoDuration);
+  const contentTypeGuidance = getContentTypeGuidance(contextInfo?.genre);
+  
   const systemPrompt = `You are an expert professional video editor with years of experience in ${contextInfo?.genre || "video"} content. Your task is to create a precise, intelligent edit plan that maximizes viewer engagement and attention while respecting the content's nature and purpose.
 
 VIDEO CONTEXT:
@@ -221,9 +275,20 @@ VIDEO CONTEXT:
 - Pacing: ${contextInfo?.pacing || "moderate"}
 - Suggested Edit Style: ${contextInfo?.suggestedEditStyle || "moderate"}
 - Target Audience: ${contextInfo?.targetAudience || "general viewers"}
+- Video Duration: ${videoDuration.toFixed(1)} seconds (${videoDuration < 120 ? "SHORT" : videoDuration < 600 ? "MEDIUM" : "LONG"} format)
 ${contextInfo?.regionalContext ? `- Regional Context: ${contextInfo.regionalContext}` : ""}
 
+${pacingGuidance}
+
+${contentTypeGuidance}
+
 ${editStyleGuidance}
+
+CRITICAL EDITING RULES:
+1. NEVER cut in the middle of a sentence - always find natural pause points between sentences or clauses
+2. When cutting, identify sentence boundaries using punctuation and natural speech pauses
+3. If a segment contains a complete thought, preserve it entirely or remove it entirely
+4. For spoken content, the transcript shows sentence boundaries - respect them when planning cuts
 
 AVAILABLE EDIT ACTIONS:
 

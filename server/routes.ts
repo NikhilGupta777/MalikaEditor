@@ -366,6 +366,27 @@ export async function registerRoutes(
     }
   );
 
+  // Get video project history (returns all projects for history panel)
+  // IMPORTANT: This route must be BEFORE /api/videos/:id to avoid :id matching "history"
+  app.get("/api/videos/history", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const projects = await storage.getAllVideoProjects();
+      const historyItems = projects.map(p => ({
+        id: p.id,
+        title: p.fileName,
+        status: p.status,
+        duration: p.duration,
+        createdAt: p.createdAt.toISOString(),
+        expiresAt: p.expiresAt.toISOString(),
+        outputPath: p.outputPath || undefined,
+      }));
+      res.json(historyItems);
+    } catch (error) {
+      routesLogger.error("Failed to get video history:", error);
+      res.status(500).json({ error: "Failed to get video history" });
+    }
+  });
+
   app.get("/api/videos/:id", async (req: Request, res: Response) => {
     try {
       const paramResult = idParamSchema.safeParse(req.params);
@@ -1444,26 +1465,6 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     } catch (error) {
       routesLogger.error("Failed to get project history:", error);
       res.status(500).json({ error: "Failed to get project history" });
-    }
-  });
-
-  // Get video project history (returns all projects for history panel)
-  app.get("/api/videos/history", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const projects = await storage.getAllVideoProjects();
-      const historyItems = projects.map(p => ({
-        id: p.id,
-        title: p.fileName,
-        status: p.status,
-        duration: p.duration,
-        createdAt: p.createdAt.toISOString(),
-        expiresAt: p.expiresAt.toISOString(),
-        outputPath: p.outputPath || undefined,
-      }));
-      res.json(historyItems);
-    } catch (error) {
-      routesLogger.error("Failed to get video history:", error);
-      res.status(500).json({ error: "Failed to get video history" });
     }
   });
 

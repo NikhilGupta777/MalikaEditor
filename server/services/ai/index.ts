@@ -28,3 +28,14 @@ export {
   generateEditPlan,
   generateSmartEditPlan 
 } from "./editPlanning";
+
+export {
+  performPreRenderReview,
+  recordEditFeedback,
+  getFeedbackSummary,
+  getFeedbackContextForPlanning,
+  clearFeedbackCache,
+  type PreRenderReviewResult,
+  type EditFeedback,
+  type FeedbackSummary
+} from "./preRenderReview";

@@ -61,6 +61,7 @@ import {
   analyzeVideoDeep,
   generateSmartEditPlan,
   detectFillerWords,
+  performPreRenderReview,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment, EditOptionsType } from "@shared/schema";
 import { editPlanSchema, reviewDataSchema } from "@shared/schema";
@@ -945,6 +946,74 @@ export async function registerRoutes(
         // Handle edge case: all media rejected - proceed without b-roll
         if (stockMedia.length === 0) {
           sendActivity("All media was rejected. Proceeding without B-roll overlays.");
+        }
+        
+        // Record user feedback for AI learning (persisted to database)
+        try {
+          const videoAnalysis = project.analysis as any;
+          let savedCount = 0;
+          for (const action of reviewData.editPlan.actions) {
+            await storage.saveEditFeedback({
+              projectId: id,
+              editActionId: action.id || `action_${(action.start ?? 0).toFixed(2)}_${(action.end ?? 0).toFixed(2)}`,
+              actionType: action.type,
+              wasApproved: action.approved ? 1 : 0,
+              wasModified: 0,
+              originalStart: action.start !== undefined && action.start !== null ? Math.round(action.start * 1000) : null,
+              originalEnd: action.end !== undefined && action.end !== null ? Math.round(action.end * 1000) : null,
+              modifiedStart: null,
+              modifiedEnd: null,
+              userReason: null,
+              contextGenre: videoAnalysis?.videoAnalysis?.context?.genre || null,
+              contextTone: videoAnalysis?.videoAnalysis?.context?.tone || null,
+              contextDuration: videoAnalysis?.videoAnalysis?.duration ? Math.round(videoAnalysis.videoAnalysis.duration) : null,
+            });
+            savedCount++;
+          }
+          routesLogger.info(`[Render] Persisted feedback for ${savedCount}/${reviewData.editPlan.actions.length} actions to database`);
+          sendActivity(`Recorded ${savedCount} edit decisions for AI learning`);
+        } catch (feedbackErr) {
+          routesLogger.warn("[Render] Failed to persist feedback (non-critical):", feedbackErr);
+        }
+        
+        // Perform AI pre-render review
+        try {
+          const videoAnalysis = project.analysis as any;
+          if (videoAnalysis?.videoAnalysis && transcript.length > 0) {
+            sendActivity("Running AI quality review on your edits...");
+            const aiReview = await performPreRenderReview(
+              videoAnalysis.videoAnalysis,
+              transcript,
+              { actions: reviewData.editPlan.actions } as any,
+              reviewData,
+              project.prompt || ""
+            );
+            
+            // Store AI review result in review data (fetch latest to avoid overwriting)
+            const latestProject = await storage.getVideoProject(id);
+            const latestReviewData = latestProject?.reviewData as ReviewData | null;
+            if (latestReviewData) {
+              await storage.updateVideoProject(id, {
+                reviewData: { ...latestReviewData, aiReview } as any,
+              });
+            }
+            
+            if (aiReview.confidence < 50) {
+              sendActivity(`AI Review: Low confidence (${aiReview.confidence}%) - ${aiReview.summary}`);
+            } else {
+              sendActivity(`AI Review: ${aiReview.confidence}% confidence - ${aiReview.summary}`);
+            }
+            
+            if (aiReview.issues && aiReview.issues.length > 0) {
+              const highIssues = aiReview.issues.filter(i => i.severity === "high");
+              if (highIssues.length > 0) {
+                sendActivity(`AI found ${highIssues.length} potential issue(s): ${highIssues[0].description}`);
+              }
+            }
+          }
+        } catch (reviewErr) {
+          routesLogger.warn("[Render] AI pre-render review failed (non-critical):", reviewErr);
+          sendActivity("AI review skipped - proceeding with rendering...");
         }
       }
 

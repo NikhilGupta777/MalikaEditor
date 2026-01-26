@@ -31,4 +31,12 @@ export {
   validateAndFixBrollActions,
   generateEditPlan,
   generateSmartEditPlan,
+  performPreRenderReview,
+  recordEditFeedback,
+  getFeedbackSummary,
+  getFeedbackContextForPlanning,
+  clearFeedbackCache,
+  type PreRenderReviewResult,
+  type EditFeedback,
+  type FeedbackSummary,
 } from "./ai";

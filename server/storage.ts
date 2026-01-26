@@ -8,6 +8,8 @@ import {
   type StockMediaItem,
   type VideoAnalysis,
   type TranscriptSegment,
+  type InsertEditFeedback,
+  type EditFeedbackRecord,
   videoAnalysisSchema,
   editPlanSchema,
   transcriptSegmentSchema,
@@ -16,6 +18,7 @@ import {
   videoProjects,
   cachedAssets,
   projectAutosaves,
+  editFeedback,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { z } from "zod";
@@ -59,6 +62,14 @@ export interface IStorage {
   getAutosave(projectId: number): Promise<any | undefined>;
   saveAutosave(projectId: number, reviewData: any): Promise<void>;
   deleteAutosave(projectId: number): Promise<void>;
+
+  saveEditFeedback(feedback: InsertEditFeedback): Promise<EditFeedbackRecord>;
+  getEditFeedbackByProject(projectId: number): Promise<EditFeedbackRecord[]>;
+  getFeedbackSummary(): Promise<{
+    approvalRate: number;
+    totalFeedback: number;
+    byActionType: Record<string, { approved: number; rejected: number }>;
+  }>;
 }
 
 function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<VideoProject> {
@@ -376,6 +387,72 @@ export class DatabaseStorage {
       throw error;
     }
   }
+
+  async saveEditFeedback(feedback: InsertEditFeedback): Promise<EditFeedbackRecord> {
+    try {
+      const [result] = await db.insert(editFeedback).values(feedback).returning();
+      logger.debug("Saved edit feedback", { 
+        id: result.id, 
+        projectId: result.projectId,
+        actionType: result.actionType,
+        wasApproved: result.wasApproved,
+      });
+      return result;
+    } catch (error) {
+      logger.error("Failed to save edit feedback", { error, projectId: feedback.projectId });
+      throw error;
+    }
+  }
+
+  async getEditFeedbackByProject(projectId: number): Promise<EditFeedbackRecord[]> {
+    try {
+      const results = await db.select()
+        .from(editFeedback)
+        .where(eq(editFeedback.projectId, projectId))
+        .orderBy(desc(editFeedback.createdAt));
+      return results;
+    } catch (error) {
+      logger.error("Failed to get edit feedback", { error, projectId });
+      throw error;
+    }
+  }
+
+  async getFeedbackSummary(): Promise<{
+    approvalRate: number;
+    totalFeedback: number;
+    byActionType: Record<string, { approved: number; rejected: number }>;
+  }> {
+    try {
+      const allFeedback = await db.select().from(editFeedback);
+      
+      if (allFeedback.length === 0) {
+        return { approvalRate: 0, totalFeedback: 0, byActionType: {} };
+      }
+      
+      const approved = allFeedback.filter(f => f.wasApproved === 1).length;
+      const byActionType: Record<string, { approved: number; rejected: number }> = {};
+      
+      for (const f of allFeedback) {
+        if (!byActionType[f.actionType]) {
+          byActionType[f.actionType] = { approved: 0, rejected: 0 };
+        }
+        if (f.wasApproved === 1) {
+          byActionType[f.actionType].approved++;
+        } else {
+          byActionType[f.actionType].rejected++;
+        }
+      }
+      
+      return {
+        approvalRate: (approved / allFeedback.length) * 100,
+        totalFeedback: allFeedback.length,
+        byActionType,
+      };
+    } catch (error) {
+      logger.error("Failed to get feedback summary", { error });
+      throw error;
+    }
+  }
 }
 
 const memStorage = new MemStorage();
@@ -401,4 +478,8 @@ export const storage: IStorage = {
   getAutosave: dbStorage.getAutosave.bind(dbStorage),
   saveAutosave: dbStorage.saveAutosave.bind(dbStorage),
   deleteAutosave: dbStorage.deleteAutosave.bind(dbStorage),
+
+  saveEditFeedback: dbStorage.saveEditFeedback.bind(dbStorage),
+  getEditFeedbackByProject: dbStorage.getEditFeedbackByProject.bind(dbStorage),
+  getFeedbackSummary: dbStorage.getFeedbackSummary.bind(dbStorage),
 };

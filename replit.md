@@ -162,6 +162,19 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - **Edit Planning**: Dynamic pacing guidance based on video duration (short/medium/long), mid-sentence cut prevention, content-type specific rules (tutorial vs entertainment)
 - **B-Roll Queries**: Improved query generation with action verbs + specific subjects, negative examples to avoid generic queries, topic context awareness
 
+### AI Self-Learning System
+- **Pre-Render AI Review**: Before rendering, AI (Gemini 1.5 Flash) reviews the edit plan and provides confidence scores (0-100), quality assessments, and issue detection with severity levels
+- **Feedback Persistence**: User approval/rejection decisions for edit actions are now stored in PostgreSQL (`edit_feedback` table) with context metadata (genre, tone, duration)
+- **Database Schema**: New `edit_feedback` table tracks: projectId, actionType, wasApproved, wasModified, originalStart/End, modifiedStart/End, contextGenre, contextTone, contextDuration
+- **Storage Methods**: `storage.saveEditFeedback()`, `storage.getEditFeedbackByProject()`, `storage.getFeedbackSummary()` for durable feedback tracking
+- **Activity Logging**: Render route now logs and sends SSE updates showing how many edit decisions were recorded for AI learning
+- **Non-Blocking Design**: AI review failures don't stop rendering - they log warnings and proceed
+
+### Animation Improvements
+- **Higher Frame Rate**: Increased animation FPS from 25 to 30 for smoother motion
+- **Improved Transitions**: Fade transitions increased from 0.3s to 0.5s with sine easing curves
+- **5 Animation Presets**: Added zoom_in (Ken Burns), zoom_out, pan_left, pan_right, and fade_only presets with smooth easing curves for professional-quality image animations
+
 ## Environment Variables
 
 ### Required for Authentication

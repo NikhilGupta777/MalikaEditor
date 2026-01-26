@@ -872,18 +872,47 @@ interface DownloadedStock {
   localPath: string;
 }
 
+// Animation preset types for image B-roll
+export type AnimationPreset = "zoom_in" | "zoom_out" | "pan_left" | "pan_right" | "fade_only";
+
 async function createImageBroll(
   imagePath: string,
   outputPath: string,
   duration: number,
   width: number,
   height: number,
-  textOverlay?: string
+  textOverlay?: string,
+  animationPreset: AnimationPreset = "zoom_in"
 ): Promise<void> {
+  // Use the animation preset system for consistent zoompan effects
+  const fps = 30;
+  const totalFrames = Math.ceil(duration * fps);
+  
+  // Build zoompan filter based on preset using sine easing for smooth motion
+  let zoompanFilter: string;
+  switch (animationPreset) {
+    case "zoom_in":
+      zoompanFilter = `zoompan=z='1+0.1*sin(on/${totalFrames}*PI/2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      break;
+    case "zoom_out":
+      zoompanFilter = `zoompan=z='1.15-0.1*sin(on/${totalFrames}*PI/2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      break;
+    case "pan_left":
+      zoompanFilter = `zoompan=z='1.1':x='(iw-ow)*(1-sin(on/${totalFrames}*PI/2))':y='(ih-oh)/2':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      break;
+    case "pan_right":
+      zoompanFilter = `zoompan=z='1.1':x='(iw-ow)*sin(on/${totalFrames}*PI/2)':y='(ih-oh)/2':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      break;
+    case "fade_only":
+    default:
+      zoompanFilter = `zoompan=z='1.05':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      break;
+  }
+  
   const filters: string[] = [
     `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
     `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
-    `zoompan=z='min(zoom+0.0015,1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 25)}:s=${width}x${height}:fps=25`
+    zoompanFilter
   ];
   
   if (textOverlay) {
@@ -1181,6 +1210,49 @@ interface BrollOverlay {
   startTime: number; // When to show overlay (in output timeline)
   duration: number;
   text?: string;
+  animationPreset?: AnimationPreset; // Animation style for images, defaults to zoom_in
+}
+
+// Generate zoompan filter expression based on animation preset
+// Uses sine easing for smoother motion and 30fps for better quality
+function getZoompanFilter(
+  preset: AnimationPreset,
+  duration: number,
+  width: number,
+  height: number
+): string {
+  const fps = 30;
+  const totalFrames = Math.ceil(duration * fps);
+  
+  // Sine easing function: sin(on/d * PI/2) gives smooth 0->1 curve
+  // For reverse: 1 - sin(on/d * PI/2) gives smooth 1->0 curve
+  
+  switch (preset) {
+    case "zoom_in":
+      // Start at 1.0, smoothly zoom to 1.1 using sine easing
+      // z = 1 + 0.1 * sin(on/d * PI/2)
+      return `zoompan=z='1+0.1*sin(on/${totalFrames}*PI/2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+    
+    case "zoom_out":
+      // Start at 1.15, smoothly zoom out to 1.05 using sine easing
+      // z = 1.15 - 0.1 * sin(on/d * PI/2)
+      return `zoompan=z='1.15-0.1*sin(on/${totalFrames}*PI/2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+    
+    case "pan_left":
+      // Pan from right to left with slight zoom for depth
+      // x starts at (iw-ow) and moves to 0 with sine easing
+      return `zoompan=z='1.1':x='(iw-ow)*(1-sin(on/${totalFrames}*PI/2))':y='(ih-oh)/2':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+    
+    case "pan_right":
+      // Pan from left to right with slight zoom for depth
+      // x starts at 0 and moves to (iw-ow) with sine easing
+      return `zoompan=z='1.1':x='(iw-ow)*sin(on/${totalFrames}*PI/2)':y='(ih-oh)/2':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+    
+    case "fade_only":
+    default:
+      // No movement, just hold at center with slight zoom for framing
+      return `zoompan=z='1.05':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+  }
 }
 
 // Prepare stock media as overlay video (full-frame for traditional B-roll)
@@ -1191,7 +1263,8 @@ async function prepareOverlayMedia(
   duration: number,
   width: number,
   height: number,
-  outputPath: string
+  outputPath: string,
+  animationPreset: AnimationPreset = "zoom_in"
 ): Promise<void> {
   if (stock.item.type === "video") {
     const cmd = ffmpeg(stock.localPath)
@@ -1209,6 +1282,9 @@ async function prepareOverlayMedia(
     
     await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
   } else {
+    // Get the zoompan filter for the selected animation preset
+    const zoompanFilter = getZoompanFilter(animationPreset, duration, width, height);
+    
     const cmd = ffmpeg()
       .input(stock.localPath)
       .inputOptions(["-loop", "1"])
@@ -1218,7 +1294,7 @@ async function prepareOverlayMedia(
         "-crf", "23",
         "-an",
         "-t", String(duration),
-        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,zoompan=z='min(zoom+0.001,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${Math.ceil(duration * 25)}:s=${width}x${height}:fps=25`,
+        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,${zoompanFilter}`,
         "-pix_fmt", "yuv420p",
         "-threads", "2",
       ])
@@ -1254,7 +1330,7 @@ async function applyAllBrollOverlays(
   }
 
   const outputId = uuidv4();
-  const fadeDuration = 0.3;
+  const fadeDuration = 0.5; // Longer fade for smoother transitions
   const { preset, crf } = ENCODING_PRESETS[quality];
   
   videoLogger.info(`Applying ${overlays.length} overlays in single pass (quality: ${quality})`);
@@ -1266,16 +1342,20 @@ async function applyAllBrollOverlays(
     const overlayVideoPath = path.join(OUTPUT_DIR, `overlay_${outputId}_${i}.mp4`);
     
     try {
+      // Use animation preset from overlay, defaulting to zoom_in for images
+      const animPreset = overlay.animationPreset || "zoom_in";
+      
       await prepareOverlayMedia(
         { item: { type: overlay.type, url: "", query: "", duration: overlay.duration }, localPath: overlay.localPath },
         overlay.duration,
         width,
         height,
-        overlayVideoPath
+        overlayVideoPath,
+        animPreset
       );
       
       tempFiles.push(overlayVideoPath);
-      videoLogger.debug(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s`);
+      videoLogger.debug(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s (animation: ${animPreset})`);
       
       return {
         index: i,

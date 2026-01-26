@@ -267,6 +267,30 @@ export const projectAutosaves = pgTable("project_autosaves", {
 export type ProjectAutosave = typeof projectAutosaves.$inferSelect;
 export type InsertProjectAutosave = typeof projectAutosaves.$inferInsert;
 
+export const editFeedback = pgTable("edit_feedback", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => videoProjects.id, { onDelete: "cascade" }),
+  editActionId: text("edit_action_id").notNull(),
+  actionType: text("action_type").notNull(),
+  wasApproved: integer("was_approved").notNull(),
+  wasModified: integer("was_modified").notNull().default(0),
+  userReason: text("user_reason"),
+  originalStart: integer("original_start"),
+  originalEnd: integer("original_end"),
+  modifiedStart: integer("modified_start"),
+  modifiedEnd: integer("modified_end"),
+  contextGenre: text("context_genre"),
+  contextTone: text("context_tone"),
+  contextDuration: integer("context_duration"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => ({
+  projectIdIdx: index("edit_feedback_project_id_idx").on(table.projectId),
+  actionTypeIdx: index("edit_feedback_action_type_idx").on(table.actionType),
+}));
+
+export type EditFeedbackRecord = typeof editFeedback.$inferSelect;
+export type InsertEditFeedback = typeof editFeedback.$inferInsert;
+
 export const insertVideoProjectSchema = createInsertSchema(videoProjects).omit({
   id: true,
   version: true,
@@ -622,6 +646,23 @@ export const reviewTranscriptSegmentSchema = z.object({
 
 export type ReviewTranscriptSegment = z.infer<typeof reviewTranscriptSegmentSchema>;
 
+export const aiReviewResultSchema = z.object({
+  confidence: coercedNumber(),
+  approved: z.boolean(),
+  editQualityScore: coercedNumber(),
+  narrativeFlowScore: coercedNumber(),
+  pacingScore: coercedNumber(),
+  issues: z.array(z.object({
+    severity: z.enum(["low", "medium", "high"]),
+    description: z.string(),
+    suggestion: z.string(),
+  })).optional(),
+  suggestions: z.array(z.string()).optional(),
+  summary: z.string().optional(),
+});
+
+export type AiReviewResult = z.infer<typeof aiReviewResultSchema>;
+
 export const reviewDataSchema = z.object({
   transcript: z.array(reviewTranscriptSegmentSchema),
   editPlan: z.object({
@@ -642,6 +683,7 @@ export const reviewDataSchema = z.object({
   userApproved: z.boolean().default(false),
   userNotes: z.string().optional(),
   editOptions: editOptionsSchema.optional(),
+  aiReview: aiReviewResultSchema.optional(),
 });
 
 export type ReviewData = z.infer<typeof reviewDataSchema>;

@@ -891,12 +891,19 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       const isAborted = errorMessage.includes("ABORTED") || abortSignal.aborted;
       
       if (isAborted) {
-        // Client disconnected - don't mark as failed, just clean up
-        routesLogger.info(`Processing aborted for project ${id} due to client disconnect. Cleaning up resources...`);
-        await storage.updateVideoProject(id, {
-          status: "cancelled",
-          errorMessage: "Processing cancelled: client disconnected",
-        });
+        // Client disconnected - only mark as cancelled if not already completed
+        routesLogger.info(`Client disconnected during video processing (project ${id}), aborting operations...`);
+        
+        // Check current project status - don't overwrite if already succeeded
+        const currentProject = await storage.getVideoProject(id);
+        if (currentProject && !["awaiting_review", "completed"].includes(currentProject.status)) {
+          await storage.updateVideoProject(id, {
+            status: "cancelled",
+            errorMessage: "Processing cancelled: client disconnected",
+          });
+        } else {
+          routesLogger.info(`Project ${id} already completed (${currentProject?.status}), not marking as cancelled`);
+        }
         // Don't send error event since client is gone
       } else {
         // Actual processing error
@@ -1264,12 +1271,19 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
                         (error instanceof Error && error.message.includes("ABORTED"));
       
       if (isAborted) {
-        // Client disconnected - clean up and mark as cancelled
+        // Client disconnected - only mark as cancelled if not already completed
         routesLogger.info(`Render aborted for project ${id} due to client disconnect. Cleaning up resources...`);
-        await storage.updateVideoProject(id, {
-          status: "cancelled" as ProcessingStatus,
-          errorMessage: "Rendering cancelled: client disconnected",
-        });
+        
+        // Check current project status - don't overwrite if already succeeded
+        const currentProject = await storage.getVideoProject(id);
+        if (currentProject && currentProject.status !== "completed") {
+          await storage.updateVideoProject(id, {
+            status: "cancelled" as ProcessingStatus,
+            errorMessage: "Rendering cancelled: client disconnected",
+          });
+        } else {
+          routesLogger.info(`Project ${id} already completed, not marking as cancelled`);
+        }
         // Don't send error event since client is gone
       } else {
         // Actual rendering error
@@ -1655,8 +1669,7 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         const audioPath = await extractAudio(videoPath);
         
         // Run transcription
-        const transcriptResult = await transcribeAudio(audioPath);
-        const transcript = transcriptResult.segments || [];
+        const transcript = await transcribeAudio(audioPath);
         
         // Clean up audio file
         await fs.unlink(audioPath).catch(() => {});

@@ -26,7 +26,7 @@ export async function performPreRenderReview(
   reviewData: ReviewData,
   userPrompt: string
 ): Promise<PreRenderReviewResult> {
-  reviewLogger.info("Starting AI pre-render review with Gemini 1.5 Flash...");
+  reviewLogger.info("Starting AI pre-render review with Gemini 2.5 Flash...");
   
   const approvedCuts = reviewData.editPlan.actions.filter(a => a.type === "cut" && a.approved);
   const approvedKeeps = reviewData.editPlan.actions.filter(a => a.type === "keep" && a.approved);
@@ -92,7 +92,7 @@ Respond in JSON format:
   try {
     const client = getGeminiClient();
     const response = await client.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.5-flash",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         temperature: 0.3,

@@ -1606,5 +1606,96 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     }
   });
 
+  // Retry just the transcription step
+  app.post("/api/videos/:id/retry-transcription", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      
+      const project = await storage.getVideoProject(id);
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+
+      const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
+      
+      try {
+        await fs.access(videoPath);
+      } catch {
+        return res.status(404).json({ error: "Video file not found. Please re-upload your video." });
+      }
+
+      // Set up SSE response
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+
+      let connectionClosed = false;
+      req.on("close", () => {
+        connectionClosed = true;
+      });
+
+      const sendEvent = (type: string, data: Record<string, unknown>) => {
+        if (!connectionClosed) {
+          res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+        }
+      };
+
+      try {
+        // Update status to transcribing
+        await storage.updateVideoProject(id, { 
+          status: "transcribing",
+          errorMessage: null,
+        });
+        sendEvent("status", { status: "transcribing" });
+        sendEvent("activity", { message: "Re-running transcription...", timestamp: Date.now() });
+
+        // Extract audio
+        const audioPath = await extractAudio(videoPath);
+        
+        // Run transcription
+        const transcriptResult = await transcribeAudio(audioPath);
+        const transcript = transcriptResult.segments || [];
+        
+        // Clean up audio file
+        await fs.unlink(audioPath).catch(() => {});
+
+        // Update project with new transcript
+        await storage.updateVideoProject(id, {
+          transcript: transcript,
+          status: "pending",
+          errorMessage: null,
+        });
+
+        sendEvent("transcript", { transcript });
+        sendEvent("activity", { message: "Transcription complete!", timestamp: Date.now() });
+        sendEvent("complete", { 
+          success: true, 
+          transcript,
+          message: "Transcription re-run successfully. You can now process the video again." 
+        });
+
+      } catch (error) {
+        routesLogger.error("Retry transcription failed:", error);
+        const errorMsg = error instanceof Error ? error.message : "Transcription retry failed";
+        
+        await storage.updateVideoProject(id, {
+          status: "failed",
+          errorMessage: errorMsg,
+        });
+        
+        sendEvent("error", { 
+          error: errorMsg,
+          suggestion: "Please try again or upload a video with clearer audio"
+        });
+      }
+
+      res.end();
+    } catch (error) {
+      routesLogger.error("Failed to retry transcription:", error);
+      res.status(500).json({ error: "Failed to retry transcription" });
+    }
+  });
+
   return httpServer;
 }

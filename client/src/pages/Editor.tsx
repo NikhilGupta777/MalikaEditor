@@ -5,6 +5,7 @@ import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
+import { ErrorDisplay } from "@/components/ErrorDisplay";
 import { VideoPreview } from "@/components/VideoPreview";
 import { EditPlanPreview } from "@/components/EditPlanPreview";
 import { StockMediaPreview } from "@/components/StockMediaPreview";
@@ -550,9 +551,91 @@ export default function Editor() {
 
   const handleRetryProcessing = useCallback(() => {
     if (project) {
-      setProject((prev) => prev ? { ...prev, status: "pending", errorMessage: undefined } : null);
+      setProject((prev) => prev ? { 
+        ...prev, 
+        status: "pending", 
+        errorMessage: undefined,
+        errorSuggestion: undefined,
+        errorType: undefined,
+      } : null);
+      setActivities([]);
     }
   }, [project]);
+
+  const handleTranscriptionRetryStart = useCallback(() => {
+    if (!project) return;
+    
+    setActivities([]);
+    
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+    
+    const eventSource = new EventSource(`/api/videos/${project.id}/retry-transcription`);
+    eventSourceRef.current = eventSource;
+    
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      
+      if (data.type === "status") {
+        setProject((prev) => prev ? { ...prev, status: data.status } : null);
+      } else if (data.type === "activity") {
+        setActivities((prev) => {
+          const newActivity = {
+            message: data.message,
+            timestamp: data.timestamp,
+            details: data.details,
+          };
+          const updated = [...prev, newActivity];
+          return updated.length > 100 ? updated.slice(-100) : updated;
+        });
+      } else if (data.type === "transcript") {
+        setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
+      } else if (data.type === "complete") {
+        setProject((prev) => prev ? { 
+          ...prev, 
+          status: "pending",
+          transcript: data.transcript,
+          errorMessage: undefined,
+          errorSuggestion: undefined,
+          errorType: undefined,
+        } : null);
+        eventSource.close();
+        eventSourceRef.current = null;
+        
+        toast({
+          title: "Transcription complete",
+          description: "You can now process your video again",
+        });
+      } else if (data.type === "error") {
+        setProject((prev) => prev ? { 
+          ...prev, 
+          status: "failed", 
+          errorMessage: data.error,
+          errorSuggestion: data.suggestion,
+        } : null);
+        eventSource.close();
+        eventSourceRef.current = null;
+        
+        toast({
+          title: "Transcription failed",
+          description: data.error || "Please try again",
+          variant: "destructive",
+        });
+      }
+    };
+    
+    eventSource.onerror = () => {
+      eventSource.close();
+      eventSourceRef.current = null;
+      
+      toast({
+        title: "Connection lost",
+        description: "The server connection was interrupted. Please try again.",
+        variant: "destructive",
+      });
+    };
+  }, [project, toast]);
 
   const handleTimeUpdate = useCallback((time: number) => {
     setCurrentTime(time);
@@ -678,19 +761,31 @@ export default function Editor() {
                 />
               )}
 
-              {/* Processing Status */}
-              {project && project.status !== "pending" && project.status !== "completed" && project.status !== "awaiting_review" && (
+              {/* Processing Status - for non-failed states */}
+              {project && project.status !== "pending" && project.status !== "completed" && project.status !== "awaiting_review" && project.status !== "failed" && (
                 <ProcessingStatus
                   status={project.status}
                   error={project.errorMessage ?? undefined}
                   errorSuggestion={project.errorSuggestion ?? undefined}
                   errorType={project.errorType ?? undefined}
-                  onRetry={project.status === "failed" ? handleRetryProcessing : undefined}
                   aiImageStats={project.aiImageStats}
                   transcriptSegments={project.transcript?.length}
                   scenesDetected={project.semanticAnalysis?.keyMoments?.length}
                   stockMediaCount={project.stockMedia?.length}
                   editActionsCount={project.editPlan?.actions?.length}
+                />
+              )}
+
+              {/* Error Display with recovery buttons - for failed state */}
+              {project && project.status === "failed" && (
+                <ErrorDisplay
+                  projectId={project.id}
+                  errorMessage={project.errorMessage ?? undefined}
+                  errorSuggestion={project.errorSuggestion ?? undefined}
+                  errorType={project.errorType ?? undefined}
+                  onRetrySuccess={handleRetryProcessing}
+                  onTranscriptionRetryStart={handleTranscriptionRetryStart}
+                  onUploadNew={handleNewProject}
                 />
               )}
 

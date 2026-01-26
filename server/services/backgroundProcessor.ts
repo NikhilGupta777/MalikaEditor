@@ -220,7 +220,13 @@ async function runProcessingPipeline(
     await updateStatus("analyzing");
     addActivity(projectId, "Reading video metadata...");
     const metadata = await getVideoMetadata(videoPath);
-    addActivity(projectId, `Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width}x${metadata.height}`);
+    
+    // Validate metadata to prevent null pointer errors
+    if (!metadata || typeof metadata.duration !== 'number' || isNaN(metadata.duration)) {
+      throw new Error("Failed to read video metadata. The video file may be corrupted or in an unsupported format.");
+    }
+    
+    addActivity(projectId, `Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width || 0}x${metadata.height || 0}`);
 
     // PARALLEL PHASE 1: Extract frames, audio, and detect silence simultaneously
     // These operations are all independent reads from the video file
@@ -367,13 +373,14 @@ async function runProcessingPipeline(
         // Stock media fetching - use all queries from AI analysis
         fetchStockMediaWithVariants(stockQueries, 3, 3),
         // AI image generation (if enabled) - use edit plan B-roll windows for consistency
-        shouldGenerateAi
+        // Works even if semanticAnalysis is missing, as long as we have explicit B-roll windows
+        shouldGenerateAi && (analysis.semanticAnalysis || brollWindows.length > 0)
           ? generateAiImagesForVideo(
-              analysis.semanticAnalysis!,
+              analysis.semanticAnalysis || { brollWindows: [], mainTopics: [], overallTone: "general", keyMoments: [], topicFlow: [], hookMoments: [] },
               undefined,
               undefined, // No limit - generate for all AI-selected windows
               metadata.duration,
-              brollWindows // Pass edit plan B-roll windows for consistency
+              brollWindows // Pass edit plan B-roll windows (takes priority over semanticAnalysis.brollWindows)
             ).catch((aiError: Error) => {
               processorLogger.error("AI image generation failed:", aiError);
               addActivity(projectId, "AI image generation failed, continuing with stock media only");

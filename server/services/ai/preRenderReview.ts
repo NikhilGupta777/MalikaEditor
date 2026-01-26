@@ -12,13 +12,24 @@ function repairJSON(text: string): string | null {
   if (!jsonMatch) return null;
   json = jsonMatch[0];
   
-  json = json.replace(/,\s*}/g, '}');
-  json = json.replace(/,\s*]/g, ']');
-  json = json.replace(/'/g, '"');
-  json = json.replace(/(\w+):/g, '"$1":');
-  json = json.replace(/""/g, '"');
-  json = json.replace(/:\s*([a-zA-Z][a-zA-Z0-9_]*)\s*([,}\]])/g, ': "$1"$2');
+  // Fix common JSON issues safely
+  json = json.replace(/,\s*}/g, '}');  // Trailing commas before }
+  json = json.replace(/,\s*]/g, ']');  // Trailing commas before ]
   
+  // Only quote unquoted keys at start of line or after { or ,
+  // Avoid corrupting URLs (https:, http:) by being more specific
+  json = json.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
+  
+  // Fix unquoted string values (but not numbers, booleans, null, or URLs)
+  json = json.replace(/:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*([,}\]])/g, (match, val, end) => {
+    // Don't quote boolean/null values
+    if (['true', 'false', 'null'].includes(val.toLowerCase())) {
+      return `: ${val.toLowerCase()}${end}`;
+    }
+    return `: "${val}"${end}`;
+  });
+  
+  // Balance brackets and braces
   const openBraces = (json.match(/{/g) || []).length;
   const closeBraces = (json.match(/}/g) || []).length;
   const openBrackets = (json.match(/\[/g) || []).length;

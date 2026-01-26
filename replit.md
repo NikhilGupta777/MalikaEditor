@@ -2,7 +2,7 @@
 
 ## Overview
 
-The AI Video Editor is an AI-powered application designed to automate video post-production. It allows users to upload raw video footage and use natural language prompts to describe their desired edits. The system leverages AI to analyze video content, transcribe audio, generate intelligent edit plans, fetch relevant stock media, generate custom AI images, and produce a professionally edited video. The project aims to revolutionize video editing by making it accessible and efficient for users without specialized editing skills, offering a unique solution for content creators, marketers, and businesses seeking efficient video production.
+The AI Video Editor is an AI-powered application designed to automate video post-production. It allows users to upload raw video footage and use natural language prompts to describe desired edits. The system leverages AI for video content analysis, audio transcription, intelligent edit plan generation, stock media fetching, custom AI image generation, and produces a professionally edited video. This project aims to make video editing accessible and efficient for content creators, marketers, and businesses by revolutionizing traditional post-production workflows.
 
 ## User Preferences
 
@@ -26,16 +26,21 @@ Preferred communication style: Simple, everyday language.
 ### Data Storage
 - **ORM**: Drizzle ORM with PostgreSQL
 - **In-Memory Storage**: `MemStorage` for fallback/temporary storage.
+- **Project History**: Past projects viewable with status badges and quick actions.
+- **Autosave**: User modifications in the review panel are automatically saved and restored.
+- **Asset Caching**: `cachedAssets` table stores stock media and AI images for reuse.
 
 ### AI Services (Modular Architecture)
-The AI services are modularized into focused modules for transcription, video analysis, semantic analysis, edit planning, and image generation.
+The AI services are modularized for transcription, video analysis, semantic analysis, edit planning, and image generation.
 
 #### Core AI Capabilities
 - **Deep Video Understanding**: Utilizes Gemini API for multi-layer analysis including scene detection, emotion flow, speaker detection, visual importance scoring, and key moment detection.
-- **Smart Transcript Analysis**: Multi-provider audio transcription (OpenAI primary, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation. Supports multiple languages.
-- **Multi-Pass Edit Planning**: A 4-pass intelligent edit system comprising Structure Pass, Quality Pass, B-Roll Optimization Pass, and Quality Review Pass to generate comprehensive edit plans.
+- **Smart Transcript Analysis**: Multi-provider audio transcription (OpenAI primary, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation in multiple languages.
+- **Multi-Pass Edit Planning**: A 4-pass intelligent edit system (Structure Pass, Quality Pass, B-Roll Optimization Pass, Quality Review Pass) generates comprehensive edit plans.
 - **Transcript-Based Editing**: Allows users to edit video by manipulating an interactive, color-coded transcript with real-time preview, including auto-removal of filler words and manual override for AI suggestions.
-- **Additional AI Features**: Includes Karaoke-style captions, AI image generation based on transcript content, and a Quality Insights Dashboard for performance metrics.
+- **Additional AI Features**: Includes Karaoke-style captions and AI image generation based on transcript content.
+- **AI Response Normalization**: Centralized module (`server/services/ai/normalization.ts`) ensures robustness against varied AI responses using Zod schema integration and graceful fallbacks.
+- **AI Self-Learning System**: Before rendering, AI (Gemini 1.5 Flash) reviews the edit plan, provides confidence scores, quality assessments, and issue detection. User approval/rejection decisions are stored in a PostgreSQL `edit_feedback` table for continuous learning.
 
 ### Video Processing Pipeline
 1.  **Upload**: Video stored temporarily.
@@ -44,48 +49,44 @@ The AI services are modularized into focused modules for transcription, video an
 4.  **Planning**: AI generates edit plan using multi-pass system.
 5.  **Stock Media**: Fetches media from Pexels.
 6.  **AI Images**: Generates custom AI images.
-7.  **User Review** (NEW): Processing pauses with status `awaiting_review`. User can:
-    - Review and edit the transcript
-    - Approve or reject individual edit actions (cuts, keeps, b-roll insertions)
-    - Select which stock media and AI images to include
-    - Approve and proceed to rendering, or cancel and re-process
+7.  **User Review**: Processing pauses, user can review and edit transcript, approve/reject individual edit actions, select stock media/AI images. Includes a 2-minute auto-accept timer.
 8.  **Rendering**: FFmpeg applies approved edits and outputs the final video.
 
 #### User Review System
-- **ReviewPanel Component**: Shows transcript, edit plan, and media selections in tabbed interface
-- **Approval Flow**: User reviews AI decisions before any cuts are made
-- **Modification Support**: Users can uncheck items to exclude them from the final video
-- **API Endpoints**:
-  - `GET /api/videos/:id/review` - Get review data
-  - `POST /api/videos/:id/approve-review` - Approve and save modifications
-  - `GET /api/videos/:id/render` - Start rendering after approval (SSE)
+- **ReviewPanel Component**: Shows transcript, edit plan, and media selections in a tabbed interface.
+- **Approval Flow**: User reviews AI decisions before cuts are made.
+- **Modification Support**: Users can uncheck items to exclude them.
+- **Pre-render Summary**: Shows a clear summary of upcoming actions (cuts, keeps, B-roll, AI images, captions).
+- **Cut Warnings**: Red warning box shows exactly which cuts will happen.
+- **"Keep Full Video" / "Uncheck All Cuts"**: Quick options for cut management.
 
 #### B-Roll and Transitions
-- **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, fade transitions, Ken Burns effect for images, and smart AI image placement with overlap detection.
-- **Video Transitions**: Implements crossfade transitions between video segments using FFmpeg's `xfade` filter, controllable via UI.
+- **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, fade transitions, Ken Burns effect for images, and smart AI image placement.
+- **Video Transitions**: Implements crossfade transitions between video segments using FFmpeg's `xfade` filter.
 
 #### Performance and Quality
-- **Performance Optimizations**: Features single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), and proxy video generation.
-- **Quality Mode Selector**: UI dropdown in render panel allows users to select encoding quality (preview for fast testing, balanced for typical use, quality for final exports).
-- **Chapter Metadata**: Automatic chapter generation from edit plan analysis, embedded in output video for improved navigability.
+- **Performance Optimizations**: Single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), and proxy video generation.
+- **Chapter Metadata**: Automatic chapter generation embedded in output video.
+- **Animation Improvements**: Increased FPS (30), improved transitions (0.5s sine easing), and 5 animation presets (zoom_in, zoom_out, pan_left, pan_right, fade_only).
 
 #### Interactive Transcript
-- **Click-to-Seek**: Clickable timestamps in TranscriptEditor that seek video preview to segment start time.
-- **Current Segment Highlighting**: Active segment highlighted with visual indicator based on video playback position.
-- **Dual Edit Modes**: Tabs for AI-assisted editing (ReviewPanel) and manual transcript editing (TranscriptEditor).
+- **Click-to-Seek**: Clickable timestamps in TranscriptEditor.
+- **Current Segment Highlighting**: Active segment highlighted during video playback.
+- **Dual Edit Modes**: Tabs for AI-assisted editing and manual transcript editing.
 
 #### Error Handling & Scalability
-- **Error Handling**: Provides user-friendly messages with recovery suggestions, mapped to specific error types and visualized with UI icons.
+- **Error Handling**: User-friendly messages with recovery suggestions.
 - **Scalability**: Designed for future integration with background job queues, worker processes, and cloud object storage.
-
-### AI Response Normalization System
-A centralized normalization module (`server/services/ai/normalization.ts`) ensures robustness against varied AI responses by normalizing diverse values (e.g., priority, narrative arc, section type, tone, pacing, edit style, and more) using Zod schema integration, first-word extraction, capitalization handling, synonym mapping, and graceful fallbacks.
+- **Background Processing**: Videos continue processing even if users disconnect. Uses a background processor with job queue and subscriber pattern for real-time SSE updates.
+- **Event Replay System**: SSE events include unique IDs for replaying missed events on reconnect.
+- **Persistence & Multi-User Support**: PostgreSQL storage, project history, 1-hour project expiration, max 3 concurrent processing jobs.
+- **Error Recovery**: Failed projects show retry/re-run options.
 
 ## External Dependencies
 
 ### AI Services
 -   **Gemini API**: For video analysis, edit planning, and image generation.
--   **OpenAI API**: For audio transcription (primary) and text-to-speech.
+-   **OpenAI API**: For audio transcription and text-to-speech.
 
 ### Media Services
 -   **Pexels API**: For fetching stock photos and videos.
@@ -96,95 +97,3 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 
 ### Cloud Storage
 -   **Google Cloud Storage**: For object storage, integrated via Replit sidecar.
-
-## Recent Changes (January 2026)
-
-### Security Updates
-- Removed hardcoded credentials from source code
-- Admin user credentials now configured via environment variables:
-  - `DEFAULT_ADMIN_USERNAME`: Username for auto-created admin account
-  - `DEFAULT_ADMIN_PASSWORD`: Password for auto-created admin account
-- Session secret validation strengthened for production environments
-
-### Bug Fixes
-- Fixed TypeScript compilation error with Map iteration (using `Array.from()`)
-- Added missing `reviewData` field to VideoProject creation in MemStorage
-- Added reviewData schema validation in storage layer
-
-### Transcription & Caption Pipeline Improvements
-- Fixed transcription timing: No longer defaults to incorrect 60-second duration when actual duration is unavailable
-- Improved karaoke caption accuracy: Word timings are now properly clamped to caption boundaries
-- Fixed phrase grouping: Phrases no longer cross caption/segment boundaries after video edits
-- Added silent audio detection: Pre-checks audio levels before transcription with user feedback
-- Improved empty transcription handling: Gracefully disables captions when no speech is detected
-- Fixed word timing mapping: Properly maps word timings from source to output timeline during video edits
-
-### New Features
-- Added file magic byte validation for video uploads (validates actual file content, not just MIME type)
-- Added SSE reconnection hook for frontend with exponential backoff (client/src/hooks/useSSE.ts)
-- Health check endpoint available at `/api/health`
-- Improved SSE disconnect handling with proper abort controllers and resource cleanup
-- **2-minute auto-accept timer**: Review stage now has a countdown timer that auto-approves after 2 minutes of inactivity. Timer resets when user makes changes, giving them another 2-minute window.
-- **Pre-render summary**: ReviewPanel now shows a clear summary of what will happen (approved cuts, keeps, B-roll, AI images, captions) before rendering.
-
-### User Review Flow Improvements
-- Fixed unauthorized cutting issue: Backend now only applies cuts when user explicitly approves them
-- Original `editOptions` (captions, remove silence, etc.) are now stored in `reviewData` and used during rendering
-- Detailed activity logging shows exactly what edit actions are being applied during rendering
-- Summary shows excluded transcript segments and no-cuts messaging when user unchecks all cuts
-- **Prominent cut warning**: Red warning box shows exactly which cuts will happen and how much video will be removed
-- **"Keep Full Video" button**: One-click option to disable all cuts and preserve original video length
-- **"Uncheck All Cuts" toggle**: Quick toggle in Edit Plan tab to enable/disable all cuts at once
-- **Enhanced logging**: Backend logs exactly which cuts were approved/rejected for debugging
-
-### Background Processing Architecture
-- **Independent Server-Side Processing**: Videos continue processing even when users disconnect or refresh the page
-- **Background Processor** (`server/services/backgroundProcessor.ts`): Job queue with subscriber pattern for real-time SSE updates
-- **SSE Reconnection**: Frontend automatically reconnects to in-progress projects and receives update stream
-- **Slot Tracking**: Proper slot reservation and release via `slotReserved` flag and `onJobComplete` callback
-- **Reconnection Safety**: Completed/failed projects cannot be accidentally restarted; frontend checks status before subscribing
-- **Job Cleanup**: Jobs and subscribers cleaned up after 5 minutes to allow reconnection window
-- **Unified Slot Management**: Job slot tracking centralized in backgroundProcessor.ts with exported functions (canStartNewJob, getActiveJobCount, getActiveJobsInfo)
-- **Event Replay System**: SSE events include unique incrementing IDs stored in eventHistory buffer (max 100 events); getEventsSince() enables replay of missed events on reconnect
-- **Client-Side Persistence**: Editor.tsx stores lastEventId in sessionStorage; on page refresh, sends lastEventId to server which replays missed events for seamless recovery
-
-### Persistence & Multi-User Support
-- **PostgreSQL Storage**: Migrated from in-memory to persistent PostgreSQL database storage via DatabaseStorage class
-- **Project History Panel**: Users can view past projects with status badges, expiration time, and quick actions (view/delete)
-- **1-Hour Project Expiration**: Projects automatically expire and are cleaned up after 1 hour; periodic cleanup runs every 10 minutes
-- **Max 3 Concurrent Processing Jobs**: System limits concurrent video processing to 3 jobs to prevent resource exhaustion
-- **Autosave for Reviews**: User modifications in the review panel are automatically saved (debounced) and restored if they leave and return
-- **Asset Caching**: New `cachedAssets` table stores stock media and AI images for reuse across projects
-- **Error Recovery**: Failed projects show recovery buttons (Retry Processing, Re-run Transcription, Upload New Video)
-
-### AI Improvements
-- **Transcription**: Added language hint support, improved sentence grouping for natural segment breaks, better handling of background noise
-- **Edit Planning**: Dynamic pacing guidance based on video duration (short/medium/long), mid-sentence cut prevention, content-type specific rules (tutorial vs entertainment)
-- **B-Roll Queries**: Improved query generation with action verbs + specific subjects, negative examples to avoid generic queries, topic context awareness
-
-### AI Self-Learning System
-- **Pre-Render AI Review**: Before rendering, AI (Gemini 1.5 Flash) reviews the edit plan and provides confidence scores (0-100), quality assessments, and issue detection with severity levels
-- **Feedback Persistence**: User approval/rejection decisions for edit actions are now stored in PostgreSQL (`edit_feedback` table) with context metadata (genre, tone, duration)
-- **Database Schema**: New `edit_feedback` table tracks: projectId, actionType, wasApproved, wasModified, originalStart/End, modifiedStart/End, contextGenre, contextTone, contextDuration
-- **Storage Methods**: `storage.saveEditFeedback()`, `storage.getEditFeedbackByProject()`, `storage.getFeedbackSummary()` for durable feedback tracking
-- **Activity Logging**: Render route now logs and sends SSE updates showing how many edit decisions were recorded for AI learning
-- **Non-Blocking Design**: AI review failures don't stop rendering - they log warnings and proceed
-
-### Animation Improvements
-- **Higher Frame Rate**: Increased animation FPS from 25 to 30 for smoother motion
-- **Improved Transitions**: Fade transitions increased from 0.3s to 0.5s with sine easing curves
-- **5 Animation Presets**: Added zoom_in (Ken Burns), zoom_out, pan_left, pan_right, and fade_only presets with smooth easing curves for professional-quality image animations
-
-## Environment Variables
-
-### Required for Authentication
-- `SESSION_SECRET`: Secret key for session encryption (required in production)
-- `DEFAULT_ADMIN_USERNAME`: Username for initial admin account
-- `DEFAULT_ADMIN_PASSWORD`: Password for initial admin account
-
-### AI Services (via Replit Integrations)
-- `AI_INTEGRATIONS_OPENAI_API_KEY`: OpenAI API key (for transcription)
-- `AI_INTEGRATIONS_GEMINI_API_KEY`: Gemini API key (for video analysis)
-
-### Media Services
-- `PEXELS_API_KEY`: Pexels API key for stock media

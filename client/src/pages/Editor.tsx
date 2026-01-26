@@ -700,8 +700,9 @@ export default function Editor() {
               )}
 
               {/* Review Panel - User approval step */}
-              {project?.status === "awaiting_review" && reviewData && (
+              {project?.status === "awaiting_review" && reviewData && project.id && (
                 <ReviewPanel
+                  projectId={project.id}
                   reviewData={reviewData}
                   onApprove={handleReviewApprove}
                   onCancel={handleReviewCancel}

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -20,12 +21,18 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Timer
+  Timer,
+  Cloud,
+  Loader2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
+import { useAutosave } from "@/hooks/useAutosave";
+import { useLoadAutosave } from "@/hooks/useLoadAutosave";
 import type { ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment } from "@shared/schema";
 
 interface ReviewPanelProps {
+  projectId: number;
   reviewData: ReviewData;
   onApprove: (updatedReviewData: ReviewData) => void;
   onCancel: () => void;
@@ -62,7 +69,17 @@ function getActionLabel(type: string) {
 
 const AUTO_ACCEPT_SECONDS = 120; // 2 minutes
 
-export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: ReviewPanelProps) {
+function formatLastSaved(date: Date): string {
+  const now = new Date();
+  const diffSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+  if (diffSeconds < 5) return "Just now";
+  if (diffSeconds < 60) return `${diffSeconds}s ago`;
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoading }: ReviewPanelProps) {
   const [localReviewData, setLocalReviewData] = useState<ReviewData>(reviewData);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     transcript: true,
@@ -71,6 +88,7 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
   });
   const [timeRemaining, setTimeRemaining] = useState(AUTO_ACCEPT_SECONDS);
   const [userHasInteracted, setUserHasInteracted] = useState(false);
+  const [hasHydratedAutosave, setHasHydratedAutosave] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const hasAutoApprovedRef = useRef(false);
   
@@ -79,6 +97,37 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
   useEffect(() => {
     latestReviewDataRef.current = localReviewData;
   }, [localReviewData]);
+
+  // Load autosave data on mount
+  const { autosaveData, hasAutosave, isLoading: isLoadingAutosave } = useLoadAutosave({
+    projectId,
+    enabled: !hasHydratedAutosave,
+  });
+
+  // Hydrate local state from autosave if available
+  useEffect(() => {
+    if (!hasHydratedAutosave && hasAutosave && autosaveData) {
+      setLocalReviewData(autosaveData);
+      setHasHydratedAutosave(true);
+    } else if (!hasHydratedAutosave && !isLoadingAutosave) {
+      setHasHydratedAutosave(true);
+    }
+  }, [hasAutosave, autosaveData, hasHydratedAutosave, isLoadingAutosave]);
+
+  // Autosave when localReviewData changes (only after initial hydration)
+  const { isSaving, lastSaved, error: autosaveError } = useAutosave({
+    projectId,
+    data: localReviewData,
+    debounceMs: 2000,
+    enabled: hasHydratedAutosave && userHasInteracted,
+  });
+
+  // Mutation to delete autosave after approval
+  const deleteAutosaveMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/videos/${projectId}/autosave`);
+    },
+  });
 
   // Auto-accept timer countdown
   useEffect(() => {
@@ -168,6 +217,7 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
   }, [resetTimer]);
 
   const handleApprove = () => {
+    deleteAutosaveMutation.mutate();
     onApprove({ ...localReviewData, userApproved: true });
   };
 
@@ -220,6 +270,24 @@ export function ReviewPanel({ reviewData, onApprove, onCancel, isLoading }: Revi
             </CardDescription>
           </div>
           <div className="flex items-center gap-3">
+            {(isSaving || lastSaved) && (
+              <div 
+                className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                data-testid="autosave-status"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : lastSaved ? (
+                  <>
+                    <Cloud className="h-3 w-3 text-green-500" />
+                    <span>Saved {formatLastSaved(lastSaved)}</span>
+                  </>
+                ) : null}
+              </div>
+            )}
             <Badge variant="outline" className="gap-1">
               <Clock className="h-3 w-3" />
               {formatTime(localReviewData.summary.originalDuration)} original

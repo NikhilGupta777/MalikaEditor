@@ -2123,12 +2123,88 @@ async function applyEditsInternal(
       videoLogger.warn(`Note: ${aiImagesSkipped} AI image(s) could not be placed due to timing constraints`);
     }
     
-    // SECOND: Process stock media based on insert_stock actions from edit plan
+    // SECOND: Process stock media with AI-selected timing (startTime/endTime set by mediaSelector)
+    // This enables multi-clip support - AI selector can assign multiple clips to dense segments
+    const stockWithTiming = downloadedStockMedia.filter(m => typeof m.item.startTime === "number");
+    const stockWithoutTiming = downloadedStockMedia.filter(m => typeof m.item.startTime !== "number");
+    
+    videoLogger.info(`Stock media: ${stockWithTiming.length} with AI timing, ${stockWithoutTiming.length} without timing`);
+    
+    // Process stock with AI-assigned timing first
+    for (const mediaItem of stockWithTiming) {
+      const sourceTime = mediaItem.item.startTime!;
+      const sourceEndTime = mediaItem.item.endTime || sourceTime + 4;
+      const itemQuery = mediaItem.item.query || "unknown";
+      
+      // Find output time for this source time
+      let outputTime: number | null = null;
+      let mappingStrategy = "unmapped";
+      
+      for (const mapping of outputTimeMapping) {
+        if (sourceTime >= mapping.sourceStart && sourceTime < mapping.sourceEnd) {
+          outputTime = mapping.outputStart + (sourceTime - mapping.sourceStart);
+          mappingStrategy = "exact";
+          break;
+        }
+      }
+      
+      // Try tolerance mapping if exact match failed
+      if (outputTime === null) {
+        const toleranceSeconds = 0.5;
+        for (const mapping of outputTimeMapping) {
+          if (sourceTime >= mapping.sourceStart - toleranceSeconds && 
+              sourceTime <= mapping.sourceEnd + toleranceSeconds) {
+            const clampedSourceTime = Math.max(mapping.sourceStart, Math.min(sourceTime, mapping.sourceEnd - 0.1));
+            outputTime = mapping.outputStart + (clampedSourceTime - mapping.sourceStart);
+            mappingStrategy = "tolerance";
+            break;
+          }
+        }
+      }
+      
+      if (outputTime !== null && outputTime >= 0 && outputTime < baseMetadata.duration) {
+        // Calculate duration from AI selector timing or media duration
+        let duration = Math.min(
+          sourceEndTime - sourceTime,
+          mediaItem.item.duration || 5,
+          5
+        );
+        
+        // Clamp duration if extends beyond video end
+        if (outputTime + duration > baseMetadata.duration) {
+          const overflow = (outputTime + duration) - baseMetadata.duration;
+          duration = Math.max(0.5, duration - overflow);
+        }
+        
+        // Check overlap with existing overlays (AI images and previous stock)
+        const overlapsExisting = brollOverlays.some(o => 
+          intervalsOverlap(outputTime!, outputTime! + duration, o.startTime, o.startTime + o.duration)
+        );
+        
+        if (!overlapsExisting && duration > 0.5) {
+          brollOverlays.push({
+            localPath: mediaItem.localPath,
+            type: mediaItem.item.type as "video" | "image" | "ai_generated",
+            startTime: outputTime,
+            duration,
+          });
+          stockMediaApplied++;
+          videoLogger.info(`[Stock OK] ${mediaItem.item.type} at output=${outputTime.toFixed(2)}s (src=${sourceTime.toFixed(2)}s) for ${duration.toFixed(2)}s via ${mappingStrategy}: ${itemQuery.substring(0, 50)}`);
+        } else if (overlapsExisting) {
+          videoLogger.debug(`[Stock SKIP] Overlaps existing overlay at ${outputTime.toFixed(2)}s: ${itemQuery.substring(0, 50)}`);
+        }
+      } else {
+        videoLogger.debug(`[Stock SKIP] Could not map to output timeline (src=${sourceTime.toFixed(2)}s): ${itemQuery.substring(0, 50)}`);
+      }
+    }
+    
+    // THIRD: Process stock media based on insert_stock actions from edit plan (for stock without AI timing)
+    let stockWithoutTimingIdx = 0;
     for (const action of insertStockActions) {
-      if (stockIdx >= downloadedStockMedia.length) break;
+      if (stockWithoutTimingIdx >= stockWithoutTiming.length) break;
       
       const sourceTime = action.start || 0;
-      const mediaItem = downloadedStockMedia[stockIdx];
+      const mediaItem = stockWithoutTiming[stockWithoutTimingIdx];
       
       // Find output time for this source time
       let outputTime: number | null = null;
@@ -2154,12 +2230,12 @@ async function applyEditsInternal(
           videoLogger.debug(`[Stock] Clamped duration to ${duration.toFixed(2)}s to fit before video end`);
         }
         
-        // Check if this time overlaps with any AI image (using actual durations)
-        const overlapsAi = brollOverlays.some(o => 
-          intervalsOverlap(outputTime, outputTime + duration, o.startTime, o.startTime + o.duration)
+        // Check if this time overlaps with any existing overlay (using actual durations)
+        const overlapsExisting = brollOverlays.some(o => 
+          intervalsOverlap(outputTime!, outputTime! + duration, o.startTime, o.startTime + o.duration)
         );
         
-        if (!overlapsAi && duration > 0) {
+        if (!overlapsExisting && duration > 0) {
           brollOverlays.push({
             localPath: mediaItem.localPath,
             type: mediaItem.item.type as "video" | "image" | "ai_generated",
@@ -2167,16 +2243,16 @@ async function applyEditsInternal(
             duration,
             text: action.text,
           });
-          stockIdx++;
+          stockWithoutTimingIdx++;
           stockMediaApplied++;
-        } else if (overlapsAi) {
-          videoLogger.debug(`Skipping stock at ${outputTime.toFixed(2)}s - overlaps with AI image`);
+        } else if (overlapsExisting) {
+          videoLogger.debug(`Skipping stock at ${outputTime.toFixed(2)}s - overlaps with existing overlay`);
         }
       }
     }
     
-    // Distribute remaining stock media evenly across the video
-    const remainingStock = downloadedStockMedia.slice(stockIdx);
+    // FOURTH: Distribute remaining stock media evenly across the video
+    const remainingStock = stockWithoutTiming.slice(stockWithoutTimingIdx);
     if (remainingStock.length > 0) {
       const interval = baseMetadata.duration / (remainingStock.length + 1);
       

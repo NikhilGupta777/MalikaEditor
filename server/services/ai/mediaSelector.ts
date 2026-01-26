@@ -250,7 +250,7 @@ Respond in JSON format ONLY:
   const response = await withRetry(
     async () => {
       const result = await gemini.models.generateContent({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       });
       return result.text || "";

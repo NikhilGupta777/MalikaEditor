@@ -348,7 +348,7 @@ async function runProcessingPipeline(
             })
           : Promise.resolve([] as Awaited<ReturnType<typeof generateAiImagesForVideo>>),
       ]);
-        
+      
       const mediaFetchTime = ((Date.now() - mediaFetchStart) / 1000).toFixed(1);
       const totalPhotos = stockVariants.reduce((sum, v) => sum + v.photos.length, 0);
       const totalVideos = stockVariants.reduce((sum, v) => sum + v.videos.length, 0);

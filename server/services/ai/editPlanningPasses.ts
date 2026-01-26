@@ -21,6 +21,14 @@ import type {
 
 const aiLogger = createLogger("ai-service");
 
+// Safe number formatting helper - handles undefined, null, NaN
+function safeFixed(value: number | undefined | null, decimals: number = 1): string {
+  if (value === undefined || value === null || isNaN(value)) {
+    return "0";
+  }
+  return value.toFixed(decimals);
+}
+
 // Alias for backward compatibility
 const normalizeQualityLevel = normalizeVisualImportance;
 const normalizePacing = normalizeMetricPacing;
@@ -233,13 +241,13 @@ export async function executePass1StructureAnalysis(
 ): Promise<StructuredPlan> {
   const duration = analysis.duration || 0;
   const transcriptText = transcript.slice(0, 30).map(t => 
-    `[${(t.start || 0).toFixed(1)}s]: ${t.text}`
+    `[${safeFixed(t.start)}s]: ${t.text}`
   ).join("\n");
 
   const prompt = `You are an expert video structure analyst. Analyze this video to identify its structural components.
 
 VIDEO ANALYSIS:
-- Duration: ${(duration || 0).toFixed(1)} seconds
+- Duration: ${safeFixed(duration)} seconds
 - Genre: ${analysis.context?.genre || "general"}
 - Tone: ${analysis.context?.tone || "casual"}
 - Existing narrative structure: ${JSON.stringify(analysis.narrativeStructure || {})}
@@ -264,7 +272,7 @@ Respond in JSON format only (no markdown):
 {
   "introSection": {"start": 0, "end": number} | null,
   "mainContentSection": {"start": number, "end": number},
-  "outroSection": {"start": number, "end": ${duration.toFixed(1)}} | null,
+  "outroSection": {"start": number, "end": ${safeFixed(duration)}} | null,
   "sectionMarkers": [
     {"timestamp": number, "type": "intro_end|section_change|climax|outro_start|transition", "description": "string"}
   ],
@@ -344,22 +352,22 @@ export async function executePass2QualityAssessment(
   const duration = analysis.duration;
   
   const keyMomentsSummary = [
-    ...(analysis.keyMoments || []).map(k => `[${k.timestamp.toFixed(1)}s] ${k.type}: ${k.description} (${k.importance})`),
-    ...(semanticAnalysis.keyMoments || []).map(k => `[${k.timestamp.toFixed(1)}s] ${k.description} (${k.importance})`),
+    ...(analysis.keyMoments || []).map(k => `[${safeFixed(k.timestamp)}s] ${k.type}: ${k.description} (${k.importance})`),
+    ...(semanticAnalysis.keyMoments || []).map(k => `[${safeFixed(k.timestamp)}s] ${k.description} (${k.importance})`),
   ].slice(0, 15).join("\n");
 
   const scenesSummary = (analysis.scenes || []).slice(0, 10).map(s => 
-    `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${s.sceneType} - ${s.emotionalTone}, visual importance: ${s.visualImportance}`
+    `[${safeFixed(s.start)}s-${safeFixed(s.end)}s] ${s.sceneType} - ${s.emotionalTone}, visual importance: ${s.visualImportance}`
   ).join("\n");
 
   const emotionFlowSummary = (analysis.emotionFlow || []).slice(0, 10).map(e =>
-    `[${e.timestamp.toFixed(1)}s] ${e.emotion} (intensity: ${e.intensity})`
+    `[${safeFixed(e.timestamp)}s] ${e.emotion} (intensity: ${e.intensity})`
   ).join("\n");
 
   const prompt = `You are an expert video quality analyst. Score each segment of this video for engagement potential.
 
 VIDEO INFO:
-- Duration: ${duration.toFixed(1)} seconds
+- Duration: ${safeFixed(duration)} seconds
 - Genre: ${analysis.context?.genre || "general"}
 - Hook moments detected: ${JSON.stringify(semanticAnalysis.hookMoments?.slice(0, 3) || [])}
 - Filler words count: ${fillerSegments.length}
@@ -380,7 +388,7 @@ EMOTION FLOW:
 ${emotionFlowSummary || "None"}
 
 FILLER SEGMENTS (partial):
-${fillerSegments.slice(0, 10).map(f => `[${f.start.toFixed(1)}s] "${f.word}"`).join(", ")}
+${fillerSegments.slice(0, 10).map(f => `[${safeFixed(f.start)}s] "${f.word}"`).join(", ")}
 
 SCORING GUIDELINES:
 - 80-100: MUST KEEP - Key moments, climaxes, important reveals, strong hooks
@@ -487,24 +495,24 @@ export async function executePass3BrollOptimization(
   
   const lowImportanceScenes = (analysis.scenes || [])
     .filter(s => s.visualImportance === "low" || s.visualImportance === "medium")
-    .map(s => `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${s.visualDescription || s.sceneType}`);
+    .map(s => `[${safeFixed(s.start)}s-${safeFixed(s.end)}s] ${s.visualDescription || s.sceneType}`);
 
   const brollWindowsSummary = semanticAnalysis.brollWindows.slice(0, 12).map(b =>
-    `[${b.start.toFixed(1)}s-${b.end.toFixed(1)}s] Context: "${b.context}" - Query: "${b.suggestedQuery}" (${b.priority})`
+    `[${safeFixed(b.start)}s-${safeFixed(b.end)}s] Context: "${b.context}" - Query: "${b.suggestedQuery}" (${b.priority})`
   ).join("\n");
 
   const lowValueSummary = qualityMap.lowValueSegments.map(s =>
-    `[${s.start.toFixed(1)}s-${s.end.toFixed(1)}s] ${s.reason}`
+    `[${safeFixed(s.start)}s-${safeFixed(s.end)}s] ${s.reason}`
   ).join("\n");
 
   const transcriptContext = transcript.slice(0, 25).map(t =>
-    `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`
+    `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
   ).join("\n");
 
   const prompt = `You are an expert B-roll optimization specialist. Create an intelligent B-roll placement plan.
 
 VIDEO CONTEXT:
-- Duration: ${duration.toFixed(1)} seconds
+- Duration: ${safeFixed(duration)} seconds
 - Genre: ${genre}
 - Tone: ${tone}
 - B-roll style hint: ${getBrollStyleHint(genre)}
@@ -523,7 +531,7 @@ LOW VALUE SEGMENTS (from quality assessment):
 ${lowValueSummary || "None identified"}
 
 FILLER WORDS DETECTED:
-${fillerSegments.slice(0, 15).map(f => `[${f.start.toFixed(1)}s-${f.end.toFixed(1)}s] "${f.word}"`).join("\n")}
+${fillerSegments.slice(0, 15).map(f => `[${safeFixed(f.start)}s-${safeFixed(f.end)}s] "${f.word}"`).join("\n")}
 
 TRANSCRIPT CONTEXT:
 ${transcriptContext}
@@ -677,10 +685,10 @@ export async function executePass4QualityReview(
   }
 
   const actionsSummary = preliminaryActions.slice(0, 20).map(a => {
-    if (a.type === "insert_stock") return `[${a.start?.toFixed(1)}s] insert_stock: "${a.stockQuery}" (${a.duration}s)`;
-    if (a.type === "cut") return `[${a.start?.toFixed(1)}s-${a.end?.toFixed(1)}s] cut: ${a.reason}`;
-    if (a.type === "keep") return `[${a.start?.toFixed(1)}s-${a.end?.toFixed(1)}s] keep: ${a.reason}`;
-    return `[${a.start?.toFixed(1)}s] ${a.type}`;
+    if (a.type === "insert_stock") return `[${safeFixed(a.start)}s] insert_stock: "${a.stockQuery}" (${a.duration}s)`;
+    if (a.type === "cut") return `[${safeFixed(a.start)}s-${safeFixed(a.end)}s] cut: ${a.reason}`;
+    if (a.type === "keep") return `[${safeFixed(a.start)}s-${safeFixed(a.end)}s] keep: ${a.reason}`;
+    return `[${safeFixed(a.start)}s] ${a.type}`;
   }).join("\n");
 
   const reviewPrompt = `You are a senior video editor performing quality review. Review this edit plan for consistency and quality.
@@ -688,7 +696,7 @@ export async function executePass4QualityReview(
 USER'S EDITING INSTRUCTIONS: "${prompt}"
 
 VIDEO INFO:
-- Duration: ${duration.toFixed(1)} seconds
+- Duration: ${safeFixed(duration)} seconds
 - Genre: ${genre}
 - Overall engagement: ${qualityMap.overallEngagement}
 - Hook strength: ${qualityMap.hookStrength}
@@ -800,7 +808,7 @@ function ensureKeepCoverage(actions: EditAction[], duration: number): void {
   const keepPercentage = (totalKeepDuration / duration) * 100;
   
   if (keepPercentage < 40 || keepActions.length === 0) {
-    aiLogger.warn(`Keep actions only cover ${keepPercentage.toFixed(1)}% - adding full video keep`);
+    aiLogger.warn(`Keep actions only cover ${safeFixed(keepPercentage)}% - adding full video keep`);
     const nonKeepActions = actions.filter(a => a.type !== "keep");
     actions.length = 0;
     actions.push(...nonKeepActions);

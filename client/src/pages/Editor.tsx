@@ -314,8 +314,36 @@ export default function Editor() {
         };
         
         eventSource.onerror = () => {
-          console.log("SSE connection lost, will retry on refresh");
+          console.log("Processing SSE connection lost, fetching current status...");
           eventSource.close();
+          eventSourceRef.current = null;
+          
+          // Fetch current project status to update UI correctly
+          fetch(`/api/videos/${loadedProject.id}`)
+            .then(res => res.json())
+            .then(data => {
+              setProject(data);
+              // Check if processing completed while disconnected
+              if (data.status === "awaiting_review") {
+                setIsProcessing(false);
+                if (data.reviewData) {
+                  setReviewData(data.reviewData);
+                }
+              } else if (data.status === "completed") {
+                setIsProcessing(false);
+                if (data.outputPath) {
+                  setPreviewUrl(data.outputPath);
+                }
+              } else if (data.status === "failed") {
+                setIsProcessing(false);
+              } else if (processingStates.includes(data.status)) {
+                // Still processing - keep isProcessing true, user can refresh to reconnect
+              }
+            })
+            .catch(err => {
+              console.error("Failed to fetch project status:", err);
+              setIsProcessing(false);
+            });
         };
       }
     }

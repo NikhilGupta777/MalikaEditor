@@ -21,7 +21,9 @@ async function runPeriodicCleanup() {
     const deletedProjects = await storage.cleanupExpiredProjects();
     const deletedCache = await storage.cleanupExpiredCache();
     if (deletedProjects > 0 || deletedCache > 0) {
-      expressLogger.info(`Periodic cleanup: ${deletedProjects} expired projects, ${deletedCache} expired cache entries`);
+      expressLogger.info(
+        `Periodic cleanup: ${deletedProjects} expired projects, ${deletedCache} expired cache entries`,
+      );
     }
   } catch (e) {
     expressLogger.warn("Periodic cleanup failed:", e);
@@ -80,7 +82,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  })
+  }),
 );
 
 // Security headers with helmet
@@ -112,11 +114,12 @@ app.use(
       includeSubDomains: true,
       preload: true,
     },
-  })
+  }),
 );
 
 app.use(
   express.json({
+    limit: "70mb", // ✅ FIX for 413 error
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
@@ -176,18 +179,25 @@ app.use((req, res, next) => {
   try {
     const defaultUsername = process.env.DEFAULT_ADMIN_USERNAME;
     const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD;
-    
+
     if (defaultUsername && defaultPassword) {
       const existingUser = await storage.getUserByUsername(defaultUsername);
       if (!existingUser) {
         const hashedPassword = await hashPassword(defaultPassword);
-        await storage.createUser({ username: defaultUsername, password: hashedPassword });
-        log(`Admin user '${defaultUsername}' created from environment variables`);
+        await storage.createUser({
+          username: defaultUsername,
+          password: hashedPassword,
+        });
+        log(
+          `Admin user '${defaultUsername}' created from environment variables`,
+        );
       } else {
         log(`Admin user '${defaultUsername}' already exists`);
       }
     } else {
-      log("No default admin credentials configured. Set DEFAULT_ADMIN_USERNAME and DEFAULT_ADMIN_PASSWORD environment variables to create an admin user on startup.");
+      log(
+        "No default admin credentials configured. Set DEFAULT_ADMIN_USERNAME and DEFAULT_ADMIN_PASSWORD environment variables to create an admin user on startup.",
+      );
     }
   } catch (e) {
     expressLogger.warn("Failed to create admin user:", e);
@@ -195,18 +205,25 @@ app.use((req, res, next) => {
 
   await registerRoutes(httpServer, app);
 
-  app.use((err: Error & { status?: number; statusCode?: number }, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+  app.use(
+    (
+      err: Error & { status?: number; statusCode?: number },
+      _req: Request,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      const status = err.status || err.statusCode || 500;
+      const message = err.message || "Internal Server Error";
 
-    expressLogger.error("Internal Server Error:", err);
+      expressLogger.error("Internal Server Error:", err);
 
-    if (res.headersSent) {
-      return next(err);
-    }
+      if (res.headersSent) {
+        return next(err);
+      }
 
-    return res.status(status).json({ message });
-  });
+      return res.status(status).json({ message });
+    },
+  );
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route

@@ -70,42 +70,44 @@ export async function selectBestMediaForWindows(
   let aiImagesUsed = 0;
   let stockVideosUsed = 0;
   let stockImagesUsed = 0;
+  const usedMediaIds = new Set<string>();
 
-  for (let i = 0; i < brollWindows.length; i++) {
-    const window = brollWindows[i];
-    const windowDuration = window.end - window.start;
-    
-    const candidates = buildCandidatesForWindow(window, stockVariants, aiImages);
-    
-    if (candidates.length === 0) {
-      selectorLogger.debug(`No candidates for window ${i} (${window.suggestedQuery})`);
-      continue;
-    }
+  const allCandidates = buildAllCandidates(stockVariants, aiImages);
+  
+  selectorLogger.info(`Built ${allCandidates.length} total media candidates (${allCandidates.filter(c => c.source === 'ai').length} AI, ${allCandidates.filter(c => c.type === 'video').length} videos, ${allCandidates.filter(c => c.source === 'stock' && c.type === 'image').length} photos)`);
 
-    try {
-      const selection = await selectBestMediaWithAI(
-        window,
-        candidates,
-        windowDuration,
-        videoContext,
-        i
-      );
-      
+  try {
+    const batchSelection = await selectMediaForAllWindowsWithAI(
+      brollWindows,
+      allCandidates,
+      videoContext,
+      usedMediaIds
+    );
+    
+    for (const selection of batchSelection) {
       if (selection.selectedMedia.length > 0) {
         selections.push(selection);
         
         for (const media of selection.selectedMedia) {
+          usedMediaIds.add(media.id);
           if (media.source === "ai") aiImagesUsed++;
           else if (media.type === "video") stockVideosUsed++;
           else stockImagesUsed++;
         }
       }
-    } catch (error) {
-      selectorLogger.error(`AI selection failed for window ${i}:`, error);
-      const fallback = fallbackSelectForWindow(window, candidates, windowDuration);
+    }
+  } catch (error) {
+    selectorLogger.error(`Batch AI selection failed:`, error);
+    for (let i = 0; i < brollWindows.length; i++) {
+      const window = brollWindows[i];
+      const windowDuration = window.end - window.start;
+      const availableCandidates = allCandidates.filter(c => !usedMediaIds.has(c.id));
+      
+      const fallback = fallbackSelectForWindow(window, availableCandidates, windowDuration);
       if (fallback) {
         selections.push({ ...fallback, windowIndex: i });
         for (const media of fallback.selectedMedia) {
+          usedMediaIds.add(media.id);
           if (media.source === "ai") aiImagesUsed++;
           else if (media.type === "video") stockVideosUsed++;
           else stockImagesUsed++;
@@ -127,66 +129,58 @@ export async function selectBestMediaForWindows(
   };
 }
 
-function buildCandidatesForWindow(
-  window: BrollWindow,
+function buildAllCandidates(
   stockVariants: StockMediaVariants[],
   aiImages: GeneratedAiImage[]
 ): MediaCandidate[] {
   const candidates: MediaCandidate[] = [];
+  const seenUrls = new Set<string>();
   
-  const matchingAiImages = aiImages.filter(ai => {
-    const aiStart = ai.startTime ?? 0;
-    const aiEnd = ai.endTime ?? aiStart + 4;
-    return (
-      (aiStart >= window.start - 2 && aiStart <= window.end + 2) ||
-      (window.start >= aiStart - 2 && window.start <= aiEnd + 2)
-    );
-  });
-  
-  for (const ai of matchingAiImages) {
+  for (let i = 0; i < aiImages.length; i++) {
+    const ai = aiImages[i];
+    const id = `ai_${i}_${ai.prompt.slice(0, 15).replace(/\s/g, '_')}`;
     candidates.push({
-      id: `ai_${ai.prompt.slice(0, 20).replace(/\s/g, '_')}`,
+      id,
       type: "ai_generated",
       source: "ai",
       query: ai.prompt,
-      url: `ai_image_${ai.startTime}`,
-      description: `AI-generated image for: ${ai.prompt}`,
+      url: `ai_image_${i}`,
+      description: `Custom AI-generated image: "${ai.prompt.slice(0, 100)}..."`,
       originalAiImage: ai,
     });
   }
   
-  const queryLower = window.suggestedQuery.toLowerCase();
-  const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
-  
   for (const variant of stockVariants) {
-    const variantQueryLower = variant.query.toLowerCase();
-    const isExactMatch = variantQueryLower === queryLower;
-    const isPartialMatch = queryWords.some(word => variantQueryLower.includes(word));
-    
-    if (!isExactMatch && !isPartialMatch) continue;
-    
-    for (const video of variant.videos) {
+    for (let i = 0; i < variant.videos.length; i++) {
+      const video = variant.videos[i];
+      if (seenUrls.has(video.url)) continue;
+      seenUrls.add(video.url);
+      
       candidates.push({
-        id: `stock_video_${video.url.slice(-30)}`,
+        id: `stock_video_${variant.query.slice(0, 10)}_${i}_${video.url.slice(-15)}`,
         type: "video",
         source: "stock",
         query: variant.query,
         url: video.url,
         thumbnailUrl: video.thumbnailUrl,
         duration: video.duration,
-        description: `Stock video: ${variant.query} (${video.duration}s)`,
+        description: `Stock video about "${variant.query}" (${video.duration}s duration)`,
       });
     }
     
-    for (const photo of variant.photos) {
+    for (let i = 0; i < variant.photos.length; i++) {
+      const photo = variant.photos[i];
+      if (seenUrls.has(photo.url)) continue;
+      seenUrls.add(photo.url);
+      
       candidates.push({
-        id: `stock_photo_${photo.url.slice(-30)}`,
+        id: `stock_photo_${variant.query.slice(0, 10)}_${i}_${photo.url.slice(-15)}`,
         type: "image",
         source: "stock",
         query: variant.query,
         url: photo.url,
         thumbnailUrl: photo.thumbnailUrl,
-        description: `Stock photo: ${variant.query}`,
+        description: `Stock photo about "${variant.query}"`,
       });
     }
   }
@@ -194,57 +188,64 @@ function buildCandidatesForWindow(
   return candidates;
 }
 
-async function selectBestMediaWithAI(
-  window: BrollWindow,
-  candidates: MediaCandidate[],
-  windowDuration: number,
+async function selectMediaForAllWindowsWithAI(
+  windows: BrollWindow[],
+  allCandidates: MediaCandidate[],
   videoContext: { duration: number; genre?: string; tone?: string; topic?: string },
-  windowIndex: number
-): Promise<SelectedMedia> {
+  alreadyUsed: Set<string>
+): Promise<SelectedMedia[]> {
   const gemini = getGeminiClient();
   
-  const candidateDescriptions = candidates.map((c, idx) => {
-    const typeLabel = c.source === "ai" ? "AI-GENERATED IMAGE" : 
-                      c.type === "video" ? "STOCK VIDEO" : "STOCK IMAGE";
-    const durationInfo = c.duration ? ` (duration: ${c.duration}s)` : "";
-    return `${idx + 1}. [${typeLabel}] Query: "${c.query}"${durationInfo}`;
+  const availableCandidates = allCandidates.filter(c => !alreadyUsed.has(c.id));
+  
+  const candidateDescriptions = availableCandidates.map((c, idx) => {
+    const typeLabel = c.source === "ai" ? "AI-IMAGE" : 
+                      c.type === "video" ? "VIDEO" : "PHOTO";
+    const durationInfo = c.duration ? ` [${c.duration}s]` : "";
+    return `  ${idx + 1}. [${typeLabel}] ${c.description}${durationInfo}`;
   }).join("\n");
 
-  const prompt = `You are an expert video editor selecting B-roll media for a professional edit.
+  const windowDescriptions = windows.map((w, idx) => {
+    const duration = (w.end - w.start).toFixed(1);
+    return `  ${idx}: ${w.start.toFixed(1)}s-${w.end.toFixed(1)}s (${duration}s) - "${w.suggestedQuery}" [${w.priority} priority]${w.context ? ` Context: ${w.context}` : ''}`;
+  }).join("\n");
+
+  const prompt = `You are a professional video editor selecting B-roll media for a video.
 
 VIDEO CONTEXT:
-- Total duration: ${videoContext.duration.toFixed(1)}s
+- Duration: ${videoContext.duration.toFixed(1)}s
 - Genre: ${videoContext.genre || "general"}
 - Tone: ${videoContext.tone || "professional"}
 - Topic: ${videoContext.topic || "various"}
 
-B-ROLL WINDOW ${windowIndex + 1}:
-- Time: ${window.start.toFixed(1)}s - ${window.end.toFixed(1)}s (${windowDuration.toFixed(1)}s duration)
-- Suggested content: "${window.suggestedQuery}"
-- Priority: ${window.priority}
-- Context: ${window.context || "visual enhancement"}
+B-ROLL WINDOWS (windowIndex: timing - content needed):
+${windowDescriptions}
 
-AVAILABLE MEDIA CANDIDATES:
+AVAILABLE MEDIA (use the number to select):
 ${candidateDescriptions}
 
-SELECTION RULES:
-1. PRIORITIZE AI-GENERATED IMAGES over stock images when content matches - AI images are custom-made for this video
-2. PREFER STOCK VIDEOS over stock images for dynamic content or segments longer than 3 seconds
-3. For SHORT segments (<3s): prefer images or very short videos
-4. For LONGER segments (>5s): prefer videos for better engagement
-5. You CAN select MULTIPLE clips if the segment is dense with changing topics or needs visual variety
-6. Consider the QUERY MATCH - how well does the media match what's needed?
+SELECTION TASK:
+For each window, pick the BEST media based on:
+1. CONTENT MATCH - does the media represent what's being discussed?
+2. DURATION FIT - videos for longer windows (>3s), images for shorter
+3. VISUAL VARIETY - use DIFFERENT media for each window, never repeat the same number
+4. VIEWER EXPERIENCE - what looks best and enhances understanding?
 
-MULTI-CLIP GUIDANCE:
-- If segment is >6s and has multiple sub-topics, select 2-3 clips
-- If content changes rapidly, multiple short clips work better
-- Don't over-populate: 1 clip per 3-4 seconds is usually good
+MEDIA TYPES EXPLAINED:
+- AI-IMAGE: Custom-generated to match this video's exact content - excellent for specific concepts
+- VIDEO: Stock footage with motion - great for dynamic content and longer segments
+- PHOTO: Stock images - good for static concepts and quick visual references
 
-Respond in JSON format ONLY:
+Choose based on MEANING and QUALITY, not just type. Each window should have different media.
+
+For windows >6 seconds, you may select 2-3 numbers that will be staggered.
+
+RESPOND WITH JSON ONLY:
 {
-  "selectedIndices": [1],
-  "reasoning": "Brief explanation of why these were chosen",
-  "allowMultipleClips": false
+  "windowSelections": [
+    {"windowIndex": 0, "selectedNumbers": [1], "reasoning": "explanation"},
+    {"windowIndex": 1, "selectedNumbers": [5], "reasoning": "explanation"}
+  ]
 }`;
 
   const response = await withRetry(
@@ -255,90 +256,111 @@ Respond in JSON format ONLY:
       });
       return result.text || "";
     },
-    "media-selection",
+    "media-selection-batch",
     AI_RETRY_OPTIONS
   );
+
+  const selections: SelectedMedia[] = [];
+  const usedInThisBatch = new Set<string>();
 
   try {
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON found in response");
     
     const parsed = JSON.parse(jsonMatch[0]);
-    const selectedIndices: number[] = Array.isArray(parsed.selectedIndices) 
-      ? parsed.selectedIndices.map((i: number) => i - 1)
-      : [0];
     
-    let selectedMedia = selectedIndices
-      .filter((idx: number) => idx >= 0 && idx < candidates.length)
-      .map((idx: number) => candidates[idx]);
-    
-    if (selectedMedia.length === 0 && candidates.length > 0) {
-      selectedMedia.push(candidates[0]);
+    if (!parsed.windowSelections || !Array.isArray(parsed.windowSelections)) {
+      throw new Error("Invalid response structure");
     }
 
-    selectedMedia = enforcePriorityRules(selectedMedia, candidates, windowDuration);
-
-    return {
-      windowIndex,
-      window,
-      selectedMedia,
-      reasoning: parsed.reasoning || "AI selection",
-      allowMultipleClips: parsed.allowMultipleClips || selectedMedia.length > 1,
-    };
-  } catch (parseError) {
-    selectorLogger.warn(`Failed to parse AI selection response, using fallback`);
-    return fallbackSelectForWindow(window, candidates, windowDuration) || {
-      windowIndex,
-      window,
-      selectedMedia: candidates.slice(0, 1),
-      reasoning: "Fallback selection",
-      allowMultipleClips: false,
-    };
-  }
-}
-
-function enforcePriorityRules(
-  selected: MediaCandidate[],
-  allCandidates: MediaCandidate[],
-  windowDuration: number
-): MediaCandidate[] {
-  const targetClipCount = selected.length;
-  if (targetClipCount === 0) return selected;
-  
-  const aiCandidates = allCandidates.filter(c => c.source === "ai");
-  const stockVideos = allCandidates.filter(c => c.source === "stock" && c.type === "video");
-  const stockImages = allCandidates.filter(c => c.source === "stock" && c.type === "image");
-  
-  const rankedPool = [...aiCandidates, ...stockVideos, ...stockImages];
-  
-  const enforced: MediaCandidate[] = [];
-  const usedIds = new Set<string>();
-  
-  for (const candidate of rankedPool) {
-    if (enforced.length >= targetClipCount) break;
-    if (!usedIds.has(candidate.id)) {
-      enforced.push(candidate);
-      usedIds.add(candidate.id);
+    const candidateByIndex = new Map<number, MediaCandidate>();
+    for (let i = 0; i < availableCandidates.length; i++) {
+      candidateByIndex.set(i + 1, availableCandidates[i]);
     }
-  }
-  
-  if (enforced.length < targetClipCount) {
-    for (const orig of selected) {
-      if (enforced.length >= targetClipCount) break;
-      if (!usedIds.has(orig.id)) {
-        enforced.push(orig);
-        usedIds.add(orig.id);
+
+    for (const windowSelection of parsed.windowSelections) {
+      const windowIndex = windowSelection.windowIndex;
+      if (windowIndex < 0 || windowIndex >= windows.length) continue;
+      
+      const window = windows[windowIndex];
+      const selectedNumbers: number[] = Array.isArray(windowSelection.selectedNumbers) 
+        ? windowSelection.selectedNumbers.map((n: unknown) => typeof n === 'number' ? n : parseInt(String(n), 10))
+        : [typeof windowSelection.selectedNumbers === 'number' ? windowSelection.selectedNumbers : parseInt(String(windowSelection.selectedNumbers), 10)];
+      
+      const selectedMedia: MediaCandidate[] = [];
+      
+      for (const num of selectedNumbers) {
+        if (isNaN(num)) continue;
+        
+        const candidate = candidateByIndex.get(num);
+        
+        if (!candidate) {
+          selectorLogger.debug(`Could not find candidate for number: ${num}`);
+          continue;
+        }
+        
+        if (usedInThisBatch.has(candidate.id)) {
+          selectorLogger.debug(`Skipping already-used media #${num}: ${candidate.id}`);
+          continue;
+        }
+        
+        selectedMedia.push(candidate);
+        usedInThisBatch.add(candidate.id);
+      }
+
+      if (selectedMedia.length === 0) {
+        selectorLogger.debug(`No valid media found for window ${windowIndex}, using fallback`);
+        const unused = availableCandidates.filter(c => !usedInThisBatch.has(c.id));
+        if (unused.length > 0) {
+          const windowDuration = window.end - window.start;
+          const fallback = fallbackSelectForWindow(window, unused, windowDuration);
+          if (fallback && fallback.selectedMedia.length > 0) {
+            for (const m of fallback.selectedMedia) {
+              selectedMedia.push(m);
+              usedInThisBatch.add(m.id);
+            }
+          }
+        }
+      }
+
+      if (selectedMedia.length > 0) {
+        selections.push({
+          windowIndex,
+          window,
+          selectedMedia,
+          reasoning: windowSelection.reasoning || "AI selection",
+          allowMultipleClips: selectedMedia.length > 1,
+        });
+        
+        selectorLogger.debug(`Window ${windowIndex}: Selected ${selectedMedia.length} clips - ${selectedMedia.map(m => `${m.source}:${m.type}`).join(", ")}`);
       }
     }
+
+    for (let i = 0; i < windows.length; i++) {
+      if (!selections.find(s => s.windowIndex === i)) {
+        const window = windows[i];
+        const windowDuration = window.end - window.start;
+        const unused = availableCandidates.filter(c => !usedInThisBatch.has(c.id));
+        
+        if (unused.length > 0) {
+          const fallback = fallbackSelectForWindow(window, unused, windowDuration);
+          if (fallback && fallback.selectedMedia.length > 0) {
+            for (const m of fallback.selectedMedia) {
+              usedInThisBatch.add(m.id);
+            }
+            selections.push({ ...fallback, windowIndex: i });
+            selectorLogger.debug(`Window ${i}: Filled with fallback selection`);
+          }
+        }
+      }
+    }
+
+  } catch (parseError) {
+    selectorLogger.warn(`Failed to parse AI batch selection:`, parseError);
+    throw parseError;
   }
-  
-  const originalTypes = selected.map(s => `${s.source}:${s.type}`).sort().join(",");
-  const enforcedTypes = enforced.map(s => `${s.source}:${s.type}`).sort().join(",");
-  if (originalTypes !== enforcedTypes) {
-    selectorLogger.debug(`Priority enforcement: Changed selection from [${originalTypes}] to [${enforcedTypes}]`);
-  }
-  
-  return enforced;
+
+  return selections;
 }
 
 function fallbackSelectForWindow(
@@ -348,50 +370,40 @@ function fallbackSelectForWindow(
 ): SelectedMedia | null {
   if (candidates.length === 0) return null;
   
-  const aiCandidates = candidates.filter(c => c.source === "ai");
-  const stockVideos = candidates.filter(c => c.source === "stock" && c.type === "video");
-  const stockImages = candidates.filter(c => c.source === "stock" && c.type === "image");
+  const queryWords = window.suggestedQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  
+  const scoredCandidates = candidates.map(c => {
+    let score = 0;
+    
+    const candidateText = (c.query + " " + (c.description || "")).toLowerCase();
+    for (const word of queryWords) {
+      if (candidateText.includes(word)) score += 10;
+    }
+    
+    if (c.source === "ai") score += 5;
+    
+    if (windowDuration > 3 && c.type === "video") score += 3;
+    if (windowDuration <= 3 && c.type !== "video") score += 2;
+    
+    return { candidate: c, score };
+  }).sort((a, b) => b.score - a.score);
   
   const selectedMedia: MediaCandidate[] = [];
-  let reasoning = "";
-  
   const clipsNeeded = windowDuration > 6 ? Math.min(Math.floor(windowDuration / 3), 3) : 1;
   
-  if (aiCandidates.length > 0) {
-    selectedMedia.push(aiCandidates[0]);
-    reasoning = "AI-generated image prioritized";
+  for (let i = 0; i < Math.min(clipsNeeded, scoredCandidates.length); i++) {
+    selectedMedia.push(scoredCandidates[i].candidate);
   }
-  
-  while (selectedMedia.length < clipsNeeded && stockVideos.length > selectedMedia.filter(s => s.type === "video").length) {
-    const nextVideo = stockVideos.find(v => !selectedMedia.includes(v));
-    if (nextVideo) {
-      selectedMedia.push(nextVideo);
-      reasoning = reasoning || "Stock video(s) selected";
-    } else {
-      break;
-    }
-  }
-  
-  while (selectedMedia.length < clipsNeeded && stockImages.length > selectedMedia.filter(s => s.source === "stock" && s.type === "image").length) {
-    const nextImage = stockImages.find(i => !selectedMedia.includes(i));
-    if (nextImage) {
-      selectedMedia.push(nextImage);
-      reasoning = reasoning || "Stock image(s) selected";
-    } else {
-      break;
-    }
-  }
-  
-  if (selectedMedia.length === 0) {
+
+  if (selectedMedia.length === 0 && candidates.length > 0) {
     selectedMedia.push(candidates[0]);
-    reasoning = "Default selection";
   }
-  
+
   return {
     windowIndex: 0,
     window,
     selectedMedia,
-    reasoning: reasoning || "Fallback selection",
+    reasoning: "Fallback selection based on content matching",
     allowMultipleClips: selectedMedia.length > 1,
   };
 }
@@ -401,7 +413,9 @@ function fallbackSelection(
   stockVariants: StockMediaVariants[],
   aiImages: GeneratedAiImage[]
 ): MediaSelectionResult {
+  const allCandidates = buildAllCandidates(stockVariants, aiImages);
   const selections: SelectedMedia[] = [];
+  const usedIds = new Set<string>();
   let aiImagesUsed = 0;
   let stockVideosUsed = 0;
   let stockImagesUsed = 0;
@@ -409,23 +423,24 @@ function fallbackSelection(
   for (let i = 0; i < brollWindows.length; i++) {
     const window = brollWindows[i];
     const windowDuration = window.end - window.start;
-    const candidates = buildCandidatesForWindow(window, stockVariants, aiImages);
+    const available = allCandidates.filter(c => !usedIds.has(c.id));
     
-    const selection = fallbackSelectForWindow(window, candidates, windowDuration);
-    if (selection) {
-      selection.windowIndex = i;
-      selections.push(selection);
+    const fallback = fallbackSelectForWindow(window, available, windowDuration);
+    if (fallback && fallback.selectedMedia.length > 0) {
+      selections.push({ ...fallback, windowIndex: i });
       
-      const media = selection.selectedMedia[0];
-      if (media?.source === "ai") aiImagesUsed++;
-      else if (media?.type === "video") stockVideosUsed++;
-      else stockImagesUsed++;
+      for (const media of fallback.selectedMedia) {
+        usedIds.add(media.id);
+        if (media.source === "ai") aiImagesUsed++;
+        else if (media.type === "video") stockVideosUsed++;
+        else stockImagesUsed++;
+      }
     }
   }
 
   return {
     selections,
-    totalSelected: selections.length,
+    totalSelected: selections.reduce((sum, s) => sum + s.selectedMedia.length, 0),
     aiImagesUsed,
     stockVideosUsed,
     stockImagesUsed,

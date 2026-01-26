@@ -65,10 +65,11 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Video Transitions**: Implements crossfade transitions between video segments using FFmpeg's `xfade` filter.
 - **Enhanced Media Selection System** (`server/services/ai/mediaSelector.ts`):
   - Uses Gemini 2.5 Flash AI to intelligently select best media for each B-roll window
-  - Fetches 3 stock photos + 3 stock videos per query for better variety
-  - Enforces strict priority: AI-generated images > stock videos > stock images
-  - Multi-clip support for dense content: windows longer than 6 seconds can have multiple staggered clips
-  - All media (AI and stock) is staggered to prevent timeline overlaps
+  - AI sees ALL windows and ALL media at once for globally-optimal selections
+  - Selects based on semantic meaning, content match, and viewer experience
+  - Strict duplicate prevention ensures each clip is used only once
+  - Multi-clip support: longer windows (>6s) can have 2-3 staggered clips
+  - Content-aware fallback when AI selection needs backup
 
 #### Performance and Quality
 - **Performance Optimizations**: Single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), and proxy video generation.

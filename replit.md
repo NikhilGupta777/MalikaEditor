@@ -33,6 +33,12 @@ Preferred communication style: Simple, everyday language.
 ### AI Services (Modular Architecture)
 The AI services are modularized for transcription, video analysis, semantic analysis, edit planning, and image generation.
 
+#### Centralized AI Configuration
+- **Configuration File**: `server/config/ai.ts` centralizes all AI model names, limits, and timing constants
+- **Model Names**: All AI model references (transcription, analysis, edit planning, image generation, media selection, review) use `AI_CONFIG.models.*`
+- **Limits**: Configurable limits for concurrent image generation, B-roll windows, AI images, stock queries, retries, and Gemini file size
+- **Timing**: Centralized timing constants for minimum word duration, B-roll gaps, transitions, and segment duration
+
 #### Core AI Capabilities
 - **Deep Video Understanding**: Utilizes Gemini API for multi-layer analysis including scene detection, emotion flow, speaker detection, visual importance scoring, and key moment detection.
 - **Smart Transcript Analysis**: Multi-provider audio transcription (OpenAI primary, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation in multiple languages.

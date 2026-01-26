@@ -15,6 +15,7 @@ type ErrorType =
   | "timeout"
   | "permission"
   | "storage"
+  | "interrupted"
   | "unknown";
 
 interface ErrorDisplayProps {

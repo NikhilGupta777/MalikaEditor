@@ -540,6 +540,39 @@ export async function registerRoutes(
     const jobAlreadyRunning = isJobActive(id);
     const completedStatuses = ["awaiting_review", "completed", "failed", "cancelled"];
     const isAlreadyCompleted = completedStatuses.includes(project.status);
+    
+    // Detect stale processing state: DB shows in-progress but no job in memory
+    // This happens when server restarts while processing was ongoing
+    const inProgressStatuses = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images", "editing"];
+    const isStaleProcessing = inProgressStatuses.includes(project.status) && !jobAlreadyRunning;
+
+    // Handle stale processing state - don't restart from scratch silently
+    if (isStaleProcessing) {
+      routesLogger.info(`Detected stale processing state for project ${id} (status: ${project.status}, no active job)`);
+      
+      // Check what data we already have to determine recovery options
+      const hasTranscript = project.transcript && Array.isArray(project.transcript) && project.transcript.length > 0;
+      const hasEditPlan = project.editPlan && typeof project.editPlan === 'object';
+      const hasStockMedia = project.stockMedia && Array.isArray(project.stockMedia) && project.stockMedia.length > 0;
+      
+      // Always inform user about interrupted processing - whether reconnect or not
+      // This prevents silent restart from scratch
+      sendEvent("activity", { message: "Processing was interrupted and needs to be restarted.", timestamp: Date.now() });
+      sendEvent("status", { status: project.status });
+      
+      sendEvent("staleRecovery", { 
+        interrupted: true,
+        lastStatus: project.status,
+        hasTranscript,
+        hasEditPlan,
+        hasStockMedia,
+        message: "Processing was interrupted. Click 'Retry Processing' to restart."
+      });
+      
+      clearInterval(heartbeatInterval);
+      res.end();
+      return;
+    }
 
     // If reconnecting, only subscribe to existing job - don't start new processing
     if (reconnect && jobAlreadyRunning) {

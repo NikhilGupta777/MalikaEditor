@@ -76,6 +76,7 @@ type ErrorType =
   | "timeout"
   | "permission"
   | "storage"
+  | "interrupted"
   | "unknown";
 
 interface VideoProject {
@@ -352,6 +353,21 @@ export default function Editor() {
               setProject((prev) => prev ? { ...prev, stockMedia: data.stockMedia } : null);
             } else if (data.type === "transcript") {
               setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
+            } else if (data.type === "staleRecovery") {
+              console.log("Processing was interrupted:", data.message);
+              setIsProcessing(false);
+              // Set status to a visible failure state so UI shows recovery options
+              setProject((prev) => prev ? { 
+                ...prev, 
+                status: "failed" as ProcessingStatusType,
+                errorMessage: data.message,
+                errorType: "interrupted" as ErrorType,
+                errorSuggestion: data.hasTranscript 
+                  ? "Some progress was saved (transcript ready). Click 'Retry Processing' to continue."
+                  : "Click 'Retry Processing' to start again."
+              } : null);
+              eventSource.close();
+              eventSourceRef.current = null;
             }
           };
           

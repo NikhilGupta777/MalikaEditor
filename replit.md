@@ -137,6 +137,20 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - **"Uncheck All Cuts" toggle**: Quick toggle in Edit Plan tab to enable/disable all cuts at once
 - **Enhanced logging**: Backend logs exactly which cuts were approved/rejected for debugging
 
+### Persistence & Multi-User Support
+- **PostgreSQL Storage**: Migrated from in-memory to persistent PostgreSQL database storage via DatabaseStorage class
+- **Project History Panel**: Users can view past projects with status badges, expiration time, and quick actions (view/delete)
+- **1-Hour Project Expiration**: Projects automatically expire and are cleaned up after 1 hour; periodic cleanup runs every 10 minutes
+- **Max 3 Concurrent Processing Jobs**: System limits concurrent video processing to 3 jobs to prevent resource exhaustion
+- **Autosave for Reviews**: User modifications in the review panel are automatically saved (debounced) and restored if they leave and return
+- **Asset Caching**: New `cachedAssets` table stores stock media and AI images for reuse across projects
+- **Error Recovery**: Failed projects show recovery buttons (Retry Processing, Re-run Transcription, Upload New Video)
+
+### AI Improvements
+- **Transcription**: Added language hint support, improved sentence grouping for natural segment breaks, better handling of background noise
+- **Edit Planning**: Dynamic pacing guidance based on video duration (short/medium/long), mid-sentence cut prevention, content-type specific rules (tutorial vs entertainment)
+- **B-Roll Queries**: Improved query generation with action verbs + specific subjects, negative examples to avoid generic queries, topic context awareness
+
 ## Environment Variables
 
 ### Required for Authentication

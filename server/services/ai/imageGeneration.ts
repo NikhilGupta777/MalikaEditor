@@ -79,9 +79,15 @@ export async function generateAiImage(
 export async function generateAiImagesForVideo(
   semanticAnalysis: SemanticAnalysis,
   videoContext?: VideoContext,
-  maxImages: number = 3,
+  maxImages?: number,
   videoDuration?: number
 ): Promise<GeneratedAiImage[]> {
+  const effectiveMaxImages = maxImages ?? Math.min(
+    Math.max(1, Math.floor((videoDuration || 30) / 15)),
+    10
+  );
+  aiLogger.info(`AI image generation: maxImages=${effectiveMaxImages} (duration=${videoDuration}s)`);
+  
   const generatedImages: GeneratedAiImage[] = [];
   
   const validCandidates = semanticAnalysis.brollWindows
@@ -102,13 +108,13 @@ export async function generateAiImagesForVideo(
   
   let aiImageCandidates: typeof validCandidates;
   
-  if (validCandidates.length <= maxImages) {
+  if (validCandidates.length <= effectiveMaxImages) {
     aiImageCandidates = validCandidates;
   } else if (videoDuration && videoDuration > 0) {
-    const segmentDuration = videoDuration / maxImages;
+    const segmentDuration = videoDuration / effectiveMaxImages;
     aiImageCandidates = [];
     
-    for (let i = 0; i < maxImages; i++) {
+    for (let i = 0; i < effectiveMaxImages; i++) {
       const segmentStart = i * segmentDuration;
       const segmentEnd = (i + 1) * segmentDuration;
       
@@ -138,10 +144,10 @@ export async function generateAiImagesForVideo(
     const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
     aiImageCandidates = validCandidates
       .sort((a, b) => (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1))
-      .slice(0, maxImages);
+      .slice(0, effectiveMaxImages);
   }
 
-  aiLogger.debug(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${maxImages})`);
+  aiLogger.debug(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${effectiveMaxImages})`);
 
   // Parallel generation with controlled concurrency
   const CONCURRENCY_LIMIT = 3; // Limit parallel requests to avoid rate limiting

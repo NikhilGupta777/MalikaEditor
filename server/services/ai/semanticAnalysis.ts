@@ -1,7 +1,7 @@
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
-import { AI_CONFIG } from "../../config/ai";
+import { AI_CONFIG, calculateDynamicLimits } from "../../config/ai";
 import {
   normalizePriority,
   normalizeOverallTone,
@@ -512,9 +512,9 @@ B-ROLL TIMING RULES:
 - Never place B-roll during important visual moments or climactic points
 - Place B-roll at the START of concepts, not during key revelations
 - DISTRIBUTE B-ROLL EVENLY across the ENTIRE video timeline
-- For a ${duration.toFixed(0)}s video, create ${Math.min(15, Math.max(6, Math.ceil(duration / 6)))} B-roll windows
+- For this ${duration.toFixed(0)}s video, YOU DECIDE the optimal number of B-roll windows based on content density, pacing, and visual storytelling needs (typically 1 window per 10-20 seconds of video, but use your judgment)
 - Ensure B-roll windows cover ALL parts of the video, not just the beginning
-- Each third of the video (0-33%, 34-66%, 67-100%) should have at least 2 B-roll windows
+- Each third of the video (0-33%, 34-66%, 67-100%) should have proportional B-roll coverage
 
 Respond in JSON format only (no markdown):
 {
@@ -602,7 +602,7 @@ Respond in JSON format only (no markdown):
         priority: normalizePriority(b.priority || "medium"),
         reason: b.reason || "Enhance visual interest",
       }))
-      .slice(0, 15);
+      .slice(0, calculateDynamicLimits(duration).brollWindows);
     
     // Validate and enforce even B-roll distribution across timeline
     const validatedBrollWindows = enforceEvenBrollDistribution(rawBrollWindows, duration);

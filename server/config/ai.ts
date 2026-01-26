@@ -13,9 +13,9 @@ export const AI_CONFIG = {
   
   limits: {
     maxConcurrentImageGeneration: 3,
-    maxBrollWindows: 15,
-    maxAiImages: 3,
-    maxStockQueries: 8,
+    maxBrollWindows: 20,
+    maxAiImages: 10,
+    maxStockQueries: 15,
     maxRetries: 3,
     geminiMaxFileSizeMB: 7,
   },
@@ -25,6 +25,7 @@ export const AI_CONFIG = {
     minBrollGapSeconds: 3,
     transitionDurationSeconds: 0.5,
     minSegmentDuration: 1.0,
+    secondsPerBrollWindow: 15,
   },
   
   processing: {
@@ -35,3 +36,18 @@ export const AI_CONFIG = {
 } as const;
 
 export type AIConfig = typeof AI_CONFIG;
+
+export function calculateDynamicLimits(videoDurationSeconds: number): {
+  aiImages: number;
+  stockQueries: number;
+  brollWindows: number;
+} {
+  const secondsPerBroll = AI_CONFIG.timing.secondsPerBrollWindow;
+  const baseBrollWindows = Math.max(1, Math.floor(videoDurationSeconds / secondsPerBroll));
+  
+  return {
+    aiImages: Math.min(baseBrollWindows, AI_CONFIG.limits.maxAiImages),
+    stockQueries: Math.min(baseBrollWindows + 2, AI_CONFIG.limits.maxStockQueries),
+    brollWindows: Math.min(baseBrollWindows + 3, AI_CONFIG.limits.maxBrollWindows),
+  };
+}

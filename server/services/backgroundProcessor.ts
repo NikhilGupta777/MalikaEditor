@@ -4,6 +4,7 @@ import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudio } from "./ai";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants } from "./pexelsService";
 import { selectBestMediaForWindows, convertSelectionsToStockMediaItems } from "./ai/mediaSelector";
+import { calculateDynamicLimits } from "../config/ai";
 import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
 import path from "path";
 import fs from "fs/promises";
@@ -327,16 +328,20 @@ async function runProcessingPipeline(
       addActivity(projectId, `Fetching stock media${shouldGenerateAi ? ' + generating AI images' : ''} in parallel...`);
       const mediaFetchStart = Date.now();
       
+      // Calculate dynamic limits based on video duration
+      const dynamicLimits = calculateDynamicLimits(metadata.duration);
+      processorLogger.info(`Dynamic limits for ${metadata.duration}s video: ${dynamicLimits.stockQueries} stock queries, ${dynamicLimits.aiImages} AI images, ${dynamicLimits.brollWindows} B-roll windows`);
+      
       // Run stock fetch and AI generation in parallel
       const [stockVariants, aiImagesResult] = await Promise.all([
         // Stock media fetching
-        fetchStockMediaWithVariants(stockQueries.slice(0, 8), 3, 3),
+        fetchStockMediaWithVariants(stockQueries.slice(0, dynamicLimits.stockQueries), 3, 3),
         // AI image generation (if enabled)
         shouldGenerateAi
           ? generateAiImagesForVideo(
               analysis.semanticAnalysis!,
               undefined,
-              3,
+              dynamicLimits.aiImages,
               metadata.duration
             ).catch((aiError: Error) => {
               processorLogger.error("AI image generation failed:", aiError);
@@ -396,11 +401,14 @@ async function runProcessingPipeline(
       await updateStatus("generating_ai_images");
       addActivity(projectId, "Generating AI images for overlays...");
       
+      const dynamicLimitsAi = calculateDynamicLimits(metadata.duration);
+      processorLogger.info(`Dynamic AI image limit for ${metadata.duration}s video: ${dynamicLimitsAi.aiImages} images`);
+      
       try {
         const aiImages = await generateAiImagesForVideo(
           analysis.semanticAnalysis,
           undefined,
-          3,
+          dynamicLimitsAi.aiImages,
           metadata.duration
         );
         

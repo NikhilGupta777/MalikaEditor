@@ -219,23 +219,40 @@ export default function Editor() {
         };
         
         eventSource.onerror = () => {
-          console.log("Render SSE connection lost, will retry on refresh");
+          console.log("Render SSE connection lost, attempting reconnection...");
           eventSource.close();
           eventSourceRef.current = null;
-          setIsRendering(false);
-          // Fetch current project status to update UI
+          
+          // Fetch current status and reconnect if still rendering
           fetch(`/api/videos/${loadedProject.id}`)
             .then(res => res.json())
             .then(data => {
               if (data.status === "completed") {
                 setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
                 setPreviewUrl(data.outputPath);
+                setIsRendering(false);
               } else if (data.status === "failed") {
                 setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
+                setIsRendering(false);
+              } else if (data.status === "rendering") {
+                // Still rendering - reconnect after a short delay
+                setTimeout(() => {
+                  const retryParams = new URLSearchParams();
+                  retryParams.append("reconnect", "true");
+                  const retryEventSource = new EventSource(
+                    `/api/videos/${loadedProject.id}/render?${retryParams.toString()}`
+                  );
+                  eventSourceRef.current = retryEventSource;
+                  
+                  retryEventSource.onmessage = eventSource.onmessage;
+                  retryEventSource.onerror = eventSource.onerror;
+                }, 2000);
+              } else {
+                setIsRendering(false);
               }
             })
             .catch(() => {
-              // Ignore fetch errors
+              setIsRendering(false);
             });
         };
       }
@@ -337,7 +354,29 @@ export default function Editor() {
               } else if (data.status === "failed") {
                 setIsProcessing(false);
               } else if (processingStates.includes(data.status)) {
-                // Still processing - keep isProcessing true, user can refresh to reconnect
+                // Still processing - auto-reconnect after a short delay
+                setTimeout(() => {
+                  console.log("Reconnecting to processing stream...");
+                  const retryParams = new URLSearchParams({
+                    prompt: loadedProject.prompt || "",
+                    addCaptions: String(storedOptions?.addCaptions ?? true),
+                    addBroll: String(storedOptions?.addBroll ?? true), 
+                    removeSilence: String(storedOptions?.removeSilence ?? true),
+                    generateAiImages: String(storedOptions?.generateAiImages ?? false),
+                    addTransitions: String(storedOptions?.addTransitions ?? false),
+                    reconnect: "true",
+                  });
+                  const storedEventId = sessionStorage.getItem(sessionKey);
+                  if (storedEventId) {
+                    retryParams.append("lastEventId", storedEventId);
+                  }
+                  const retryEventSource = new EventSource(
+                    `/api/videos/${loadedProject.id}/process?${retryParams.toString()}`
+                  );
+                  eventSourceRef.current = retryEventSource;
+                  retryEventSource.onmessage = eventSource.onmessage;
+                  retryEventSource.onerror = eventSource.onerror;
+                }, 2000);
               }
             })
             .catch(err => {

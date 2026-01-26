@@ -1905,8 +1905,10 @@ async function applyEditsInternal(
   } else {
     // Multiple segments - concatenate
     const segmentPaths: string[] = [];
-    let outputTime = 0;
+    const transitionDurationTarget = 0.5; // Target transition duration
+    const useTransitions = options.addTransitions && segmentsToKeep.length > 1;
     
+    // First, create all segment files
     for (let i = 0; i < segmentsToKeep.length; i++) {
       const seg = segmentsToKeep[i];
       const segPath = path.join(OUTPUT_DIR, `seg_${outputId}_${i}.mp4`);
@@ -1914,26 +1916,47 @@ async function applyEditsInternal(
       await createVideoSegment(videoPath, segPath, seg.start, seg.end - seg.start);
       segmentPaths.push(segPath);
       tempFiles.push(segPath);
-      
-      outputTimeMapping.push({
-        sourceStart: seg.start,
-        sourceEnd: seg.end,
-        outputStart: outputTime
-      });
-      outputTime += seg.end - seg.start;
     }
     
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
     
-    if (options.addTransitions && segmentPaths.length > 1) {
+    if (useTransitions) {
       videoLogger.info(`Applying crossfade transitions between ${segmentPaths.length} segments...`);
-      await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, 0.5, tempFiles);
+      await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, transitionDurationTarget, tempFiles);
     } else {
       await concatSegmentsSimple(segmentPaths, baseVideoPath);
     }
     
     tempFiles.push(baseVideoPath);
-    videoLogger.info(`Created concatenated base video from ${segmentsToKeep.length} segments${options.addTransitions ? ' with transitions' : ''}`);
+    videoLogger.info(`Created concatenated base video from ${segmentsToKeep.length} segments${useTransitions ? ' with transitions' : ''}`);
+    
+    // AFTER concatenation: Calculate output mapping based on actual result
+    // Get actual base video duration to compute proportional mapping
+    const actualBaseDuration = await getFileDuration(baseVideoPath);
+    const rawTotalDuration = segmentsToKeep.reduce((sum, s) => sum + (s.end - s.start), 0);
+    const totalTransitionReduction = rawTotalDuration - actualBaseDuration;
+    const numTransitions = segmentsToKeep.length - 1;
+    // Distribute reduction evenly across transitions (approximate but handles dynamic reductions)
+    const avgTransitionOverlap = numTransitions > 0 ? totalTransitionReduction / numTransitions : 0;
+    
+    let outputTime = 0;
+    for (let i = 0; i < segmentsToKeep.length; i++) {
+      const seg = segmentsToKeep[i];
+      outputTimeMapping.push({
+        sourceStart: seg.start,
+        sourceEnd: seg.end,
+        outputStart: outputTime
+      });
+      
+      const segDuration = seg.end - seg.start;
+      if (useTransitions && i < segmentsToKeep.length - 1) {
+        outputTime += segDuration - avgTransitionOverlap;
+      } else {
+        outputTime += segDuration;
+      }
+    }
+    
+    videoLogger.debug(`Output time mapping: raw=${rawTotalDuration.toFixed(2)}s, actual=${actualBaseDuration.toFixed(2)}s, reduction=${totalTransitionReduction.toFixed(2)}s (${numTransitions} transitions)`);
   }
 
   // Get base video duration

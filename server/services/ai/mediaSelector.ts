@@ -105,9 +105,11 @@ export async function selectBestMediaForWindows(
       const fallback = fallbackSelectForWindow(window, candidates, windowDuration);
       if (fallback) {
         selections.push({ ...fallback, windowIndex: i });
-        if (fallback.selectedMedia[0]?.source === "ai") aiImagesUsed++;
-        else if (fallback.selectedMedia[0]?.type === "video") stockVideosUsed++;
-        else stockImagesUsed++;
+        for (const media of fallback.selectedMedia) {
+          if (media.source === "ai") aiImagesUsed++;
+          else if (media.type === "video") stockVideosUsed++;
+          else stockImagesUsed++;
+        }
       }
     }
   }
@@ -266,7 +268,7 @@ Respond in JSON format ONLY:
       ? parsed.selectedIndices.map((i: number) => i - 1)
       : [0];
     
-    const selectedMedia = selectedIndices
+    let selectedMedia = selectedIndices
       .filter((idx: number) => idx >= 0 && idx < candidates.length)
       .map((idx: number) => candidates[idx]);
     
@@ -274,12 +276,14 @@ Respond in JSON format ONLY:
       selectedMedia.push(candidates[0]);
     }
 
+    selectedMedia = enforcePriorityRules(selectedMedia, candidates, windowDuration);
+
     return {
       windowIndex,
       window,
       selectedMedia,
       reasoning: parsed.reasoning || "AI selection",
-      allowMultipleClips: parsed.allowMultipleClips || false,
+      allowMultipleClips: parsed.allowMultipleClips || selectedMedia.length > 1,
     };
   } catch (parseError) {
     selectorLogger.warn(`Failed to parse AI selection response, using fallback`);
@@ -293,6 +297,50 @@ Respond in JSON format ONLY:
   }
 }
 
+function enforcePriorityRules(
+  selected: MediaCandidate[],
+  allCandidates: MediaCandidate[],
+  windowDuration: number
+): MediaCandidate[] {
+  const targetClipCount = selected.length;
+  if (targetClipCount === 0) return selected;
+  
+  const aiCandidates = allCandidates.filter(c => c.source === "ai");
+  const stockVideos = allCandidates.filter(c => c.source === "stock" && c.type === "video");
+  const stockImages = allCandidates.filter(c => c.source === "stock" && c.type === "image");
+  
+  const rankedPool = [...aiCandidates, ...stockVideos, ...stockImages];
+  
+  const enforced: MediaCandidate[] = [];
+  const usedIds = new Set<string>();
+  
+  for (const candidate of rankedPool) {
+    if (enforced.length >= targetClipCount) break;
+    if (!usedIds.has(candidate.id)) {
+      enforced.push(candidate);
+      usedIds.add(candidate.id);
+    }
+  }
+  
+  if (enforced.length < targetClipCount) {
+    for (const orig of selected) {
+      if (enforced.length >= targetClipCount) break;
+      if (!usedIds.has(orig.id)) {
+        enforced.push(orig);
+        usedIds.add(orig.id);
+      }
+    }
+  }
+  
+  const originalTypes = selected.map(s => `${s.source}:${s.type}`).sort().join(",");
+  const enforcedTypes = enforced.map(s => `${s.source}:${s.type}`).sort().join(",");
+  if (originalTypes !== enforcedTypes) {
+    selectorLogger.debug(`Priority enforcement: Changed selection from [${originalTypes}] to [${enforcedTypes}]`);
+  }
+  
+  return enforced;
+}
+
 function fallbackSelectForWindow(
   window: BrollWindow,
   candidates: MediaCandidate[],
@@ -304,32 +352,47 @@ function fallbackSelectForWindow(
   const stockVideos = candidates.filter(c => c.source === "stock" && c.type === "video");
   const stockImages = candidates.filter(c => c.source === "stock" && c.type === "image");
   
-  let selected: MediaCandidate;
-  let reasoning: string;
+  const selectedMedia: MediaCandidate[] = [];
+  let reasoning = "";
+  
+  const clipsNeeded = windowDuration > 6 ? Math.min(Math.floor(windowDuration / 3), 3) : 1;
   
   if (aiCandidates.length > 0) {
-    selected = aiCandidates[0];
+    selectedMedia.push(aiCandidates[0]);
     reasoning = "AI-generated image prioritized";
-  } else if (windowDuration > 4 && stockVideos.length > 0) {
-    selected = stockVideos[0];
-    reasoning = "Stock video selected for longer segment";
-  } else if (stockVideos.length > 0) {
-    selected = stockVideos[0];
-    reasoning = "Stock video preferred";
-  } else if (stockImages.length > 0) {
-    selected = stockImages[0];
-    reasoning = "Stock image selected";
-  } else {
-    selected = candidates[0];
+  }
+  
+  while (selectedMedia.length < clipsNeeded && stockVideos.length > selectedMedia.filter(s => s.type === "video").length) {
+    const nextVideo = stockVideos.find(v => !selectedMedia.includes(v));
+    if (nextVideo) {
+      selectedMedia.push(nextVideo);
+      reasoning = reasoning || "Stock video(s) selected";
+    } else {
+      break;
+    }
+  }
+  
+  while (selectedMedia.length < clipsNeeded && stockImages.length > selectedMedia.filter(s => s.source === "stock" && s.type === "image").length) {
+    const nextImage = stockImages.find(i => !selectedMedia.includes(i));
+    if (nextImage) {
+      selectedMedia.push(nextImage);
+      reasoning = reasoning || "Stock image(s) selected";
+    } else {
+      break;
+    }
+  }
+  
+  if (selectedMedia.length === 0) {
+    selectedMedia.push(candidates[0]);
     reasoning = "Default selection";
   }
   
   return {
     windowIndex: 0,
     window,
-    selectedMedia: [selected],
-    reasoning,
-    allowMultipleClips: false,
+    selectedMedia,
+    reasoning: reasoning || "Fallback selection",
+    allowMultipleClips: selectedMedia.length > 1,
   };
 }
 
@@ -376,9 +439,24 @@ export function convertSelectionsToStockMediaItems(
   const aiImages: GeneratedAiImage[] = [];
   
   for (const selection of selections) {
-    for (const media of selection.selectedMedia) {
+    const windowDuration = selection.window.end - selection.window.start;
+    const clipCount = selection.selectedMedia.length;
+    const clipDuration = clipCount > 1 ? Math.min(windowDuration / clipCount, 4) : windowDuration;
+    
+    let currentOffset = 0;
+    for (let i = 0; i < selection.selectedMedia.length; i++) {
+      const media = selection.selectedMedia[i];
+      const staggeredStart = selection.window.start + currentOffset;
+      const staggeredEnd = Math.min(staggeredStart + clipDuration, selection.window.end);
+      
       if (media.source === "ai" && media.originalAiImage) {
-        aiImages.push(media.originalAiImage);
+        const staggeredAiImage: GeneratedAiImage = {
+          ...media.originalAiImage,
+          startTime: staggeredStart,
+          endTime: staggeredEnd,
+          duration: staggeredEnd - staggeredStart,
+        };
+        aiImages.push(staggeredAiImage);
       } else {
         stockItems.push({
           type: media.type as "image" | "video",
@@ -386,10 +464,12 @@ export function convertSelectionsToStockMediaItems(
           url: media.url,
           thumbnailUrl: media.thumbnailUrl,
           duration: media.duration,
-          startTime: selection.window.start,
-          endTime: selection.window.end,
+          startTime: staggeredStart,
+          endTime: staggeredEnd,
         });
       }
+      
+      currentOffset += clipDuration;
     }
   }
   

@@ -39,6 +39,41 @@ function startCleanupJob() {
 const app = express();
 const httpServer = createServer(app);
 
+// ==========================================
+// HEALTH CHECK ENDPOINTS - MUST BE FIRST
+// These endpoints respond immediately before any middleware
+// to ensure fast health check responses for deployment
+// ==========================================
+app.get("/health", (_req, res) => {
+  res.status(200).send("OK");
+});
+
+app.get("/healthz", (_req, res) => {
+  res.status(200).send("OK");
+});
+
+// Root health check - responds immediately for deployment health checks
+// Always return 200 for root to pass Cloud Run health checks
+app.get("/", (req, res, next) => {
+  // Check for health check indicators
+  const isHealthCheck = 
+    req.query.health === "1" ||
+    req.headers["x-health-check"] === "true" ||
+    (req.headers["user-agent"] || "").includes("GoogleHC") ||
+    (req.headers["user-agent"] || "").includes("kube-probe");
+  
+  // In production, always respond quickly for root GET requests that look like health checks
+  // or if there's no accept header for text/html (likely a health check, not a browser)
+  const acceptsHtml = (req.headers.accept || "").includes("text/html");
+  
+  if (isHealthCheck || (process.env.NODE_ENV === "production" && !acceptsHtml)) {
+    return res.status(200).send("OK");
+  }
+  
+  // Otherwise, let it fall through to static file serving
+  next();
+});
+
 // Trust proxy for production (Replit deployments)
 // This is required for secure cookies to work behind Replit's load balancer
 if (process.env.NODE_ENV === "production") {
@@ -134,29 +169,14 @@ app.use(
 
 app.use(express.urlencoded({ extended: false, limit: "1gb" }));
 
-// Health check endpoints - respond immediately for deployment checks
-// Cloud Run checks / endpoint, so we handle it specially
-app.get("/health", (_req, res) => {
-  res.status(200).send("OK");
-});
-
-// For Cloud Run health checks that hit /, respond quickly with just the status
-// This runs before other middleware to ensure fast response
+// Session middleware - skip for health check routes to avoid DB dependency
 app.use((req, res, next) => {
-  // Only intercept root path for health checks (identified by common health check user agents)
-  const userAgent = req.headers["user-agent"] || "";
-  const isHealthCheck = 
-    userAgent.includes("GoogleHC") || 
-    userAgent.includes("kube-probe") ||
-    req.headers["x-health-check"] === "true";
-  
-  if (req.path === "/" && isHealthCheck) {
-    return res.status(200).send("OK");
+  // Skip session for health check endpoints
+  if (req.path === "/health" || req.path === "/healthz") {
+    return next();
   }
-  next();
+  return sessionMiddleware(req, res, next);
 });
-
-app.use(sessionMiddleware);
 
 export function log(message: string, source = "express") {
   const sourceLogger = createLogger(source);
@@ -189,7 +209,8 @@ app.use((req, res, next) => {
   next();
 });
 
-(async () => {
+// Deferred startup tasks - run after server is ready
+async function runStartupTasks() {
   // Clean up stale temp files from previous runs (files older than 2 hours)
   try {
     const cleanup = await cleanupStaleTempFiles(2);
@@ -230,7 +251,9 @@ app.use((req, res, next) => {
   } catch (e) {
     expressLogger.warn("Failed to create admin user:", e);
   }
+}
 
+(async () => {
   await registerRoutes(httpServer, app);
 
   app.use(
@@ -276,10 +299,13 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
-      // Start the periodic cleanup job
-      startCleanupJob();
-      // Run cleanup once on startup
-      runPeriodicCleanup();
+      // Defer startup tasks to run after server is ready
+      // This ensures health checks pass immediately
+      setImmediate(async () => {
+        await runStartupTasks();
+        startCleanupJob();
+        runPeriodicCleanup();
+      });
     },
   );
 })();

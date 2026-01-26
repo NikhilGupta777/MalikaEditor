@@ -104,15 +104,15 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     enabled: !hasHydratedAutosave,
   });
 
-  // Hydrate local state from autosave if available
+  // Hydrate local state from autosave if available (only if user hasn't started interacting)
   useEffect(() => {
-    if (!hasHydratedAutosave && hasAutosave && autosaveData) {
+    if (!hasHydratedAutosave && hasAutosave && autosaveData && !userHasInteracted) {
       setLocalReviewData(autosaveData);
       setHasHydratedAutosave(true);
     } else if (!hasHydratedAutosave && !isLoadingAutosave) {
       setHasHydratedAutosave(true);
     }
-  }, [hasAutosave, autosaveData, hasHydratedAutosave, isLoadingAutosave]);
+  }, [hasAutosave, autosaveData, hasHydratedAutosave, isLoadingAutosave, userHasInteracted]);
 
   // Autosave when localReviewData changes (only after initial hydration)
   const { isSaving, lastSaved, error: autosaveError } = useAutosave({
@@ -139,6 +139,10 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
           // Timer expired - auto-approve with latest data from ref
           if (!hasAutoApprovedRef.current) {
             hasAutoApprovedRef.current = true;
+            // Delete autosave before auto-approving (same as manual approve)
+            apiRequest("DELETE", `/api/videos/${projectId}/autosave`).catch(() => {
+              // Ignore autosave deletion errors during auto-approve
+            });
             onApprove({ ...latestReviewDataRef.current, userApproved: true });
           }
           return 0;
@@ -217,6 +221,12 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
   }, [resetTimer]);
 
   const handleApprove = () => {
+    // Prevent auto-approve from firing after manual approval
+    hasAutoApprovedRef.current = true;
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
     deleteAutosaveMutation.mutate();
     onApprove({ ...localReviewData, userApproved: true });
   };

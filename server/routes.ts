@@ -705,6 +705,83 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Project not found" });
     }
 
+    // Check if this is a reconnection request
+    const reconnect = req.query.reconnect === "true";
+    
+    // Allow reconnection if project is mid-render
+    if (project.status === "rendering" && reconnect) {
+      routesLogger.info(`Render reconnection for project ${id} (status: rendering)`);
+      
+      // Set up SSE for status updates
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      
+      let connectionClosed = false;
+      
+      const sendEvent = (type: string, data: Record<string, unknown>) => {
+        if (!connectionClosed) {
+          res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+        }
+      };
+      
+      const heartbeatInterval = setInterval(() => {
+        if (!connectionClosed) {
+          res.write(": heartbeat\n\n");
+        }
+      }, 15000);
+      
+      // Send current status
+      sendEvent("status", { status: project.status });
+      sendEvent("activity", { message: "Reconnected to render in progress...", timestamp: Date.now() });
+      
+      // Poll for status changes since we can't subscribe to a running render job
+      const pollInterval = setInterval(async () => {
+        if (connectionClosed) return;
+        
+        try {
+          const currentProject = await storage.getVideoProject(id);
+          if (!currentProject) {
+            sendEvent("error", { error: "Project not found" });
+            clearInterval(pollInterval);
+            clearInterval(heartbeatInterval);
+            res.end();
+            return;
+          }
+          
+          if (currentProject.status === "completed") {
+            const publicOutputPath = currentProject.outputPath || "";
+            sendEvent("complete", {
+              outputPath: publicOutputPath,
+              duration: currentProject.duration,
+            });
+            clearInterval(pollInterval);
+            clearInterval(heartbeatInterval);
+            if (!connectionClosed) res.end();
+          } else if (currentProject.status === "failed") {
+            sendEvent("error", {
+              error: currentProject.errorMessage || "Rendering failed",
+            });
+            clearInterval(pollInterval);
+            clearInterval(heartbeatInterval);
+            if (!connectionClosed) res.end();
+          }
+        } catch (err) {
+          routesLogger.error(`Render poll error for project ${id}:`, err);
+        }
+      }, 2000); // Poll every 2 seconds
+      
+      req.on("close", () => {
+        connectionClosed = true;
+        clearInterval(pollInterval);
+        clearInterval(heartbeatInterval);
+        routesLogger.info(`Render reconnection closed for project ${id}`);
+      });
+      
+      return;
+    }
+    
     // Allow rendering from awaiting_review or completed status (re-render)
     if (project.status !== "awaiting_review" && project.status !== "completed") {
       return res.status(400).json({ error: "Project must be awaiting review or completed to render" });
@@ -741,7 +818,7 @@ export async function registerRoutes(
     req.on("close", () => {
       connectionClosed = true;
       abortController.abort();
-      routesLogger.info(`Client disconnected during render (project ${id}), aborting operations...`);
+      routesLogger.info(`Client disconnected during render (project ${id}), SSE stream closed but rendering continues in background`);
     });
 
     const sendEvent = (type: string, data: Record<string, unknown>) => {

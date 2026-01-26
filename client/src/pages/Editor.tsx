@@ -170,6 +170,76 @@ export default function Editor() {
           })
           .catch(err => console.error("Failed to load review data:", err));
       }
+      // Auto-reconnect to rendering if project is mid-render
+      if (loadedProject.status === "rendering") {
+        console.log("Reconnecting to in-progress rendering...");
+        setIsRendering(true);
+        
+        const params = new URLSearchParams();
+        params.append("reconnect", "true");
+        
+        const eventSource = new EventSource(
+          `/api/videos/${loadedProject.id}/render?${params.toString()}`
+        );
+        eventSourceRef.current = eventSource;
+        
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          
+          if (data.type === "status") {
+            setProject((prev) => prev ? { ...prev, status: data.status } : null);
+          } else if (data.type === "activity") {
+            setActivities((prev) => {
+              const newActivity = { message: data.message, timestamp: data.timestamp };
+              const updated = [...prev, newActivity];
+              return updated.length > 100 ? updated.slice(-100) : updated;
+            });
+          } else if (data.type === "complete") {
+            setProject((prev) =>
+              prev ? {
+                ...prev,
+                status: "completed",
+                outputPath: data.outputPath,
+                duration: data.duration,
+              } : null
+            );
+            setPreviewUrl(data.outputPath);
+            setIsRendering(false);
+            setActivities([]);
+            eventSource.close();
+            eventSourceRef.current = null;
+          } else if (data.type === "error") {
+            setProject((prev) =>
+              prev ? { ...prev, status: "failed", errorMessage: data.error } : null
+            );
+            setIsRendering(false);
+            eventSource.close();
+            eventSourceRef.current = null;
+          }
+        };
+        
+        eventSource.onerror = () => {
+          console.log("Render SSE connection lost, will retry on refresh");
+          eventSource.close();
+          eventSourceRef.current = null;
+          setIsRendering(false);
+          // Fetch current project status to update UI
+          fetch(`/api/videos/${loadedProject.id}`)
+            .then(res => res.json())
+            .then(data => {
+              if (data.status === "completed") {
+                setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
+                setPreviewUrl(data.outputPath);
+              } else if (data.status === "failed") {
+                setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
+              }
+            })
+            .catch(() => {
+              // Ignore fetch errors
+            });
+        };
+      }
+      
       // Auto-reconnect to processing if project is in a processing state
       const processingStates = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images"];
       if (processingStates.includes(loadedProject.status)) {
@@ -556,6 +626,7 @@ export default function Editor() {
     if (!project) return;
     
     setIsRendering(true);
+    setActivities([]); // Clear activities from processing phase
     
     try {
       // First, approve the review with any user modifications
@@ -599,6 +670,7 @@ export default function Editor() {
           setPreviewUrl(data.outputPath);
           setIsRendering(false);
           setReviewData(null);
+          setActivities([]); // Clear activities on completion
           eventSource.close();
           eventSourceRef.current = null;
           
@@ -616,6 +688,7 @@ export default function Editor() {
             } : null
           );
           setIsRendering(false);
+          setActivities([]); // Clear activities on error
           eventSource.close();
           eventSourceRef.current = null;
           
@@ -695,6 +768,7 @@ export default function Editor() {
       } : null);
       setActivities([]);
       setIsProcessing(true);
+      setIsRendering(false); // Reset rendering state in case we're retrying from a failed render
       
       // Get stored edit options from reviewData or use defaults
       const storedOptions = project.reviewData?.editOptions || editOptions;

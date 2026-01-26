@@ -551,7 +551,7 @@ B-ROLL OPTIMIZATION RULES:
 4. DISTRIBUTE EVENLY across the entire video - no clustering
 5. Minimum 3-5 second spacing between B-roll clips
 6. Each B-roll should be 3-5 seconds duration
-7. Target ${Math.min(12, Math.max(4, Math.ceil(duration / 8)))} B-roll placements
+7. YOU DECIDE the optimal number of B-roll placements based on content analysis - use as many as the video needs for maximum engagement
 
 Respond in JSON format only (no markdown):
 {
@@ -642,9 +642,9 @@ function getDefaultBrollPlan(
   semanticAnalysis: SemanticAnalysis,
   fillerSegments: { start: number; end: number; word: string }[]
 ): OptimizedBrollPlan {
+  // No artificial limits - use all valid B-roll windows from semantic analysis
   const brollPlacements = semanticAnalysis.brollWindows
     .filter(b => b.start !== undefined && b.suggestedQuery)
-    .slice(0, 8)
     .map(b => ({
       start: b.start,
       duration: Math.min(5, b.end - b.start),
@@ -654,9 +654,9 @@ function getDefaultBrollPlan(
       reason: b.reason,
     }));
 
+  // No artificial limits on filler actions
   const fillerActions = fillerSegments
     .filter(f => (f.end - f.start) < 1)
-    .slice(0, 10)
     .map(f => ({ start: f.start, end: f.end, word: f.word, action: "cut" as const }));
 
   return { brollPlacements, fillerActions, cutActions: [] };
@@ -719,7 +719,7 @@ ANALYZE AND PROVIDE:
 
 B-ROLL RULES:
 - DISTRIBUTE EVENLY across entire video timeline (not clustered at start)
-- Target ${Math.min(12, Math.max(4, Math.ceil(duration / 8)))} placements
+- YOU DECIDE optimal placement count based on content needs (no fixed limit)
 - Each 3-5 seconds duration
 - Minimum 3 second spacing between clips
 - Match ${genre} content with ${tone} imagery

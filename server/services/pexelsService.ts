@@ -82,8 +82,9 @@ export async function searchVideos(
   }
 
   try {
-    // Try broader search terms for better video results
-    const searchQuery = query.length > 50 ? query.split(' ').slice(0, 5).join(' ') : query;
+    // Use full query for AI-driven searches - Pexels handles long queries well
+    // Only truncate extremely long queries (>100 chars) to prevent API issues
+    const searchQuery = query.length > 100 ? query.substring(0, 100).trim() : query;
     
     const response = await axios.get(`${PEXELS_BASE_URL}/videos/search`, {
       headers: {
@@ -140,9 +141,10 @@ export async function fetchStockMediaWithVariants(
   photosPerQuery: number = 3,
   videosPerQuery: number = 3
 ): Promise<StockMediaVariants[]> {
-  const uniqueQueries = Array.from(new Set(queries)).slice(0, 8);
+  // No artificial limits - process all unique queries from AI
+  const uniqueQueries = Array.from(new Set(queries));
   
-  pexelsLogger.info(`Fetching ${photosPerQuery} photos + ${videosPerQuery} videos per query for ${uniqueQueries.length} queries`);
+  pexelsLogger.info(`Fetching ${photosPerQuery} photos + ${videosPerQuery} videos per query for ${uniqueQueries.length} queries (no limit)`);
 
   const results = await Promise.all(
     uniqueQueries.map(async (query) => {
@@ -172,7 +174,8 @@ export async function fetchStockMediaWithVariants(
 export async function fetchStockMedia(
   queries: string[]
 ): Promise<StockMediaItem[]> {
-  const uniqueQueries = Array.from(new Set(queries)).slice(0, 5);
+  // No artificial limits - process all unique queries from AI
+  const uniqueQueries = Array.from(new Set(queries));
 
   const results = await Promise.all(
     uniqueQueries.flatMap((query) => [

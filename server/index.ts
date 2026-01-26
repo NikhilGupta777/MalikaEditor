@@ -39,6 +39,12 @@ function startCleanupJob() {
 const app = express();
 const httpServer = createServer(app);
 
+// Trust proxy for production (Replit deployments)
+// This is required for secure cookies to work behind Replit's load balancer
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;

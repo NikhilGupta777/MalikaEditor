@@ -30,16 +30,49 @@ const processorLogger = {
 const UPLOADS_DIR = "/tmp/uploads";
 const OUTPUT_DIR = "/tmp/output";
 
+interface SSEEvent {
+  id: number;
+  type: string;
+  data: Record<string, unknown>;
+  timestamp: number;
+}
+
 interface ProcessingJob {
   projectId: number;
   status: "queued" | "processing" | "completed" | "failed";
   activities: Array<{ message: string; timestamp: number }>;
+  eventHistory: SSEEvent[];
+  lastEventId: number;
   abortController?: AbortController;
   slotReserved: boolean;
+  startTime: Date;
 }
 
+const MAX_EVENT_HISTORY = 100; // Keep last 100 events for replay
 const activeJobs = new Map<number, ProcessingJob>();
-const jobSubscribers = new Map<number, Set<(event: { type: string; data: Record<string, unknown> }) => void>>();
+const jobSubscribers = new Map<number, Set<(event: SSEEvent) => void>>();
+
+// Slot management - export functions for routes.ts to use
+const MAX_CONCURRENT_JOBS = 3;
+
+export function canStartNewJob(): boolean {
+  const activeCount = Array.from(activeJobs.values()).filter(
+    job => job.status === "processing" && job.slotReserved
+  ).length;
+  return activeCount < MAX_CONCURRENT_JOBS;
+}
+
+export function getActiveJobCount(): number {
+  return Array.from(activeJobs.values()).filter(
+    job => job.status === "processing" && job.slotReserved
+  ).length;
+}
+
+export function getActiveJobsInfo(): { id: number; startTime: Date; status: string }[] {
+  return Array.from(activeJobs.entries())
+    .filter(([_, job]) => job.status === "processing")
+    .map(([id, job]) => ({ id, startTime: job.startTime, status: job.status }));
+}
 
 export function getJobStatus(projectId: number): ProcessingJob | undefined {
   return activeJobs.get(projectId);
@@ -49,7 +82,19 @@ export function getJobActivities(projectId: number): Array<{ message: string; ti
   return activeJobs.get(projectId)?.activities || [];
 }
 
-export function subscribeToJob(projectId: number, callback: (event: { type: string; data: Record<string, unknown> }) => void): () => void {
+// Get events that occurred after a specific event ID (for replay on reconnect)
+export function getEventsSince(projectId: number, lastEventId: number): SSEEvent[] {
+  const job = activeJobs.get(projectId);
+  if (!job) return [];
+  return job.eventHistory.filter(event => event.id > lastEventId);
+}
+
+// Get the current last event ID for a project
+export function getLastEventId(projectId: number): number {
+  return activeJobs.get(projectId)?.lastEventId || 0;
+}
+
+export function subscribeToJob(projectId: number, callback: (event: SSEEvent) => void): () => void {
   if (!jobSubscribers.has(projectId)) {
     jobSubscribers.set(projectId, new Set());
   }
@@ -64,11 +109,30 @@ export function subscribeToJob(projectId: number, callback: (event: { type: stri
 }
 
 function notifySubscribers(projectId: number, type: string, data: Record<string, unknown>) {
+  const job = activeJobs.get(projectId);
+  if (!job) return;
+  
+  // Create event with unique ID
+  const eventId = ++job.lastEventId;
+  const event: SSEEvent = {
+    id: eventId,
+    type,
+    data,
+    timestamp: Date.now(),
+  };
+  
+  // Store in event history for replay
+  job.eventHistory.push(event);
+  if (job.eventHistory.length > MAX_EVENT_HISTORY) {
+    job.eventHistory.shift();
+  }
+  
+  // Notify all subscribers
   const subscribers = jobSubscribers.get(projectId);
   if (subscribers) {
     Array.from(subscribers).forEach(callback => {
       try {
-        callback({ type, data });
+        callback(event);
       } catch (e) {
         processorLogger.error(`Error notifying subscriber for project ${projectId}:`, e);
       }
@@ -105,7 +169,10 @@ export async function startProcessingJob(
     projectId,
     status: "processing",
     activities: [],
+    eventHistory: [],
+    lastEventId: 0,
     slotReserved: true,
+    startTime: new Date(),
   };
   activeJobs.set(projectId, job);
 

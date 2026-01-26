@@ -72,32 +72,24 @@ import {
   subscribeToJob, 
   getJobActivities, 
   isJobActive,
-  setOnJobComplete
+  setOnJobComplete,
+  canStartNewJob,
+  getActiveJobCount,
+  getActiveJobsInfo,
+  getEventsSince,
+  getLastEventId
 } from "./services/backgroundProcessor";
 
-// Multi-processing tracker (max 3 concurrent video processing jobs)
-const MAX_CONCURRENT_PROCESSING = 3;
-const processingJobs = new Map<number, { startTime: Date; status: string }>();
-
+// Use unified slot management from backgroundProcessor
 function canStartProcessing(): boolean {
-  return processingJobs.size < MAX_CONCURRENT_PROCESSING;
+  return canStartNewJob();
 }
 
-function startProcessingJob(projectId: number): boolean {
-  if (!canStartProcessing()) return false;
-  processingJobs.set(projectId, { startTime: new Date(), status: 'processing' });
-  return true;
-}
-
-function endProcessingJob(projectId: number): void {
-  processingJobs.delete(projectId);
-}
-
-function getProcessingStatus(): { current: number; max: number; jobs: { id: number; startTime: Date }[] } {
+function getProcessingStatus(): { current: number; max: number; jobs: { id: number; startTime: Date; status: string }[] } {
   return {
-    current: processingJobs.size,
-    max: MAX_CONCURRENT_PROCESSING,
-    jobs: Array.from(processingJobs.entries()).map(([id, job]) => ({ id, startTime: job.startTime }))
+    current: getActiveJobCount(),
+    max: 3,
+    jobs: getActiveJobsInfo()
   };
 }
 
@@ -267,10 +259,9 @@ export async function registerRoutes(
 ): Promise<Server> {
   await ensureDirs();
   
-  // Wire up background processor to release slots when jobs complete
+  // Log when background processor jobs complete (slots are managed internally now)
   setOnJobComplete((projectId) => {
-    endProcessingJob(projectId);
-    routesLogger.info(`Released processing slot for project ${projectId}`);
+    routesLogger.info(`Processing job completed for project ${projectId}`);
   });
   
   // Health check endpoint - no authentication required for load balancer checks
@@ -515,7 +506,23 @@ export async function registerRoutes(
     res.setHeader("X-Accel-Buffering", "no");
 
     let connectionClosed = false;
+    
+    // Parse Last-Event-ID from header or query param for replay support
+    // (EventSource API doesn't support custom headers, so we also check query param)
+    const lastEventIdHeader = req.headers["last-event-id"];
+    const lastEventIdQuery = req.query.lastEventId;
+    const lastEventIdRaw = lastEventIdQuery || lastEventIdHeader;
+    const clientLastEventId = lastEventIdRaw ? parseInt(lastEventIdRaw as string, 10) : 0;
 
+    // Send event with ID for replay support
+    const sendEventWithId = (eventId: number, type: string, data: Record<string, unknown>) => {
+      if (!connectionClosed) {
+        res.write(`id: ${eventId}\n`);
+        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+      }
+    };
+    
+    // Send event without ID (for initial messages)
     const sendEvent = (type: string, data: Record<string, unknown>) => {
       if (!connectionClosed) {
         res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -534,16 +541,25 @@ export async function registerRoutes(
 
     // If reconnecting, only subscribe to existing job - don't start new processing
     if (reconnect && jobAlreadyRunning) {
-      routesLogger.info(`Reconnecting to existing processing job for project ${id}`);
+      routesLogger.info(`Reconnecting to existing processing job for project ${id}, lastEventId: ${clientLastEventId}`);
       sendEvent("activity", { message: "Reconnecting to your processing session...", timestamp: Date.now() });
       
       // Send current project status
       sendEvent("status", { status: project.status });
       
-      // Send any missed activities
-      const activities = getJobActivities(id);
-      for (const activity of activities.slice(-10)) {
-        sendEvent("activity", activity);
+      // Replay missed events since client's last known event ID
+      if (clientLastEventId > 0) {
+        const missedEvents = getEventsSince(id, clientLastEventId);
+        routesLogger.info(`Replaying ${missedEvents.length} missed events for project ${id}`);
+        for (const event of missedEvents) {
+          sendEventWithId(event.id, event.type, event.data);
+        }
+      } else {
+        // No last event ID - send recent activities as fallback
+        const activities = getJobActivities(id);
+        for (const activity of activities.slice(-10)) {
+          sendEvent("activity", activity);
+        }
       }
     } else if (reconnect && isAlreadyCompleted) {
       // Reconnect request but project already completed - just send status
@@ -557,7 +573,7 @@ export async function registerRoutes(
       return;
     } else if (!jobAlreadyRunning && !isAlreadyCompleted) {
       // Start new background processing job only if not already completed
-      if (!startProcessingJob(id)) {
+      if (!canStartProcessing()) {
         clearInterval(heartbeatInterval);
         return res.status(429).json({ 
           error: "Processing slot no longer available. Please try again.",
@@ -583,7 +599,8 @@ export async function registerRoutes(
     // Subscribe to job updates - this will receive events from background processor
     const unsubscribe = subscribeToJob(id, (event) => {
       if (!connectionClosed) {
-        sendEvent(event.type, event.data);
+        // Send event with ID for client-side tracking and replay support
+        sendEventWithId(event.id, event.type, event.data);
         
         // End SSE when processing is complete or failed
         if (event.type === "status" && 

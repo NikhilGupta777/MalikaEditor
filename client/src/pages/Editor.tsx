@@ -188,12 +188,23 @@ export default function Editor() {
           reconnect: "true",
         });
         
+        // Check for stored lastEventId from sessionStorage for page refresh recovery
+        const sessionKey = `sse_lastEventId_process_${loadedProject.id}`;
+        const storedLastEventId = sessionStorage.getItem(sessionKey);
+        if (storedLastEventId) {
+          params.append("lastEventId", storedLastEventId);
+        }
+        
         const eventSource = new EventSource(
           `/api/videos/${loadedProject.id}/process?${params.toString()}`
         );
         eventSourceRef.current = eventSource;
         
         eventSource.onmessage = (event) => {
+          // Store lastEventId for reconnection support
+          if (event.lastEventId) {
+            sessionStorage.setItem(sessionKey, event.lastEventId);
+          }
           const data = JSON.parse(event.data);
           
           if (data.type === "status") {
@@ -351,6 +362,10 @@ export default function Editor() {
       setIsProcessing(true);
       setActivities([]);
 
+      // Clear any stored lastEventId for this project (starting fresh)
+      const sessionKey = `sse_lastEventId_process_${project.id}`;
+      sessionStorage.removeItem(sessionKey);
+
       try {
         const params = new URLSearchParams({
           prompt,
@@ -371,6 +386,10 @@ export default function Editor() {
         eventSourceRef.current = eventSource;
 
         eventSource.onmessage = (event) => {
+          // Store lastEventId for reconnection support
+          if (event.lastEventId) {
+            sessionStorage.setItem(sessionKey, event.lastEventId);
+          }
           const data = JSON.parse(event.data);
 
           if (data.type === "status") {
@@ -694,10 +713,18 @@ export default function Editor() {
         eventSourceRef.current.close();
       }
       
+      // Clear any stored lastEventId for this project (starting fresh retry)
+      const sessionKey = `sse_lastEventId_process_${project.id}`;
+      sessionStorage.removeItem(sessionKey);
+      
       const eventSource = new EventSource(`/api/videos/${project.id}/process?${params.toString()}`);
       eventSourceRef.current = eventSource;
       
       eventSource.onmessage = (event) => {
+        // Store lastEventId for reconnection support
+        if (event.lastEventId) {
+          sessionStorage.setItem(sessionKey, event.lastEventId);
+        }
         const data = JSON.parse(event.data);
         
         if (data.type === "status") {

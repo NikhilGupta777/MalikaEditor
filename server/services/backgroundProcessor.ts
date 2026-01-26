@@ -4,7 +4,7 @@ import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudio } from "./ai";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants } from "./pexelsService";
 import { selectBestMediaForWindows, convertSelectionsToStockMediaItems } from "./ai/mediaSelector";
-import { calculateDynamicLimits } from "../config/ai";
+// Dynamic limits removed - AI decides counts based on content
 import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
 import path from "path";
 import fs from "fs/promises";
@@ -328,20 +328,19 @@ async function runProcessingPipeline(
       addActivity(projectId, `Fetching stock media${shouldGenerateAi ? ' + generating AI images' : ''} in parallel...`);
       const mediaFetchStart = Date.now();
       
-      // Calculate dynamic limits based on video duration
-      const dynamicLimits = calculateDynamicLimits(metadata.duration);
-      processorLogger.info(`Dynamic limits for ${metadata.duration}s video: ${dynamicLimits.stockQueries} stock queries, ${dynamicLimits.aiImages} AI images, ${dynamicLimits.brollWindows} B-roll windows`);
+      // No limits - AI decides count based on content analysis
+      processorLogger.info(`Processing ${metadata.duration}s video with ${stockQueries.length} stock queries, AI images based on content`);
       
       // Run stock fetch and AI generation in parallel
       const [stockVariants, aiImagesResult] = await Promise.all([
-        // Stock media fetching
-        fetchStockMediaWithVariants(stockQueries.slice(0, dynamicLimits.stockQueries), 3, 3),
-        // AI image generation (if enabled)
+        // Stock media fetching - use all queries from AI analysis
+        fetchStockMediaWithVariants(stockQueries, 3, 3),
+        // AI image generation (if enabled) - no limit, AI decides based on content
         shouldGenerateAi
           ? generateAiImagesForVideo(
               analysis.semanticAnalysis!,
               undefined,
-              dynamicLimits.aiImages,
+              undefined, // No limit - generate for all AI-selected windows
               metadata.duration
             ).catch((aiError: Error) => {
               processorLogger.error("AI image generation failed:", aiError);
@@ -401,14 +400,13 @@ async function runProcessingPipeline(
       await updateStatus("generating_ai_images");
       addActivity(projectId, "Generating AI images for overlays...");
       
-      const dynamicLimitsAi = calculateDynamicLimits(metadata.duration);
-      processorLogger.info(`Dynamic AI image limit for ${metadata.duration}s video: ${dynamicLimitsAi.aiImages} images`);
+      processorLogger.info(`Generating AI images for ${metadata.duration}s video based on content analysis`);
       
       try {
         const aiImages = await generateAiImagesForVideo(
           analysis.semanticAnalysis,
           undefined,
-          dynamicLimitsAi.aiImages,
+          undefined, // No limit - AI decides based on content
           metadata.duration
         );
         

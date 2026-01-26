@@ -1,7 +1,7 @@
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
-import { AI_CONFIG, calculateDynamicLimits } from "../../config/ai";
+import { AI_CONFIG } from "../../config/ai";
 import {
   normalizePriority,
   normalizeOverallTone,
@@ -227,169 +227,8 @@ interface BrollWindow {
   reason: string;
 }
 
-// Ensures B-roll windows are evenly distributed across the video timeline
-// Redistributes clustered windows to fill gaps in timeline coverage
-function enforceEvenBrollDistribution(
-  windows: BrollWindow[],
-  duration: number
-): BrollWindow[] {
-  if (windows.length === 0 || duration <= 0) return windows;
-  
-  // Sort by start time
-  const sorted = [...windows].sort((a, b) => a.start - b.start);
-  
-  // Divide video into thirds
-  const thirdDuration = duration / 3;
-  const segments = [
-    { start: 0, end: thirdDuration, windows: [] as BrollWindow[] },
-    { start: thirdDuration, end: thirdDuration * 2, windows: [] as BrollWindow[] },
-    { start: thirdDuration * 2, end: duration, windows: [] as BrollWindow[] },
-  ];
-  
-  // Categorize windows by segment
-  for (const window of sorted) {
-    const midpoint = (window.start + window.end) / 2;
-    for (const segment of segments) {
-      if (midpoint >= segment.start && midpoint < segment.end) {
-        segment.windows.push(window);
-        break;
-      }
-    }
-  }
-  
-  // Check distribution - each segment should have at least 1-2 windows
-  const minPerSegment = Math.max(1, Math.floor(windows.length / 4));
-  const maxPerSegment = Math.ceil(windows.length * 0.6); // No more than 60% in one segment
-  
-  let redistributionNeeded = false;
-  for (const segment of segments) {
-    if (segment.windows.length > maxPerSegment || segment.windows.length < minPerSegment) {
-      redistributionNeeded = true;
-      break;
-    }
-  }
-  
-  if (!redistributionNeeded) {
-    aiLogger.debug(`B-roll distribution OK: [${segments[0].windows.length}, ${segments[1].windows.length}, ${segments[2].windows.length}]`);
-    return sorted;
-  }
-  
-  // Redistribute: take excess from heavy segments and assign to light ones
-  const excess: BrollWindow[] = [];
-  
-  // Collect excess windows from oversaturated segments
-  for (const segment of segments) {
-    while (segment.windows.length > maxPerSegment) {
-      // Remove lowest priority windows first
-      segment.windows.sort((a, b) => {
-        const priorityOrder = { high: 3, medium: 2, low: 1 };
-        return priorityOrder[a.priority] - priorityOrder[b.priority];
-      });
-      const removed = segment.windows.shift();
-      if (removed) excess.push(removed);
-    }
-  }
-  
-  // Helper to check if a window overlaps with existing windows in a segment
-  const MIN_GAP = AI_CONFIG.timing.minBrollGapSeconds;
-  const findNonOverlappingSlot = (
-    segmentWindows: BrollWindow[],
-    segmentStart: number,
-    segmentEnd: number,
-    windowDuration: number
-  ): { start: number; end: number } | null => {
-    // Sort existing windows by start time
-    const sorted = [...segmentWindows].sort((a, b) => a.start - b.start);
-    
-    // Try to find a gap between existing windows or at segment boundaries
-    let searchStart = segmentStart + 2;
-    
-    for (const existing of sorted) {
-      const gapEnd = existing.start - MIN_GAP;
-      if (gapEnd - searchStart >= windowDuration) {
-        return { start: searchStart, end: searchStart + windowDuration };
-      }
-      searchStart = existing.end + MIN_GAP;
-    }
-    
-    // Try after last window
-    if (segmentEnd - 2 - searchStart >= windowDuration) {
-      return { start: searchStart, end: Math.min(searchStart + windowDuration, segmentEnd - 2) };
-    }
-    
-    return null; // No valid slot found
-  };
-  
-  // Redistribute excess to sparse segments
-  for (const segment of segments) {
-    while (segment.windows.length < minPerSegment && excess.length > 0) {
-      const windowToMove = excess.shift()!;
-      const windowDuration = windowToMove.end - windowToMove.start;
-      
-      // Find a non-overlapping slot in this segment
-      const slot = findNonOverlappingSlot(
-        segment.windows,
-        segment.start,
-        segment.end,
-        windowDuration
-      );
-      
-      if (slot && slot.end > slot.start) {
-        segment.windows.push({
-          ...windowToMove,
-          start: slot.start,
-          end: slot.end,
-        });
-      }
-      // If no slot found, window is dropped (better than overlapping)
-    }
-  }
-  
-  // Put any remaining excess back into segments with room (checking for overlaps)
-  for (const window of excess) {
-    const windowDuration = window.end - window.start;
-    
-    for (const segment of segments) {
-      if (segment.windows.length < maxPerSegment) {
-        const slot = findNonOverlappingSlot(
-          segment.windows,
-          segment.start,
-          segment.end,
-          windowDuration
-        );
-        
-        if (slot && slot.end > slot.start) {
-          segment.windows.push({ ...window, start: slot.start, end: slot.end });
-          break;
-        }
-      }
-    }
-  }
-  
-  // Merge all segments back and sort
-  const redistributed = [
-    ...segments[0].windows,
-    ...segments[1].windows,
-    ...segments[2].windows,
-  ].sort((a, b) => a.start - b.start);
-  
-  aiLogger.info(`B-roll redistributed: [${segments[0].windows.length}, ${segments[1].windows.length}, ${segments[2].windows.length}] (was uneven)`);
-  
-  // Final validation: ensure minimum spacing between adjacent windows
-  const finalWindows: BrollWindow[] = [];
-  let lastEnd = -MIN_GAP;
-  
-  for (const window of redistributed) {
-    if (window.start >= lastEnd + MIN_GAP && window.end > window.start) {
-      finalWindows.push(window);
-      lastEnd = window.end;
-    } else {
-      aiLogger.debug(`Dropping overlapping B-roll window at ${window.start.toFixed(1)}s-${window.end.toFixed(1)}s`);
-    }
-  }
-  
-  return finalWindows;
-}
+// REMOVED: enforceEvenBrollDistribution - AI now decides B-roll placement freely
+// No redistribution, no spacing constraints - AI's decisions are used verbatim
 
 export async function analyzeTranscriptSemantics(
   transcript: TranscriptSegment[],
@@ -602,10 +441,10 @@ Respond in JSON format only (no markdown):
         priority: normalizePriority(b.priority || "medium"),
         reason: b.reason || "Enhance visual interest",
       }))
-      .slice(0, calculateDynamicLimits(duration).brollWindows);
+; // No limit - AI decides the count based on content
     
-    // Validate and enforce even B-roll distribution across timeline
-    const validatedBrollWindows = enforceEvenBrollDistribution(rawBrollWindows, duration);
+    // AI decides B-roll placement - pass through without redistribution
+    const validatedBrollWindows = rawBrollWindows;
 
     const hookMoments = parsed.hookMoments?.map(h => ({
       timestamp: h.timestamp || 0,

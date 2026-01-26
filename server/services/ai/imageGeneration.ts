@@ -79,17 +79,15 @@ export async function generateAiImage(
 export async function generateAiImagesForVideo(
   semanticAnalysis: SemanticAnalysis,
   videoContext?: VideoContext,
-  maxImages?: number,
+  _maxImages?: number, // Deprecated - AI decides based on content
   videoDuration?: number
 ): Promise<GeneratedAiImage[]> {
-  const effectiveMaxImages = maxImages ?? Math.min(
-    Math.max(1, Math.floor((videoDuration || 30) / 15)),
-    10
-  );
-  aiLogger.info(`AI image generation: maxImages=${effectiveMaxImages} (duration=${videoDuration}s)`);
+  // No limits - AI decides how many images to generate based on content analysis
+  aiLogger.info(`AI image generation: no limit (AI decides based on content, duration=${videoDuration}s)`);
   
   const generatedImages: GeneratedAiImage[] = [];
   
+  // Use all valid B-roll windows from AI analysis - no slicing or limiting
   const validCandidates = semanticAnalysis.brollWindows
     .filter(w => {
       if (typeof w.start !== "number" || typeof w.end !== "number") {
@@ -104,50 +102,12 @@ export async function generateAiImagesForVideo(
     })
     .sort((a, b) => a.start - b.start);
   
-  aiLogger.debug(`Valid B-roll candidates: ${validCandidates.length}/${semanticAnalysis.brollWindows.length}`);
+  aiLogger.info(`AI decided: ${validCandidates.length} B-roll windows for AI image generation`);
   
-  let aiImageCandidates: typeof validCandidates;
-  
-  if (validCandidates.length <= effectiveMaxImages) {
-    aiImageCandidates = validCandidates;
-  } else if (videoDuration && videoDuration > 0) {
-    const segmentDuration = videoDuration / effectiveMaxImages;
-    aiImageCandidates = [];
-    
-    for (let i = 0; i < effectiveMaxImages; i++) {
-      const segmentStart = i * segmentDuration;
-      const segmentEnd = (i + 1) * segmentDuration;
-      
-      const segmentCandidates = validCandidates.filter(c => 
-        c.start >= segmentStart && c.start < segmentEnd
-      );
-      
-      if (segmentCandidates.length > 0) {
-        const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
-        const best = segmentCandidates.sort((a, b) => 
-          (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1)
-        )[0];
-        aiImageCandidates.push(best);
-      } else {
-        const unusedCandidates = validCandidates.filter(c => 
-          !aiImageCandidates.includes(c) && 
-          Math.abs(c.start - (segmentStart + segmentDuration / 2)) < segmentDuration
-        );
-        if (unusedCandidates.length > 0) {
-          aiImageCandidates.push(unusedCandidates[0]);
-        }
-      }
-    }
-    
-    aiImageCandidates.sort((a, b) => a.start - b.start);
-  } else {
-    const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
-    aiImageCandidates = validCandidates
-      .sort((a, b) => (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1))
-      .slice(0, effectiveMaxImages);
-  }
+  // Use all valid candidates - AI already decided the count based on content
+  const aiImageCandidates = validCandidates;
 
-  aiLogger.debug(`AI Image candidates after selection: ${aiImageCandidates.length} (targeting ${effectiveMaxImages})`);
+  aiLogger.debug(`AI Image candidates: ${aiImageCandidates.length} (AI-determined based on content)`);
 
   // Parallel generation with controlled concurrency
   const CONCURRENCY_LIMIT = 3; // Limit parallel requests to avoid rate limiting

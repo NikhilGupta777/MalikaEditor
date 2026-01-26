@@ -11,13 +11,16 @@ export const AI_CONFIG = {
     reviewPass: "gemini-1.5-flash",
   },
   
+  // AI decides overlay counts based on content analysis - no arbitrary limits
+  // Only concurrency and operational limits remain
   limits: {
-    maxConcurrentImageGeneration: 3,
-    maxBrollWindows: 20,
-    maxAiImages: 10,
-    maxStockQueries: 15,
+    maxConcurrentImageGeneration: 3, // Prevent API rate limiting
     maxRetries: 3,
     geminiMaxFileSizeMB: 7,
+    // DEPRECATED: AI now decides counts freely based on content
+    // maxBrollWindows: removed - AI decides
+    // maxAiImages: removed - AI decides  
+    // maxStockQueries: removed - AI decides
   },
   
   timing: {
@@ -25,6 +28,7 @@ export const AI_CONFIG = {
     minBrollGapSeconds: 3,
     transitionDurationSeconds: 0.5,
     minSegmentDuration: 1.0,
+    // Used as guidance only, not a hard limit
     secondsPerBrollWindow: 15,
   },
   
@@ -36,18 +40,3 @@ export const AI_CONFIG = {
 } as const;
 
 export type AIConfig = typeof AI_CONFIG;
-
-export function calculateDynamicLimits(videoDurationSeconds: number): {
-  aiImages: number;
-  stockQueries: number;
-  brollWindows: number;
-} {
-  const secondsPerBroll = AI_CONFIG.timing.secondsPerBrollWindow;
-  const baseBrollWindows = Math.max(1, Math.floor(videoDurationSeconds / secondsPerBroll));
-  
-  return {
-    aiImages: Math.min(baseBrollWindows, AI_CONFIG.limits.maxAiImages),
-    stockQueries: Math.min(baseBrollWindows + 2, AI_CONFIG.limits.maxStockQueries),
-    brollWindows: Math.min(baseBrollWindows + 3, AI_CONFIG.limits.maxBrollWindows),
-  };
-}

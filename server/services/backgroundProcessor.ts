@@ -2,7 +2,8 @@ import { storage } from "../storage";
 import { getVideoMetadata, extractFrames, extractAudio, detectSilence } from "./videoProcessor";
 import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudio } from "./ai";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
-import { fetchStockMedia } from "./pexelsService";
+import { fetchStockMediaWithVariants } from "./pexelsService";
+import { selectBestMediaForWindows, convertSelectionsToStockMediaItems } from "./ai/mediaSelector";
 import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
 import path from "path";
 import fs from "fs/promises";
@@ -253,9 +254,9 @@ async function runProcessingPipeline(
       transcript
     );
 
-    const brollWindows = analysis.semanticAnalysis?.brollWindows?.length || 0;
+    const brollWindowCount = analysis.semanticAnalysis?.brollWindows?.length || 0;
     const hookStrength = analysis.semanticAnalysis?.hookMoments?.[0]?.score || 0;
-    addActivity(projectId, `Deep analysis complete: ${brollWindows} B-roll windows, hook strength: ${hookStrength}`);
+    addActivity(projectId, `Deep analysis complete: ${brollWindowCount} B-roll windows, hook strength: ${hookStrength}`);
 
     await storage.updateVideoProject(projectId, {
       analysis: { 
@@ -302,23 +303,84 @@ async function runProcessingPipeline(
     notifySubscribers(projectId, "editPlan", { editPlan });
 
     await updateStatus("fetching_stock");
-    addActivity(projectId, "Fetching stock media for B-roll...");
+    addActivity(projectId, "Fetching stock media variants for B-roll...");
     let stockMedia: StockMediaItem[] = [];
-    if (editOptions.addBroll) {
-      const stockQueries = editPlan.stockQueries || 
-        analysis.semanticAnalysis?.brollWindows?.map(w => w.suggestedQuery) || [];
-      
-      if (stockQueries.length > 0) {
-        stockMedia = await fetchStockMedia(stockQueries.slice(0, 3));
-        addActivity(projectId, `Found ${stockMedia.length} stock media items`);
-      }
-    }
-
-    await storage.updateVideoProject(projectId, { stockMedia });
-    notifySubscribers(projectId, "stockMedia", { stockMedia });
-
     let aiImageCount = 0;
-    if (editOptions.generateAiImages && analysis.semanticAnalysis) {
+    
+    const brollWindows = analysis.semanticAnalysis?.brollWindows || [];
+    const stockQueries = editPlan.stockQueries || 
+      brollWindows.map(w => w.suggestedQuery).filter(Boolean) || [];
+    
+    if (editOptions.addBroll && stockQueries.length > 0) {
+      const stockVariants = await fetchStockMediaWithVariants(
+        stockQueries.slice(0, 8),
+        3,
+        3
+      );
+      
+      const totalPhotos = stockVariants.reduce((sum, v) => sum + v.photos.length, 0);
+      const totalVideos = stockVariants.reduce((sum, v) => sum + v.videos.length, 0);
+      addActivity(projectId, `Found ${totalPhotos} photos + ${totalVideos} videos from ${stockVariants.length} queries`);
+      
+      let generatedAiImages: Awaited<ReturnType<typeof generateAiImagesForVideo>> = [];
+      
+      if (editOptions.generateAiImages && analysis.semanticAnalysis) {
+        await updateStatus("generating_ai_images");
+        addActivity(projectId, "Generating AI images for overlays...");
+        
+        try {
+          generatedAiImages = await generateAiImagesForVideo(
+            analysis.semanticAnalysis,
+            undefined,
+            3,
+            metadata.duration
+          );
+          aiImageCount = generatedAiImages.length;
+          addActivity(projectId, `Generated ${aiImageCount} AI images`);
+        } catch (aiError) {
+          processorLogger.error("AI image generation failed:", aiError);
+          addActivity(projectId, "AI image generation failed, continuing with stock media only");
+          notifySubscribers(projectId, "aiImagesError", { 
+            message: "AI image generation failed, continuing with stock media only" 
+          });
+        }
+      }
+      
+      addActivity(projectId, "AI selecting best media for each B-roll window...");
+      const selectionResult = await selectBestMediaForWindows(
+        brollWindows as { start: number; end: number; suggestedQuery: string; priority: "high" | "medium" | "low"; context?: string }[],
+        stockVariants,
+        generatedAiImages,
+        {
+          duration: metadata.duration,
+          genre: analysis.semanticAnalysis?.overallTone || "general",
+          tone: analysis.semanticAnalysis?.overallTone || "professional",
+          topic: analysis.semanticAnalysis?.mainTopics?.[0] || "various",
+        }
+      );
+      
+      addActivity(projectId, `AI selected ${selectionResult.totalSelected} clips: ${selectionResult.aiImagesUsed} AI, ${selectionResult.stockVideosUsed} videos, ${selectionResult.stockImagesUsed} images`);
+      
+      const { stockItems, aiImages: selectedAiImages } = convertSelectionsToStockMediaItems(selectionResult.selections);
+      
+      const aiStockItems: StockMediaItem[] = selectedAiImages.map((img, idx) => ({
+        id: `ai_${Date.now()}_${idx}`,
+        type: 'ai_generated' as const,
+        url: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
+        query: img.prompt,
+        thumbnailUrl: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
+        width: 1024,
+        height: 1024,
+        source: 'imagen',
+        startTime: img.startTime,
+        endTime: img.endTime,
+      }));
+      
+      stockMedia = [...stockItems, ...aiStockItems];
+      aiImageCount = aiStockItems.length;
+      
+      notifySubscribers(projectId, "aiImages", { count: aiImageCount });
+    } else if (editOptions.generateAiImages && analysis.semanticAnalysis) {
       await updateStatus("generating_ai_images");
       addActivity(projectId, "Generating AI images for overlays...");
       
@@ -343,20 +405,21 @@ async function runProcessingPipeline(
           endTime: img.endTime,
         }));
         
-        stockMedia = [...stockMedia, ...aiStockItems];
+        stockMedia = aiStockItems;
         aiImageCount = aiStockItems.length;
         addActivity(projectId, `Generated ${aiImageCount} AI images`);
-        
-        await storage.updateVideoProject(projectId, { stockMedia });
         notifySubscribers(projectId, "aiImages", { count: aiImageCount });
       } catch (aiError) {
         processorLogger.error("AI image generation failed:", aiError);
-        addActivity(projectId, "AI image generation failed, continuing with stock media only");
+        addActivity(projectId, "AI image generation failed, continuing without media overlays");
         notifySubscribers(projectId, "aiImagesError", { 
-          message: "AI image generation failed, continuing with stock media only" 
+          message: "AI image generation failed, continuing without media overlays" 
         });
       }
     }
+
+    await storage.updateVideoProject(projectId, { stockMedia });
+    notifySubscribers(projectId, "stockMedia", { stockMedia });
 
     const reviewData: ReviewData = {
       transcript: transcript.map((t, i) => ({

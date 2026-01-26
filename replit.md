@@ -53,7 +53,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 ### Video Processing Pipeline
 1.  **Upload**: Video stored temporarily.
 2.  **Analysis**: Frames extracted, analyzed with Gemini Vision.
-3.  **Transcription**: Audio extracted and transcribed with word-level timing (OpenAI verbose_json provides real timestamps, fallback to improved syllable-based synthesis).
+3.  **Transcription**: Audio extracted and transcribed (OpenAI gpt-4o-mini-transcribe with synthesized word timing from syllable-based algorithm; Gemini fallback for reliability).
 4.  **Planning**: AI generates edit plan using multi-pass system.
 5.  **Stock Media**: Fetches media from Pexels.
 6.  **AI Images**: Generates custom AI images.

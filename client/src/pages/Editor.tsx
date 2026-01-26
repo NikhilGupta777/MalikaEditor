@@ -13,6 +13,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { TranscriptEditor } from "@/components/TranscriptEditor";
 import { ActivityLog } from "@/components/ActivityLog";
 import { ReviewPanel } from "@/components/ReviewPanel";
+import { HistoryPanel } from "@/components/HistoryPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -656,6 +657,13 @@ export default function Editor() {
                     onCancel={handleCancelUpload}
                     isUploading={isUploading}
                     uploadProgress={uploadProgress}
+                  />
+                  
+                  <HistoryPanel 
+                    onViewProject={(projectId) => {
+                      window.location.href = `/project/${projectId}`;
+                    }}
+                    className="mt-4"
                   />
                 </div>
               )}

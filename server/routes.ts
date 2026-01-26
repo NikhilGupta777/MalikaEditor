@@ -1447,6 +1447,26 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     }
   });
 
+  // Get video project history (returns all projects for history panel)
+  app.get("/api/videos/history", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const projects = await storage.getAllVideoProjects();
+      const historyItems = projects.map(p => ({
+        id: p.id,
+        title: p.fileName,
+        status: p.status,
+        duration: p.duration,
+        createdAt: p.createdAt.toISOString(),
+        expiresAt: p.expiresAt.toISOString(),
+        outputPath: p.outputPath || undefined,
+      }));
+      res.json(historyItems);
+    } catch (error) {
+      routesLogger.error("Failed to get video history:", error);
+      res.status(500).json({ error: "Failed to get video history" });
+    }
+  });
+
   // Delete a project
   app.delete("/api/projects/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
@@ -1456,6 +1476,28 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
     } catch (error) {
       routesLogger.error("Failed to delete project:", error);
       res.status(500).json({ error: "Failed to delete project" });
+    }
+  });
+
+  // Delete a video project
+  app.delete("/api/videos/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const paramResult = idParamSchema.safeParse(req.params);
+      if (!paramResult.success) {
+        return res.status(400).json({ error: formatZodError(paramResult.error) });
+      }
+      const { id } = paramResult.data;
+      
+      const project = await storage.getVideoProject(id);
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+      
+      await storage.deleteVideoProject(id);
+      res.json({ success: true, message: "Video project deleted" });
+    } catch (error) {
+      routesLogger.error("Failed to delete video project:", error);
+      res.status(500).json({ error: "Failed to delete video project" });
     }
   });
 

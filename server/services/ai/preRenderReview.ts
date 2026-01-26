@@ -1,9 +1,26 @@
 import { getGeminiClient } from "./clients";
 import { createLogger } from "../../utils/logger";
 import { AI_CONFIG } from "../../config/ai";
+import { z } from "zod";
 import type { EditPlan, VideoAnalysis, TranscriptSegment, ReviewData } from "@shared/schema";
 
 const reviewLogger = createLogger("ai-pre-render-review");
+
+// Zod schema for validating AI pre-render review response
+const PreRenderReviewSchema = z.object({
+  confidence: z.number().min(0).max(100).optional().default(75),
+  approved: z.boolean().optional().default(true),
+  issues: z.array(z.object({
+    severity: z.enum(["low", "medium", "high"]).optional().default("low"),
+    description: z.string().optional().default(""),
+    suggestion: z.string().optional().default(""),
+  })).optional().default([]),
+  suggestions: z.array(z.string()).optional().default([]),
+  editQualityScore: z.number().min(0).max(100).optional().default(70),
+  narrativeFlowScore: z.number().min(0).max(100).optional().default(70),
+  pacingScore: z.number().min(0).max(100).optional().default(70),
+  summary: z.string().optional().default("Review completed successfully."),
+});
 
 function repairJSON(text: string): string | null {
   let json = text.trim();
@@ -173,9 +190,9 @@ Respond in JSON format:
         return getDefaultReviewResult();
       }
       
-      const result = tryParseJSON(text);
+      const parsedJson = tryParseJSON(text);
       
-      if (!result) {
+      if (!parsedJson) {
         reviewLogger.warn(`Attempt ${attempt}: Could not parse JSON response`, { 
           textPreview: text.slice(0, 300) 
         });
@@ -183,16 +200,28 @@ Respond in JSON format:
         return getDefaultReviewResult();
       }
       
+      // Validate with Zod schema for type safety and default values
+      const validationResult = PreRenderReviewSchema.safeParse(parsedJson);
+      
+      if (!validationResult.success) {
+        reviewLogger.warn(`Attempt ${attempt}: Schema validation failed`, {
+          errors: validationResult.error.errors.slice(0, 5),
+        });
+        if (attempt < maxRetries) continue;
+        return getDefaultReviewResult();
+      }
+      
+      const result = validationResult.data;
       reviewLogger.info(`Pre-render review complete: confidence=${result.confidence}%, approved=${result.approved}`);
       
       return {
-        confidence: result.confidence ?? 75,
-        approved: result.approved ?? true,
-        issues: Array.isArray(result.issues) ? result.issues : [],
-        suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
-        editQualityScore: result.editQualityScore ?? 70,
-        narrativeFlowScore: result.narrativeFlowScore ?? 70,
-        pacingScore: result.pacingScore ?? 70,
+        confidence: result.confidence,
+        approved: result.approved,
+        issues: result.issues,
+        suggestions: result.suggestions,
+        editQualityScore: result.editQualityScore,
+        narrativeFlowScore: result.narrativeFlowScore,
+        pacingScore: result.pacingScore,
         summary: result.summary ?? "Review completed successfully.",
       };
     } catch (error) {

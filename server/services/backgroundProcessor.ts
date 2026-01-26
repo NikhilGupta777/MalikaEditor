@@ -354,6 +354,11 @@ async function runProcessingPipeline(
     
     processorLogger.info(`B-roll windows: ${editPlanBrollWindows.length} from edit plan, ${semanticBrollWindows.length} from semantic analysis, using ${brollWindows.length}`);
     
+    // Log observability info if semantic analysis is missing but we have edit plan windows
+    if (!analysis.semanticAnalysis && editPlanBrollWindows.length > 0) {
+      processorLogger.info(`[EDGE CASE] Semantic analysis missing but ${editPlanBrollWindows.length} edit plan windows available - using edit plan windows only`);
+    }
+    
     const stockQueries = editPlan.stockQueries || 
       brollWindows.map((w: any) => w.suggestedQuery).filter(Boolean) || [];
     

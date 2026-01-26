@@ -13,16 +13,16 @@ const GEMINI_MAX_FILE_SIZE_MB = 7;
 export function logTranscriptionConfig(): void {
   const hasOpenAIKey = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   const hasGeminiKey = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  
+
   aiLogger.info("═══════════════════════════════════════════════════════");
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
-  
+
   if (hasOpenAIKey) {
-    aiLogger.info("Primary: OpenAI gpt-4o-mini-transcribe (with synthesized word timing)");
+    aiLogger.info("Primary: Replit AI OpenAI gpt-4o-mini-transcribe (with synthesized word timing)");
   }
-  
+
   if (hasGeminiKey) {
-    aiLogger.info(`Fallback: Gemini 2.5 Flash (audio files < ${GEMINI_MAX_FILE_SIZE_MB}MB)`);
+    aiLogger.info(`Fallback: Replit AI Gemini 2.5 Flash (audio files < ${GEMINI_MAX_FILE_SIZE_MB}MB)`);
   }
   
   if (!hasOpenAIKey && !hasGeminiKey) {

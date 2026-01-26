@@ -28,7 +28,7 @@ export function getOpenAIClient(): OpenAI {
     }
     openaiClient = new OpenAI({
       apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-      baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+      baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || "https://api.openai.com/v1",
     });
   }
   return openaiClient;

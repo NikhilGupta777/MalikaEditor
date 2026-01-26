@@ -12,6 +12,28 @@ import { storage } from "./storage";
 
 const expressLogger = createLogger("express");
 
+// Cleanup expired projects and cache every 10 minutes
+const CLEANUP_INTERVAL = 10 * 60 * 1000; // 10 minutes
+let cleanupIntervalId: NodeJS.Timeout | null = null;
+
+async function runPeriodicCleanup() {
+  try {
+    const deletedProjects = await storage.cleanupExpiredProjects();
+    const deletedCache = await storage.cleanupExpiredCache();
+    if (deletedProjects > 0 || deletedCache > 0) {
+      expressLogger.info(`Periodic cleanup: ${deletedProjects} expired projects, ${deletedCache} expired cache entries`);
+    }
+  } catch (e) {
+    expressLogger.warn("Periodic cleanup failed:", e);
+  }
+}
+
+function startCleanupJob() {
+  if (cleanupIntervalId) return;
+  cleanupIntervalId = setInterval(runPeriodicCleanup, CLEANUP_INTERVAL);
+  expressLogger.info("Started periodic cleanup job (every 10 minutes)");
+}
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -209,6 +231,10 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      // Start the periodic cleanup job
+      startCleanupJob();
+      // Run cleanup once on startup
+      runPeriodicCleanup();
     },
   );
 })();

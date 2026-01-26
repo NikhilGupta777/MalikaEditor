@@ -67,6 +67,32 @@ import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
 import { registerAuthRoutes } from "./routes/auth";
 
+// Multi-processing tracker (max 3 concurrent video processing jobs)
+const MAX_CONCURRENT_PROCESSING = 3;
+const processingJobs = new Map<number, { startTime: Date; status: string }>();
+
+function canStartProcessing(): boolean {
+  return processingJobs.size < MAX_CONCURRENT_PROCESSING;
+}
+
+function startProcessingJob(projectId: number): boolean {
+  if (!canStartProcessing()) return false;
+  processingJobs.set(projectId, { startTime: new Date(), status: 'processing' });
+  return true;
+}
+
+function endProcessingJob(projectId: number): void {
+  processingJobs.delete(projectId);
+}
+
+function getProcessingStatus(): { current: number; max: number; jobs: { id: number; startTime: Date }[] } {
+  return {
+    current: processingJobs.size,
+    max: MAX_CONCURRENT_PROCESSING,
+    jobs: Array.from(processingJobs.entries()).map(([id, job]) => ({ id, startTime: job.startTime }))
+  };
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: async (req, file, cb) => {
@@ -406,6 +432,15 @@ export async function registerRoutes(
     }
     const { id } = paramResult.data;
     
+    // Check multi-processing limit
+    if (!canStartProcessing()) {
+      const status = getProcessingStatus();
+      return res.status(429).json({ 
+        error: `Maximum ${MAX_CONCURRENT_PROCESSING} videos can be processed at once. Please wait for a slot.`,
+        processingStatus: status
+      });
+    }
+    
     // Validate query parameters
     const queryResult = processQuerySchema.safeParse(req.query);
     if (!queryResult.success) {
@@ -425,6 +460,14 @@ export async function registerRoutes(
     const project = await storage.getVideoProject(id);
     if (!project) {
       return res.status(404).json({ error: "Project not found" });
+    }
+    
+    // Start tracking this processing job
+    if (!startProcessingJob(id)) {
+      return res.status(429).json({ 
+        error: "Processing slot no longer available. Please try again.",
+        processingStatus: getProcessingStatus()
+      });
     }
 
     const videoPath = path.join(
@@ -451,6 +494,7 @@ export async function registerRoutes(
     req.on("close", () => {
       connectionClosed = true;
       abortController.abort();
+      endProcessingJob(id); // Release processing slot
       routesLogger.info(`Client disconnected during video processing (project ${id}), aborting operations...`);
     });
 
@@ -751,6 +795,9 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         await updateStatus("awaiting_review");
         sendActivity("Analysis complete! Review your edit plan before rendering.");
         
+        // Release processing slot since analysis phase is complete
+        endProcessingJob(id);
+        
         // Send review data to frontend
         sendEvent("reviewReady", { 
           reviewData,
@@ -814,6 +861,9 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
         } : undefined,
       });
 
+      // Release processing slot on successful completion
+      endProcessingJob(id);
+      
       await cleanupTempFiles(tempFiles);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Processing failed";
@@ -846,6 +896,9 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       }
 
       await cleanupTempFiles(tempFiles);
+      
+      // Release processing slot on failure
+      endProcessingJob(id);
     } finally {
       clearInterval(heartbeatInterval);
       if (!connectionClosed) {
@@ -1366,6 +1419,148 @@ Please create an edit plan that follows these preferences. Do NOT include any tr
       res.status(500).json({
         error: error instanceof Error ? error.message : "Failed to get projects",
       });
+    }
+  });
+
+  // ============================================================================
+  // PROJECT HISTORY ROUTES
+  // ============================================================================
+
+  // Get active (non-expired) projects for history panel
+  app.get("/api/projects/history", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const projects = await storage.getActiveProjects();
+      const projectsWithTimeLeft = projects.map(p => ({
+        id: p.id,
+        fileName: p.fileName,
+        status: p.status,
+        duration: p.duration,
+        createdAt: p.createdAt,
+        expiresAt: p.expiresAt,
+        timeLeftMs: Math.max(0, new Date(p.expiresAt).getTime() - Date.now()),
+        hasOutput: !!p.outputPath,
+      }));
+      res.json(projectsWithTimeLeft);
+    } catch (error) {
+      routesLogger.error("Failed to get project history:", error);
+      res.status(500).json({ error: "Failed to get project history" });
+    }
+  });
+
+  // Delete a project
+  app.delete("/api/projects/:id", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      await storage.deleteVideoProject(id);
+      res.json({ success: true, message: "Project deleted" });
+    } catch (error) {
+      routesLogger.error("Failed to delete project:", error);
+      res.status(500).json({ error: "Failed to delete project" });
+    }
+  });
+
+  // Get processing status (for multi-processing limit)
+  app.get("/api/processing/status", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    res.json(getProcessingStatus());
+  });
+
+  // ============================================================================
+  // AUTOSAVE ROUTES
+  // ============================================================================
+
+  // Get autosaved review data for a project
+  app.get("/api/videos/:id/autosave", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      const autosave = await storage.getAutosave(id);
+      if (autosave) {
+        res.json({ hasAutosave: true, reviewData: autosave });
+      } else {
+        res.json({ hasAutosave: false });
+      }
+    } catch (error) {
+      routesLogger.error("Failed to get autosave:", error);
+      res.status(500).json({ error: "Failed to get autosave" });
+    }
+  });
+
+  // Save review data autosave
+  app.post("/api/videos/:id/autosave", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      const { reviewData } = req.body;
+      if (!reviewData) {
+        return res.status(400).json({ error: "reviewData is required" });
+      }
+      await storage.saveAutosave(id, reviewData);
+      res.json({ success: true });
+    } catch (error) {
+      routesLogger.error("Failed to save autosave:", error);
+      res.status(500).json({ error: "Failed to save autosave" });
+    }
+  });
+
+  // Delete autosave after approval
+  app.delete("/api/videos/:id/autosave", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      await storage.deleteAutosave(id);
+      res.json({ success: true });
+    } catch (error) {
+      routesLogger.error("Failed to delete autosave:", error);
+      res.status(500).json({ error: "Failed to delete autosave" });
+    }
+  });
+
+  // ============================================================================
+  // CACHE ROUTES (for internal use)
+  // ============================================================================
+
+  // Get cached asset
+  app.get("/api/cache/:type/:key", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const type = req.params.type as string;
+      const key = req.params.key as string;
+      const cached = await storage.getCachedAsset(type, key);
+      if (cached) {
+        res.json({ hit: true, data: cached });
+      } else {
+        res.json({ hit: false });
+      }
+    } catch (error) {
+      res.status(500).json({ error: "Cache lookup failed" });
+    }
+  });
+
+  // ============================================================================
+  // RETRY/RECOVERY ROUTES
+  // ============================================================================
+
+  // Retry failed processing from a specific stage
+  app.post("/api/videos/:id/retry", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      const { stage } = req.body; // 'transcription', 'analysis', 'planning', 'stock', 'ai_images'
+      
+      const project = await storage.getVideoProject(id);
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+      
+      // Reset project to pending state so it can be reprocessed
+      await storage.updateVideoProject(id, {
+        status: "pending",
+        errorMessage: null,
+      });
+      
+      res.json({ 
+        success: true, 
+        message: "Project reset for retry. Start processing again.",
+        projectId: id 
+      });
+    } catch (error) {
+      routesLogger.error("Failed to retry project:", error);
+      res.status(500).json({ error: "Failed to retry project" });
     }
   });
 

@@ -1151,8 +1151,61 @@ async function concatTwoWithTransition(
   const validTransitions = ["fade", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright", "circleopen", "circleclose"];
   const transition = validTransitions.includes(transitionType) ? transitionType : "fade";
   
-  const seg1Duration = await getFileDuration(segment1Path);
-  const offset = Math.max(0, seg1Duration - transitionDuration);
+  const [seg1Duration, seg2Duration] = await Promise.all([
+    getFileDuration(segment1Path),
+    getFileDuration(segment2Path)
+  ]);
+  
+  // Safety: Dynamically reduce transition duration if segments are too short
+  // Both segments need to be at least as long as the transition for xfade to work
+  const minDuration = Math.min(seg1Duration, seg2Duration);
+  let effectiveTransitionDuration = transitionDuration;
+  
+  // CRITICAL: If minimum segment is below safe threshold, skip xfade entirely
+  const MIN_SAFE_DURATION = 0.3; // Minimum segment duration for any transition
+  if (minDuration < MIN_SAFE_DURATION) {
+    videoLogger.warn(`[Crossfade] Segment too short (${minDuration.toFixed(2)}s < ${MIN_SAFE_DURATION}s) - falling back to simple concat (no transition)`);
+    // Simple concatenation fallback
+    const concatListPath = path.join(OUTPUT_DIR, `concat_fallback_${Date.now()}.txt`);
+    const concatContent = `file '${segment1Path}'\nfile '${segment2Path}'`;
+    await fs.writeFile(concatListPath, concatContent);
+    
+    try {
+      const cmd = ffmpeg()
+        .input(concatListPath)
+        .inputOptions(["-f", "concat", "-safe", "0"])
+        .outputOptions([
+          "-c:v", "libx264",
+          "-preset", "fast", 
+          "-crf", "23",
+          "-c:a", "aac",
+          "-b:a", "128k",
+          "-threads", "2",
+        ])
+        .output(outputPath);
+      
+      await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
+      return 0; // No transition applied - caller should treat as simple concat
+    } finally {
+      // Always clean up the temp concat list file
+      await fs.unlink(concatListPath).catch(() => {});
+    }
+  }
+  
+  if (minDuration < transitionDuration) {
+    // Reduce transition to fit within the shortest segment (with safety margin)
+    effectiveTransitionDuration = Math.max(0.1, minDuration * 0.5);
+    videoLogger.warn(`[Crossfade] Reducing transition from ${transitionDuration}s to ${effectiveTransitionDuration.toFixed(2)}s (shortest segment: ${minDuration.toFixed(2)}s)`);
+  }
+  
+  // Offset must respect BOTH segment durations:
+  // - seg1 must have enough content before transition starts
+  // - seg2 must have enough content to overlap with transition
+  // Use the minimum of both to ensure xfade works correctly
+  const maxSafeOffset = Math.min(seg1Duration, seg2Duration) - effectiveTransitionDuration;
+  const offset = Math.max(0, Math.min(seg1Duration - effectiveTransitionDuration, maxSafeOffset));
+  
+  videoLogger.debug(`[Crossfade] seg1=${seg1Duration.toFixed(2)}s, seg2=${seg2Duration.toFixed(2)}s, transition=${effectiveTransitionDuration.toFixed(2)}s, offset=${offset.toFixed(2)}s`);
   
   const [hasAudio1, hasAudio2] = await Promise.all([
     hasAudioStream(segment1Path),
@@ -1160,7 +1213,7 @@ async function concatTwoWithTransition(
   ]);
 
   const complexFilterArray: string[] = [
-    `[0:v][1:v]xfade=transition=${transition}:duration=${transitionDuration}:offset=${offset}[v]`
+    `[0:v][1:v]xfade=transition=${transition}:duration=${effectiveTransitionDuration}:offset=${offset}[v]`
   ];
   
   const outputOptions: string[] = [
@@ -1174,9 +1227,8 @@ async function concatTwoWithTransition(
   if (hasAudio1 && hasAudio2) {
     // Use acrossfade for smooth audio blending during video transition
     // This properly fades out audio 1 while fading in audio 2 at the transition point
-    const offsetMs = Math.floor(offset * 1000);
     complexFilterArray.push(
-      `[0:a][1:a]acrossfade=d=${transitionDuration}:c1=tri:c2=tri[a]`
+      `[0:a][1:a]acrossfade=d=${effectiveTransitionDuration}:c1=tri:c2=tri[a]`
     );
     outputOptions.push("-map", "[a]", "-c:a", "aac", "-b:a", "128k");
   } else if (hasAudio1) {
@@ -1200,7 +1252,7 @@ async function concatTwoWithTransition(
   
   await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [outputPath]);
   
-  return transitionDuration;
+  return effectiveTransitionDuration;
 }
 
 // Overlay info for B-roll on main video
@@ -1566,21 +1618,72 @@ async function applyEditsInternal(
     for (let i = 0; i < aiGeneratedItems.length; i++) {
       const item = aiGeneratedItems[i];
       try {
-        // AI-generated images are already saved locally, use path directly
-        const localPath = item.url; // URL is the local file path for AI images
-        videoLogger.debug(`Using AI-generated image ${i}: ${item.query}`);
+        videoLogger.debug(`Processing AI-generated image ${i}: ${item.query}`);
         
-        // Verify file exists
-        try {
-          await fs.access(localPath);
-          downloadedAiMedia.push({ 
-            item: { ...item, type: "image" as const }, // Treat as image for overlay
-            localPath 
-          });
-          videoLogger.debug(`AI image ready: ${localPath}`);
-        } catch {
-          videoLogger.error(`AI image file not found: ${localPath}`);
+        let localPath: string;
+        
+        // Check if URL is a base64 data URL and convert to local file
+        if (item.url.startsWith('data:')) {
+          // Extract base64 data and save to file
+          const matches = item.url.match(/^data:([^;]+);base64,(.+)$/);
+          if (!matches) {
+            videoLogger.error(`Invalid data URL format for AI image ${i}`);
+            continue;
+          }
+          
+          const mimeType = matches[1];
+          const base64Data = matches[2];
+          
+          // Guard against very large base64 strings that could spike memory
+          const MAX_BASE64_SIZE = 50 * 1024 * 1024; // 50MB limit
+          if (base64Data.length > MAX_BASE64_SIZE) {
+            videoLogger.error(`AI image ${i} base64 data too large (${Math.round(base64Data.length / 1024 / 1024)}MB > 50MB), skipping`);
+            continue;
+          }
+          
+          // Validate MIME type with strict equality (only allow supported formats)
+          const SUPPORTED_MIME_TYPES: Record<string, string> = {
+            'image/png': 'png',
+            'image/jpeg': 'jpg',
+            'image/jpg': 'jpg',
+            'image/webp': 'webp',
+            'image/gif': 'gif',
+          };
+          
+          // STRICT match - require exact MIME type match
+          const extension = SUPPORTED_MIME_TYPES[mimeType];
+          
+          if (!extension) {
+            videoLogger.error(`AI image ${i} has unsupported MIME type "${mimeType}", skipping (supported: ${Object.keys(SUPPORTED_MIME_TYPES).join(', ')})`);
+            continue;
+          }
+          
+          localPath = path.join(STOCK_DIR, `${outputId}_ai_${i}.${extension}`);
+          
+          // Decode base64 and write to file
+          const buffer = Buffer.from(base64Data, 'base64');
+          await fs.writeFile(localPath, buffer);
+          tempFiles.push(localPath);
+          videoLogger.debug(`Saved AI image from base64 to: ${localPath} (${Math.round(buffer.length / 1024)}KB, format: ${extension})`);
+        } else {
+          // Treat as local file path
+          localPath = item.url;
+          
+          // Verify file exists
+          try {
+            await fs.access(localPath);
+            videoLogger.debug(`AI image file exists: ${localPath}`);
+          } catch {
+            videoLogger.error(`AI image file not found: ${localPath}`);
+            continue;
+          }
         }
+        
+        downloadedAiMedia.push({ 
+          item: { ...item, type: "image" as const }, // Treat as image for overlay
+          localPath 
+        });
+        videoLogger.debug(`AI image ready: ${localPath}`);
       } catch (e) {
         videoLogger.error(`Failed to process AI image ${i}:`, e);
       }
@@ -1683,6 +1786,91 @@ async function applyEditsInternal(
   if (keepPercentage < 20) {
     videoLogger.warn(`SAFETY: Keep segments only cover ${keepPercentage.toFixed(1)}% of video - keeping entire video instead`);
     segmentsToKeep = [{ start: 0, end: metadata.duration }];
+  }
+
+  // CROSSFADE SAFETY: Filter out or merge segments that are too short for transitions
+  // Segments need to be at least 2x the transition duration to allow crossfades on both ends
+  const transitionDuration = 0.5;
+  const minSegmentDuration = transitionDuration * 2; // 1 second minimum
+  
+  if (options.addTransitions && segmentsToKeep.length > 1) {
+    const originalCount = segmentsToKeep.length;
+    
+    // Create a deep copy to avoid mutation issues
+    let workingSegments = segmentsToKeep.map(s => ({ start: s.start, end: s.end }));
+    
+    // Multi-pass merge: keep merging until all segments meet minimum duration
+    let changed = true;
+    let passCount = 0;
+    const maxPasses = 10;
+    
+    while (changed && passCount < maxPasses) {
+      changed = false;
+      passCount++;
+      const newSegments: { start: number; end: number }[] = [];
+      
+      for (let i = 0; i < workingSegments.length; i++) {
+        const seg = workingSegments[i];
+        const duration = seg.end - seg.start;
+        
+        if (duration >= minSegmentDuration) {
+          // Segment is long enough, check if it can absorb into last valid segment
+          if (newSegments.length > 0) {
+            const lastSeg = newSegments[newSegments.length - 1];
+            // Ensure no overlap: if current segment starts before last ends, merge
+            if (seg.start < lastSeg.end) {
+              lastSeg.end = Math.max(lastSeg.end, seg.end);
+              changed = true;
+              videoLogger.debug(`[Crossfade Safety] Pass ${passCount}: Fixed overlapping segment ${i}`);
+              continue;
+            }
+          }
+          newSegments.push({ start: seg.start, end: seg.end });
+        } else if (newSegments.length > 0) {
+          // Merge short segment into previous segment by extending its end
+          const prevSeg = newSegments[newSegments.length - 1];
+          prevSeg.end = Math.max(prevSeg.end, seg.end);
+          changed = true;
+          videoLogger.debug(`[Crossfade Safety] Pass ${passCount}: Merged short segment ${i} (${duration.toFixed(2)}s) into previous`);
+        } else {
+          // First segment is too short - accumulate start time for next segment
+          // Just add it and let the next pass merge it
+          newSegments.push({ start: seg.start, end: seg.end });
+          videoLogger.debug(`[Crossfade Safety] Pass ${passCount}: Keeping short first segment ${i} (${duration.toFixed(2)}s) for now`);
+        }
+      }
+      
+      workingSegments = newSegments;
+    }
+    
+    // Final validation: ensure all segments are valid
+    const validatedSegments = workingSegments.filter(seg => {
+      const duration = seg.end - seg.start;
+      if (duration < 0.1) {
+        videoLogger.warn(`[Crossfade Safety] Removing invalid segment (${duration.toFixed(2)}s)`);
+        return false;
+      }
+      return true;
+    });
+    
+    // Sort by start time and remove any remaining overlaps
+    validatedSegments.sort((a, b) => a.start - b.start);
+    
+    // STRICT CHECK: If any segment is still below minimum after merging, disable transitions for this render
+    const shortSegmentsRemaining = validatedSegments.filter(s => (s.end - s.start) < minSegmentDuration);
+    if (shortSegmentsRemaining.length > 0) {
+      videoLogger.warn(`[Crossfade Safety] ${shortSegmentsRemaining.length} segment(s) still below ${minSegmentDuration}s after merge - DISABLING transitions for this render`);
+      shortSegmentsRemaining.forEach((s, i) => 
+        videoLogger.debug(`  Short segment: ${s.start.toFixed(2)}s - ${s.end.toFixed(2)}s (${(s.end - s.start).toFixed(2)}s)`)
+      );
+      options.addTransitions = false;
+    }
+    
+    // ALWAYS update segmentsToKeep to the validated list
+    if (validatedSegments.length !== originalCount) {
+      videoLogger.info(`[Crossfade Safety] Adjusted segments: ${originalCount} -> ${validatedSegments.length} (min duration: ${minSegmentDuration}s, passes: ${passCount})`);
+    }
+    segmentsToKeep = validatedSegments;
   }
 
   // Create base video from kept segments

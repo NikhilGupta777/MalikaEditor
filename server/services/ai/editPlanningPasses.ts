@@ -231,15 +231,15 @@ export async function executePass1StructureAnalysis(
   transcript: TranscriptSegment[],
   semanticAnalysis: SemanticAnalysis
 ): Promise<StructuredPlan> {
-  const duration = analysis.duration;
+  const duration = analysis.duration || 0;
   const transcriptText = transcript.slice(0, 30).map(t => 
-    `[${t.start.toFixed(1)}s]: ${t.text}`
+    `[${(t.start || 0).toFixed(1)}s]: ${t.text}`
   ).join("\n");
 
   const prompt = `You are an expert video structure analyst. Analyze this video to identify its structural components.
 
 VIDEO ANALYSIS:
-- Duration: ${duration.toFixed(1)} seconds
+- Duration: ${(duration || 0).toFixed(1)} seconds
 - Genre: ${analysis.context?.genre || "general"}
 - Tone: ${analysis.context?.tone || "casual"}
 - Existing narrative structure: ${JSON.stringify(analysis.narrativeStructure || {})}

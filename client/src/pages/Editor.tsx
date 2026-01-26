@@ -210,7 +210,17 @@ export default function Editor() {
             setIsProcessing(false);
             eventSource.close();
           } else if (data.type === "error") {
-            setError({ message: data.error, suggestion: data.suggestion, errorType: data.errorType });
+            setProject((prev) =>
+              prev
+                ? { 
+                    ...prev, 
+                    status: "failed", 
+                    errorMessage: data.error,
+                    errorSuggestion: data.suggestion,
+                    errorType: data.errorType,
+                  }
+                : null
+            );
             setIsProcessing(false);
             eventSource.close();
           } else if (data.type === "editPlan") {

@@ -8,7 +8,7 @@ export const AI_CONFIG = {
     editPlanning: "gemini-2.5-flash",
     imageGeneration: "gemini-2.5-flash-image",
     mediaSelection: "gemini-2.5-flash",
-    reviewPass: "gemini-1.5-flash",
+    reviewPass: "gemini-2.5-flash",
   },
   
   // AI decides overlay counts based on content analysis - no arbitrary limits

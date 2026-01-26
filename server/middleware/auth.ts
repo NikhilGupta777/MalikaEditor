@@ -30,11 +30,16 @@ const SESSION_SECRET = getSessionSecret();
 
 // Use PostgreSQL session store in production for scalability
 const PgSession = connectPgSimple(session);
-const sessionStore = process.env.NODE_ENV === "production" 
+const isProduction = process.env.NODE_ENV === "production";
+
+const sessionStore = isProduction 
   ? new PgSession({
       pool,
       tableName: "session",
       createTableIfMissing: true,
+      errorLog: (err) => {
+        console.error("[session-store] PostgreSQL session store error:", err);
+      },
     })
   : undefined;
 
@@ -44,10 +49,12 @@ export const sessionMiddleware = session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === "production",
+    secure: isProduction,
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000,
-    sameSite: "lax",
+    // Use "none" in production for cross-site cookie support (Replit proxy/iframe)
+    // Must be "none" when secure is true for modern browsers
+    sameSite: isProduction ? "none" : "lax",
   },
 });
 

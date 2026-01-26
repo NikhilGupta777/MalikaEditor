@@ -5,14 +5,14 @@ let geminiClient: GoogleGenAI | null = null;
 
 export function getGeminiClient(): GoogleGenAI {
   if (!geminiClient) {
-    const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY || "_DUMMY_API_KEY_";
-    const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL || "http://localhost:1106/modelfarm/gemini";
-    
+    if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
+      throw new Error('Gemini API key is not configured. Please set up the Gemini integration.');
+    }
     geminiClient = new GoogleGenAI({
-      apiKey: apiKey,
+      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
       httpOptions: {
         apiVersion: "",
-        baseUrl: baseUrl,
+        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
       },
     });
   }
@@ -23,12 +23,12 @@ let openaiClient: OpenAI | null = null;
 
 export function getOpenAIClient(): OpenAI {
   if (!openaiClient) {
-    const apiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY || "_DUMMY_API_KEY_";
-    const baseUrl = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || "http://localhost:1106/modelfarm/openai";
-    
+    if (!process.env.AI_INTEGRATIONS_OPENAI_API_KEY) {
+      throw new Error('OpenAI API key is not configured. Please set up the OpenAI integration.');
+    }
     openaiClient = new OpenAI({
-      apiKey: apiKey,
-      baseURL: baseUrl,
+      apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
+      baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
     });
   }
   return openaiClient;

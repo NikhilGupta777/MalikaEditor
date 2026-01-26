@@ -18,15 +18,16 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
   
   if (hasOpenAIKey) {
-    aiLogger.info("Primary: OpenAI gpt-4o-mini-transcribe (via Replit AI Integrations)");
+    aiLogger.info("Primary: OpenAI gpt-4o-mini-transcribe (with synthesized word timing)");
   }
   
   if (hasGeminiKey) {
-    aiLogger.info(`Fallback: Gemini 2.5 Flash (via Replit AI Integrations)`);
+    aiLogger.info(`Fallback: Gemini 2.5 Flash (audio files < ${GEMINI_MAX_FILE_SIZE_MB}MB)`);
   }
   
   if (!hasOpenAIKey && !hasGeminiKey) {
-    aiLogger.warn("WARNING: Replit AI Integrations not detected. Using fallback values.");
+    aiLogger.error("WARNING: No transcription API keys configured");
+    aiLogger.error("Transcription will fail. Please set up OpenAI or Gemini integration.");
   } else {
     aiLogger.info("Status: Ready");
   }

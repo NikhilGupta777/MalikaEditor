@@ -137,6 +137,14 @@ A centralized normalization module (`server/services/ai/normalization.ts`) ensur
 - **"Uncheck All Cuts" toggle**: Quick toggle in Edit Plan tab to enable/disable all cuts at once
 - **Enhanced logging**: Backend logs exactly which cuts were approved/rejected for debugging
 
+### Background Processing Architecture
+- **Independent Server-Side Processing**: Videos continue processing even when users disconnect or refresh the page
+- **Background Processor** (`server/services/backgroundProcessor.ts`): Job queue with subscriber pattern for real-time SSE updates
+- **SSE Reconnection**: Frontend automatically reconnects to in-progress projects and receives update stream
+- **Slot Tracking**: Proper slot reservation and release via `slotReserved` flag and `onJobComplete` callback
+- **Reconnection Safety**: Completed/failed projects cannot be accidentally restarted; frontend checks status before subscribing
+- **Job Cleanup**: Jobs and subscribers cleaned up after 5 minutes to allow reconnection window
+
 ### Persistence & Multi-User Support
 - **PostgreSQL Storage**: Migrated from in-memory to persistent PostgreSQL database storage via DatabaseStorage class
 - **Project History Panel**: Users can view past projects with status badges, expiration time, and quick actions (view/delete)

@@ -366,13 +366,14 @@ async function runProcessingPipeline(
       const [stockVariants, aiImagesResult] = await Promise.all([
         // Stock media fetching - use all queries from AI analysis
         fetchStockMediaWithVariants(stockQueries, 3, 3),
-        // AI image generation (if enabled) - no limit, AI decides based on content
+        // AI image generation (if enabled) - use edit plan B-roll windows for consistency
         shouldGenerateAi
           ? generateAiImagesForVideo(
               analysis.semanticAnalysis!,
               undefined,
               undefined, // No limit - generate for all AI-selected windows
-              metadata.duration
+              metadata.duration,
+              brollWindows // Pass edit plan B-roll windows for consistency
             ).catch((aiError: Error) => {
               processorLogger.error("AI image generation failed:", aiError);
               addActivity(projectId, "AI image generation failed, continuing with stock media only");

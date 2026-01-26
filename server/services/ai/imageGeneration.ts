@@ -87,6 +87,7 @@ export async function generateAiImagesForVideo(
   videoContext?: VideoContext,
   _maxImages?: number, // Deprecated - AI decides based on content
   videoDuration?: number,
+  explicitBrollWindows?: Array<{ start: number; end: number; suggestedQuery: string; priority?: string; context?: string }>,
 ): Promise<GeneratedAiImage[]> {
   // No limits - AI decides how many images to generate based on content analysis
   aiLogger.info(
@@ -95,8 +96,15 @@ export async function generateAiImagesForVideo(
 
   const generatedImages: GeneratedAiImage[] = [];
 
-  // Use all valid B-roll windows from AI analysis - no slicing or limiting
-  const validCandidates = semanticAnalysis.brollWindows
+  // Use explicit B-roll windows from edit plan if provided, otherwise fall back to semantic analysis
+  const sourceWindows = explicitBrollWindows && explicitBrollWindows.length > 0 
+    ? explicitBrollWindows 
+    : semanticAnalysis.brollWindows;
+  
+  aiLogger.debug(`Using ${explicitBrollWindows?.length || 0} explicit windows, ${semanticAnalysis.brollWindows?.length || 0} semantic windows`);
+
+  // Use all valid B-roll windows - no slicing or limiting
+  const validCandidates = sourceWindows
     .filter((w) => {
       if (typeof w.start !== "number" || typeof w.end !== "number") {
         aiLogger.warn(

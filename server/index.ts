@@ -134,6 +134,11 @@ app.use(
 
 app.use(express.urlencoded({ extended: false, limit: "1gb" }));
 
+// Health check endpoint - responds immediately for deployment checks
+app.get("/health", (_req, res) => {
+  res.status(200).send("OK");
+});
+
 app.use(sessionMiddleware);
 
 export function log(message: string, source = "express") {

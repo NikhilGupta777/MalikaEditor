@@ -69,12 +69,41 @@ export async function generateAiImage(
       throw error;
     }
 
+    const base64Data = imagePart.inlineData.data;
     const mimeType = imagePart.inlineData.mimeType || "image/png";
-    aiLogger.debug(`AI image generated successfully: ${mimeType}`);
+    
+    // Validate base64 data
+    if (typeof base64Data !== "string" || base64Data.length === 0) {
+      throw new Error("AI image generation returned empty or invalid base64 data");
+    }
+    
+    // Validate mime type (only allow image types)
+    const allowedMimeTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+    if (!allowedMimeTypes.includes(mimeType.toLowerCase())) {
+      aiLogger.warn(`AI image has unexpected mime type: ${mimeType}, defaulting to image/png`);
+    }
+    
+    // Check base64 size (limit to ~10MB decoded, base64 is ~1.33x)
+    const MAX_BASE64_SIZE = 15 * 1024 * 1024; // 15MB base64 = ~10MB image
+    if (base64Data.length > MAX_BASE64_SIZE) {
+      aiLogger.warn(`AI image is very large (${(base64Data.length / 1024 / 1024).toFixed(2)}MB), may cause memory issues`);
+    }
+    
+    // Verify base64 is valid by attempting a decode test (first 100 chars)
+    try {
+      const testDecode = Buffer.from(base64Data.substring(0, 100), "base64");
+      if (testDecode.length === 0) {
+        throw new Error("Base64 decode test failed");
+      }
+    } catch (e) {
+      throw new Error("AI image generation returned invalid base64 data");
+    }
+    
+    aiLogger.debug(`AI image generated successfully: ${mimeType}, size: ${(base64Data.length / 1024).toFixed(1)}KB`);
 
     return {
-      base64Data: imagePart.inlineData.data,
-      mimeType,
+      base64Data,
+      mimeType: allowedMimeTypes.includes(mimeType.toLowerCase()) ? mimeType : "image/png",
     };
   } catch (error) {
     aiLogger.error("AI image generation error:", error);

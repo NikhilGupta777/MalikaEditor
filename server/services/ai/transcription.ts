@@ -19,7 +19,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
 
   if (hasOpenAIKey) {
-    aiLogger.info("Primary: Replit AI OpenAI gpt-4o-mini-transcribe (with word-level timestamps)");
+    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with word-level timestamps)`);
   }
 
   if (hasGeminiKey) {
@@ -211,37 +211,117 @@ interface OpenAISegment {
   words?: OpenAIWord[];
 }
 
+// Validate and sanitize word timestamps to ensure they are valid
+// Returns sanitized words with invalid entries filtered out
+function sanitizeWordTimestamps(words: OpenAIWord[], audioDuration?: number): OpenAIWord[] {
+  if (!words || words.length === 0) return [];
+  
+  const sanitized: OpenAIWord[] = [];
+  let lastEndTime = 0;
+  let invalidCount = 0;
+  
+  for (const word of words) {
+    // Skip empty/whitespace-only words
+    if (!word.word || word.word.trim().length === 0) {
+      invalidCount++;
+      continue;
+    }
+    
+    // Validate timestamps are finite numbers
+    if (!Number.isFinite(word.start) || !Number.isFinite(word.end)) {
+      aiLogger.warn(`Skipping word with invalid timestamps: "${word.word}" (start=${word.start}, end=${word.end})`);
+      invalidCount++;
+      continue;
+    }
+    
+    // Ensure non-negative
+    let start = Math.max(0, word.start);
+    let end = Math.max(0, word.end);
+    
+    // Ensure end >= start (minimum word duration of 50ms)
+    if (end <= start) {
+      end = start + 0.05;
+    }
+    
+    // Clamp to audio duration if provided
+    if (audioDuration && audioDuration > 0) {
+      start = Math.min(start, audioDuration);
+      end = Math.min(end, audioDuration);
+    }
+    
+    // Ensure monotonic (word starts after previous word ended, or at least at same time)
+    if (start < lastEndTime) {
+      // Word overlaps with previous - adjust start to previous end
+      start = lastEndTime;
+      if (end <= start) {
+        end = start + 0.05;
+      }
+    }
+    
+    sanitized.push({
+      word: word.word.trim(),
+      start,
+      end,
+    });
+    
+    lastEndTime = end;
+  }
+  
+  if (invalidCount > 0) {
+    aiLogger.warn(`Filtered ${invalidCount} invalid word timestamps from transcription`);
+  }
+  
+  return sanitized;
+}
+
+// Check if any segments have embedded word timings
+function segmentsHaveWords(segments: OpenAISegment[]): boolean {
+  if (!segments || segments.length === 0) return false;
+  // Check ALL segments, not just the first one
+  return segments.some(seg => seg.words && seg.words.length > 0);
+}
+
 // Create segments from OpenAI word-level timestamps for accurate caption timing
 function createSegmentsFromOpenAIWords(
   words: OpenAIWord[],
-  segments?: OpenAISegment[]
+  segments?: OpenAISegment[],
+  audioDuration?: number
 ): TranscriptSegment[] {
   if (!words || words.length === 0) return [];
   
+  // Sanitize word timestamps before processing
+  const sanitizedWords = sanitizeWordTimestamps(words, audioDuration);
+  if (sanitizedWords.length === 0) return [];
+  
   // If we have segments with words embedded, use segment boundaries
-  if (segments && segments.length > 0 && segments[0].words) {
-    return segments.map(seg => ({
-      start: seg.start,
-      end: seg.end,
-      text: seg.text.trim(),
-      words: (seg.words || []).map(w => ({
-        word: w.word,
-        start: w.start,
-        end: w.end,
-      })),
-    }));
+  // Check ALL segments for words, not just the first one
+  if (segments && segmentsHaveWords(segments)) {
+    // Sanitize embedded word timings in each segment
+    return segments.map(seg => {
+      const sanitizedSegWords = seg.words ? sanitizeWordTimestamps(seg.words, audioDuration) : [];
+      return {
+        start: Math.max(0, seg.start),
+        end: Math.max(seg.start + 0.1, seg.end),
+        text: seg.text.trim(),
+        words: sanitizedSegWords.map(w => ({
+          word: w.word,
+          start: w.start,
+          end: w.end,
+        })),
+      };
+    }).filter(seg => seg.text.length > 0);
   }
   
-  // Group words into sentence-like segments based on punctuation and timing gaps
+  // Group sanitized words into sentence-like segments based on punctuation and timing gaps
   const result: TranscriptSegment[] = [];
   let currentWords: OpenAIWord[] = [];
   let currentText: string[] = [];
   
   const GAP_THRESHOLD = 1.0; // 1 second gap triggers new segment
   
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const prevWord = i > 0 ? words[i - 1] : null;
+  for (let i = 0; i < sanitizedWords.length; i++) {
+    const word = sanitizedWords[i];
+    const prevWord = i > 0 ? sanitizedWords[i - 1] : null;
     
     // Check for sentence break conditions
     const hasLargeGap = prevWord ? (word.start - prevWord.end) > GAP_THRESHOLD : false;
@@ -410,7 +490,7 @@ async function transcribeWithOpenAI(
   audioDuration?: number,
   languageHint?: string
 ): Promise<TranscriptSegment[]> {
-  aiLogger.info("Using OpenAI gpt-4o-mini-transcribe for transcription...");
+  aiLogger.info(`Using OpenAI ${AI_CONFIG.models.transcription.primary} for transcription...`);
   if (languageHint) {
     aiLogger.info(`Language hint provided: ${languageHint}`);
   }
@@ -446,7 +526,7 @@ async function transcribeWithOpenAI(
       if (response.words && Array.isArray(response.words) && response.words.length > 0) {
         // Use actual word timestamps from OpenAI for accurate caption timing
         aiLogger.info(`Got ${response.words.length} word-level timestamps from OpenAI`);
-        const segments = createSegmentsFromOpenAIWords(response.words, response.segments);
+        const segments = createSegmentsFromOpenAIWords(response.words, response.segments, audioDuration);
         aiLogger.info(`Created ${segments.length} transcript segments with actual word timing`);
         return segments;
       }

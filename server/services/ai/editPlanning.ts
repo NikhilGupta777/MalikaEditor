@@ -239,6 +239,12 @@ export function validateAndFixBrollActions(actions: EditAction[], duration: numb
         continue;
       }
       
+      // Ensure timestamps are finite numbers
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        aiLogger.debug(`Skipping ${action.type} action with invalid timestamps: start=${start}, end=${end}`);
+        continue;
+      }
+      
       // Ensure non-negative
       start = Math.max(0, start);
       end = Math.max(0, end);
@@ -265,6 +271,113 @@ export function validateAndFixBrollActions(actions: EditAction[], duration: numb
         ...action,
         start,
         end,
+      });
+    } else if (action.type === "insert_ai_image") {
+      // Validate AI image actions
+      let start = action.start ?? 0;
+      let actionDuration = action.duration ?? 3;
+      
+      // Ensure timestamps are finite
+      if (!Number.isFinite(start)) start = 0;
+      if (!Number.isFinite(actionDuration)) actionDuration = 3;
+      
+      // Ensure non-negative
+      start = Math.max(0, start);
+      actionDuration = Math.max(0.5, Math.min(actionDuration, 10)); // 0.5-10 seconds
+      
+      // Ensure within video bounds
+      if (start >= validDuration) {
+        aiLogger.debug(`Skipping AI image action starting after video end (${start}s > ${validDuration}s)`);
+        continue;
+      }
+      
+      // Clamp duration to fit within video
+      if (start + actionDuration > validDuration) {
+        actionDuration = Math.max(0.5, validDuration - start);
+      }
+      
+      sanitizedActions.push({
+        ...action,
+        start,
+        duration: actionDuration,
+      });
+    } else if (action.type === "add_caption") {
+      // Validate caption actions
+      let start = action.start ?? 0;
+      let end = action.end ?? (start + 3);
+      
+      // Ensure timestamps are finite
+      if (!Number.isFinite(start)) start = 0;
+      if (!Number.isFinite(end)) end = start + 3;
+      
+      // Ensure non-negative and proper ordering
+      start = Math.max(0, start);
+      end = Math.max(start + 0.1, end);
+      
+      // Clamp to video duration
+      end = Math.min(end, validDuration);
+      if (start >= validDuration) {
+        aiLogger.debug(`Skipping caption action starting after video end`);
+        continue;
+      }
+      
+      sanitizedActions.push({
+        ...action,
+        start,
+        end,
+      });
+    } else if (action.type === "add_text_overlay") {
+      // Validate text overlay actions
+      let start = action.start ?? 0;
+      let actionDuration = action.duration ?? 3;
+      
+      // Ensure timestamps are finite
+      if (!Number.isFinite(start)) start = 0;
+      if (!Number.isFinite(actionDuration)) actionDuration = 3;
+      
+      // Ensure non-negative
+      start = Math.max(0, start);
+      actionDuration = Math.max(0.5, Math.min(actionDuration, 30)); // 0.5-30 seconds
+      
+      // Ensure within video bounds
+      if (start >= validDuration) {
+        aiLogger.debug(`Skipping text overlay action starting after video end`);
+        continue;
+      }
+      
+      // Clamp duration to fit within video
+      if (start + actionDuration > validDuration) {
+        actionDuration = Math.max(0.5, validDuration - start);
+      }
+      
+      sanitizedActions.push({
+        ...action,
+        start,
+        duration: actionDuration,
+      });
+    } else if (action.type === "transition") {
+      // Validate transition actions
+      let timestamp = action.timestamp ?? 0;
+      let actionDuration = action.duration ?? 0.5;
+      
+      // Ensure timestamps are finite
+      if (!Number.isFinite(timestamp)) timestamp = 0;
+      if (!Number.isFinite(actionDuration)) actionDuration = 0.5;
+      
+      // Ensure non-negative
+      timestamp = Math.max(0, timestamp);
+      actionDuration = Math.max(0.1, Math.min(actionDuration, 2)); // 0.1-2 seconds
+      
+      // Ensure within video bounds
+      if (timestamp >= validDuration) {
+        aiLogger.debug(`Skipping transition action at timestamp after video end`);
+        continue;
+      }
+      
+      sanitizedActions.push({
+        ...action,
+        timestamp,
+        duration: actionDuration,
       });
     } else {
       // Pass through other action types for B-roll processing below

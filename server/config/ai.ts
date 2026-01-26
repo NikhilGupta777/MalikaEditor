@@ -1,7 +1,9 @@
 export const AI_CONFIG = {
   models: {
     transcription: {
-      primary: "gpt-4o-mini-transcribe",
+      // whisper-1 supports verbose_json with word-level timestamps
+      // gpt-4o-mini-transcribe does NOT support verbose_json or word timestamps
+      primary: "whisper-1",
       fallback: "gemini-2.5-flash",
     },
     analysis: "gemini-2.5-flash",

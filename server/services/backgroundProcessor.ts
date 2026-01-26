@@ -246,7 +246,13 @@ async function runProcessingPipeline(
     
     const parallelExtractionTime = ((Date.now() - parallelExtractionStart) / 1000).toFixed(1);
     addActivity(projectId, `Parallel extraction complete in ${parallelExtractionTime}s: ${framePaths.length} frames extracted`);
-    tempFiles.push(path.dirname(framePaths[0]));
+    
+    // Guard against empty frame extraction
+    if (framePaths.length > 0) {
+      tempFiles.push(path.dirname(framePaths[0]));
+    } else {
+      videoLogger.warn(`No frames extracted from video - visual analysis may be limited`);
+    }
     tempFiles.push(audioPath);
     
     if (editOptions.removeSilence) {

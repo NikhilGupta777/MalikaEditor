@@ -36,7 +36,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 #### Core AI Capabilities
 - **Deep Video Understanding**: Utilizes Gemini API for multi-layer analysis including scene detection, emotion flow, speaker detection, visual importance scoring, and key moment detection.
 - **Smart Transcript Analysis**: Multi-provider audio transcription (OpenAI primary, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation in multiple languages.
-- **Multi-Pass Edit Planning**: A 4-pass intelligent edit system (Structure Pass, Quality Pass, B-Roll Optimization Pass, Quality Review Pass) generates comprehensive edit plans.
+- **Multi-Pass Edit Planning**: An optimized 2-pass intelligent edit system (consolidated Structure+Quality+B-roll Pass, then Quality Review Pass) reduces API calls while generating comprehensive edit plans. Falls back to sequential 4-pass if needed.
 - **Transcript-Based Editing**: Allows users to edit video by manipulating an interactive, color-coded transcript with real-time preview, including auto-removal of filler words and manual override for AI suggestions.
 - **Additional AI Features**: Includes Karaoke-style captions and AI image generation based on transcript content.
 - **AI Response Normalization**: Centralized module (`server/services/ai/normalization.ts`) ensures robustness against varied AI responses using Zod schema integration and graceful fallbacks.
@@ -72,7 +72,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
   - Content-aware fallback when AI selection needs backup
 
 #### Performance and Quality
-- **Performance Optimizations**: Single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), and proxy video generation.
+- **Performance Optimizations**: Single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), proxy video generation, parallelized background processing (frame+audio+silence detection, stock fetch+AI image generation), and controlled-concurrency AI image generation with graceful partial-success handling.
 - **Chapter Metadata**: Automatic chapter generation embedded in output video.
 - **Animation Improvements**: Increased FPS (30), improved transitions (0.5s sine easing), and 5 animation presets (zoom_in, zoom_out, pan_left, pan_right, fade_only).
 

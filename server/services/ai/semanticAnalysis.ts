@@ -289,29 +289,79 @@ function enforceEvenBrollDistribution(
     }
   }
   
+  // Helper to check if a window overlaps with existing windows in a segment
+  const MIN_GAP = 3; // Minimum seconds between B-roll windows
+  const findNonOverlappingSlot = (
+    segmentWindows: BrollWindow[],
+    segmentStart: number,
+    segmentEnd: number,
+    windowDuration: number
+  ): { start: number; end: number } | null => {
+    // Sort existing windows by start time
+    const sorted = [...segmentWindows].sort((a, b) => a.start - b.start);
+    
+    // Try to find a gap between existing windows or at segment boundaries
+    let searchStart = segmentStart + 2;
+    
+    for (const existing of sorted) {
+      const gapEnd = existing.start - MIN_GAP;
+      if (gapEnd - searchStart >= windowDuration) {
+        return { start: searchStart, end: searchStart + windowDuration };
+      }
+      searchStart = existing.end + MIN_GAP;
+    }
+    
+    // Try after last window
+    if (segmentEnd - 2 - searchStart >= windowDuration) {
+      return { start: searchStart, end: Math.min(searchStart + windowDuration, segmentEnd - 2) };
+    }
+    
+    return null; // No valid slot found
+  };
+  
   // Redistribute excess to sparse segments
   for (const segment of segments) {
     while (segment.windows.length < minPerSegment && excess.length > 0) {
       const windowToMove = excess.shift()!;
-      // Adjust timing to fit in this segment
-      const segmentMidpoint = (segment.start + segment.end) / 2;
       const windowDuration = windowToMove.end - windowToMove.start;
-      const newStart = Math.max(segment.start + 2, segmentMidpoint - windowDuration / 2);
-      const newEnd = Math.min(segment.end - 2, newStart + windowDuration);
       
-      segment.windows.push({
-        ...windowToMove,
-        start: newStart,
-        end: newEnd,
-      });
+      // Find a non-overlapping slot in this segment
+      const slot = findNonOverlappingSlot(
+        segment.windows,
+        segment.start,
+        segment.end,
+        windowDuration
+      );
+      
+      if (slot && slot.end > slot.start) {
+        segment.windows.push({
+          ...windowToMove,
+          start: slot.start,
+          end: slot.end,
+        });
+      }
+      // If no slot found, window is dropped (better than overlapping)
     }
   }
   
-  // Put any remaining excess back into segments with room
+  // Put any remaining excess back into segments with room (checking for overlaps)
   for (const window of excess) {
-    const segmentWithRoom = segments.find(s => s.windows.length < maxPerSegment);
-    if (segmentWithRoom) {
-      segmentWithRoom.windows.push(window);
+    const windowDuration = window.end - window.start;
+    
+    for (const segment of segments) {
+      if (segment.windows.length < maxPerSegment) {
+        const slot = findNonOverlappingSlot(
+          segment.windows,
+          segment.start,
+          segment.end,
+          windowDuration
+        );
+        
+        if (slot && slot.end > slot.start) {
+          segment.windows.push({ ...window, start: slot.start, end: slot.end });
+          break;
+        }
+      }
     }
   }
   
@@ -324,14 +374,16 @@ function enforceEvenBrollDistribution(
   
   aiLogger.info(`B-roll redistributed: [${segments[0].windows.length}, ${segments[1].windows.length}, ${segments[2].windows.length}] (was uneven)`);
   
-  // Ensure minimum spacing between adjacent windows
+  // Final validation: ensure minimum spacing between adjacent windows
   const finalWindows: BrollWindow[] = [];
-  let lastEnd = -5;
+  let lastEnd = -MIN_GAP;
   
   for (const window of redistributed) {
-    if (window.start >= lastEnd + 3) {
+    if (window.start >= lastEnd + MIN_GAP && window.end > window.start) {
       finalWindows.push(window);
       lastEnd = window.end;
+    } else {
+      aiLogger.debug(`Dropping overlapping B-roll window at ${window.start.toFixed(1)}s-${window.end.toFixed(1)}s`);
     }
   }
   

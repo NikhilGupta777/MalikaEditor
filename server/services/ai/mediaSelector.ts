@@ -1,6 +1,7 @@
 import { getGeminiClient } from "./clients";
 import { createLogger } from "../../utils/logger";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
+import { AI_CONFIG } from "../../config/ai";
 import type { StockMediaItem } from "@shared/schema";
 import type { StockMediaVariants } from "../pexelsService";
 import type { GeneratedAiImage } from "./imageGeneration";
@@ -251,7 +252,7 @@ RESPOND WITH JSON ONLY:
   const response = await withRetry(
     async () => {
       const result = await gemini.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.mediaSelection,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       });
       return result.text || "";

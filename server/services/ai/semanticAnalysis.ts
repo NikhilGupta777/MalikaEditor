@@ -1,6 +1,7 @@
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import { AI_CONFIG } from "../../config/ai";
 import {
   normalizePriority,
   normalizeOverallTone,
@@ -121,7 +122,7 @@ Important:
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.analysis,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
       "translateTranscript",
@@ -290,7 +291,7 @@ function enforceEvenBrollDistribution(
   }
   
   // Helper to check if a window overlaps with existing windows in a segment
-  const MIN_GAP = 3; // Minimum seconds between B-roll windows
+  const MIN_GAP = AI_CONFIG.timing.minBrollGapSeconds;
   const findNonOverlappingSlot = (
     segmentWindows: BrollWindow[],
     segmentStart: number,
@@ -552,7 +553,7 @@ Respond in JSON format only (no markdown):
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.analysis,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
       "analyzeTranscriptSemantics",

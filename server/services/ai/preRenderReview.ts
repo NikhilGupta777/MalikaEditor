@@ -1,5 +1,6 @@
 import { getGeminiClient } from "./clients";
 import { createLogger } from "../../utils/logger";
+import { AI_CONFIG } from "../../config/ai";
 import type { EditPlan, VideoAnalysis, TranscriptSegment, ReviewData } from "@shared/schema";
 
 const reviewLogger = createLogger("ai-pre-render-review");
@@ -92,7 +93,7 @@ Respond in JSON format:
   try {
     const client = getGeminiClient();
     const response = await client.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: AI_CONFIG.models.reviewPass,
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         temperature: 0.3,

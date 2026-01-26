@@ -2,13 +2,14 @@ import { toFile } from "openai";
 import { promises as fs } from "fs";
 import { createLogger } from "../../utils/logger";
 import { getOpenAIClient, getGeminiClient } from "./clients";
+import { AI_CONFIG } from "../../config/ai";
 import type { TranscriptSegment } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = AI_CONFIG.limits.maxRetries;
 const RETRY_DELAY_MS = 2000;
-const GEMINI_MAX_FILE_SIZE_MB = 7;
+const GEMINI_MAX_FILE_SIZE_MB = AI_CONFIG.limits.geminiMaxFileSizeMB;
 
 export function logTranscriptionConfig(): void {
   const hasOpenAIKey = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
@@ -278,7 +279,7 @@ async function transcribeWithOpenAI(
 
       const transcriptionParams: any = {
         file,
-        model: "gpt-4o-mini-transcribe",
+        model: AI_CONFIG.models.transcription.primary,
         response_format: "json",
       };
       
@@ -370,7 +371,7 @@ async function transcribeWithGemini(
       
       const gemini = getGeminiClient();
       const response = await gemini.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.transcription.fallback,
         contents: [
           {
             role: "user",

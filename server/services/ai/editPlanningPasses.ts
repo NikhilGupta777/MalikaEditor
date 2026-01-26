@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import { AI_CONFIG } from "../../config/ai";
 import {
   normalizePriority,
   normalizeValueLevel,
@@ -289,7 +290,7 @@ Respond in JSON format only (no markdown):
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
       "pass1StructureAnalysis",
@@ -420,7 +421,7 @@ Respond in JSON format only (no markdown):
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
       "pass2QualityAssessment",
@@ -564,7 +565,7 @@ Respond in JSON format only (no markdown):
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
       "pass3BrollOptimization",
@@ -744,7 +745,7 @@ Respond in JSON only (no markdown):
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
       }),
       "consolidatedAnalysis",
@@ -937,7 +938,7 @@ Respond in JSON format only (no markdown):
   try {
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash",
+        model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: reviewPrompt }] }],
       }),
       "pass4QualityReview",

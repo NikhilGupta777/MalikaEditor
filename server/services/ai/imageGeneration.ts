@@ -1,6 +1,7 @@
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import { AI_CONFIG } from "../../config/ai";
 import type { VideoContext, SemanticAnalysis } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
@@ -36,7 +37,7 @@ export async function generateAiImage(
     
     const response = await withRetry(
       () => getGeminiClient().models.generateContent({
-        model: "gemini-2.5-flash-image",
+        model: AI_CONFIG.models.imageGeneration,
         contents: [
           {
             role: "user",

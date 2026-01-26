@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
+import { AI_CONFIG } from "../../config/ai";
 import {
   executePass1StructureAnalysis,
   executePass2QualityAssessment,
@@ -380,7 +381,7 @@ Respond with a JSON object only (no markdown):
 
   const response = await withRetry(
     () => getGeminiClient().models.generateContent({
-      model: "gemini-2.5-flash",
+      model: AI_CONFIG.models.editPlanning,
       contents: [{ role: "user", parts: [{ text: systemPrompt + "\n\n" + userPrompt }] }],
     }),
     "generateEditPlan",

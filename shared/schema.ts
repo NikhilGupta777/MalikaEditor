@@ -232,16 +232,47 @@ export const videoProjects = pgTable("video_projects", {
   version: integer("version").notNull().default(1),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`).notNull(),
 }, (table) => ({
   statusIdx: index("video_projects_status_idx").on(table.status),
   createdAtIdx: index("video_projects_created_at_idx").on(table.createdAt),
+  expiresAtIdx: index("video_projects_expires_at_idx").on(table.expiresAt),
 }));
+
+export const cachedAssets = pgTable("cached_assets", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => videoProjects.id, { onDelete: "cascade" }),
+  cacheType: text("cache_type").notNull(),
+  cacheKey: text("cache_key").notNull(),
+  data: jsonb("data").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`).notNull(),
+}, (table) => ({
+  typeKeyIdx: index("cached_assets_type_key_idx").on(table.cacheType, table.cacheKey),
+  expiresAtIdx: index("cached_assets_expires_at_idx").on(table.expiresAt),
+}));
+
+export type CachedAsset = typeof cachedAssets.$inferSelect;
+export type InsertCachedAsset = typeof cachedAssets.$inferInsert;
+
+export const projectAutosaves = pgTable("project_autosaves", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => videoProjects.id, { onDelete: "cascade" }).notNull(),
+  reviewData: jsonb("review_data").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => ({
+  projectIdIdx: index("project_autosaves_project_id_idx").on(table.projectId),
+}));
+
+export type ProjectAutosave = typeof projectAutosaves.$inferSelect;
+export type InsertProjectAutosave = typeof projectAutosaves.$inferInsert;
 
 export const insertVideoProjectSchema = createInsertSchema(videoProjects).omit({
   id: true,
   version: true,
   createdAt: true,
   updatedAt: true,
+  expiresAt: true,
 });
 
 export type InsertVideoProject = z.infer<typeof insertVideoProjectSchema>;

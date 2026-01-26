@@ -13,10 +13,15 @@ import {
   transcriptSegmentSchema,
   stockMediaItemSchema,
   reviewDataSchema,
+  videoProjects,
+  cachedAssets,
+  projectAutosaves,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { createLogger } from "./utils/logger";
+import { db } from "./db";
+import { eq, desc, lt, and, gt, sql } from "drizzle-orm";
 
 const logger = createLogger("storage");
 
@@ -43,45 +48,85 @@ export interface IStorage {
   getVideoProject(id: number): Promise<VideoProject | undefined>;
   updateVideoProject(id: number, updates: Partial<VideoProject>, expectedVersion?: number): Promise<VideoProject | undefined>;
   getAllVideoProjects(): Promise<VideoProject[]>;
+  deleteVideoProject(id: number): Promise<void>;
+  getActiveProjects(): Promise<VideoProject[]>;
+  cleanupExpiredProjects(): Promise<number>;
+
+  getCachedAsset(cacheType: string, cacheKey: string): Promise<any | undefined>;
+  setCachedAsset(cacheType: string, cacheKey: string, data: any, projectId?: number): Promise<void>;
+  cleanupExpiredCache(): Promise<number>;
+
+  getAutosave(projectId: number): Promise<any | undefined>;
+  saveAutosave(projectId: number, reviewData: any): Promise<void>;
+  deleteAutosave(projectId: number): Promise<void>;
 }
 
-const MAX_PROJECTS = 100;
+function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<VideoProject> {
+  const normalized = { ...data };
+  
+  if (data.analysis !== undefined && data.analysis !== null) {
+    const result = videoAnalysisSchema.safeParse(data.analysis);
+    if (!result.success) {
+      logger.warn("Analysis data validation warning - storing raw data", {
+        error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+      });
+    } else {
+      normalized.analysis = result.data;
+    }
+  }
+  
+  if (data.editPlan !== undefined && data.editPlan !== null) {
+    const result = editPlanSchema.safeParse(data.editPlan);
+    if (!result.success) {
+      logger.warn("EditPlan data validation warning - storing raw data", {
+        error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+      });
+    } else {
+      normalized.editPlan = result.data;
+    }
+  }
+  
+  if (data.transcript !== undefined && data.transcript !== null) {
+    const result = z.array(transcriptSegmentSchema).safeParse(data.transcript);
+    if (!result.success) {
+      logger.warn("Transcript data validation warning - storing raw data", {
+        error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+      });
+    } else {
+      normalized.transcript = result.data;
+    }
+  }
+  
+  if (data.stockMedia !== undefined && data.stockMedia !== null) {
+    const result = z.array(stockMediaItemSchema).safeParse(data.stockMedia);
+    if (!result.success) {
+      logger.warn("StockMedia data validation warning - storing raw data", {
+        error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+      });
+    } else {
+      normalized.stockMedia = result.data;
+    }
+  }
+  
+  if (data.reviewData !== undefined && data.reviewData !== null) {
+    const result = reviewDataSchema.safeParse(data.reviewData);
+    if (!result.success) {
+      logger.warn("ReviewData validation warning - storing raw data", {
+        error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
+      });
+    } else {
+      normalized.reviewData = result.data;
+    }
+  }
+  
+  return normalized;
+}
 
-export class MemStorage implements IStorage {
+export class MemStorage {
   private users: Map<string, User>;
-  private videoProjects: Map<number, VideoProject>;
-  private projectLastAccessed: Map<number, number>;
-  private nextProjectId: number;
 
   constructor() {
     this.users = new Map();
-    this.videoProjects = new Map();
-    this.projectLastAccessed = new Map();
-    this.nextProjectId = 1;
-  }
-
-  private evictLeastRecentlyAccessed(): void {
-    if (this.videoProjects.size < MAX_PROJECTS) return;
-
-    let oldestId: number | null = null;
-    let oldestTime = Infinity;
-
-    for (const entry of Array.from(this.projectLastAccessed.entries())) {
-      const [id, lastAccessed] = entry;
-      if (lastAccessed < oldestTime) {
-        oldestTime = lastAccessed;
-        oldestId = id;
-      }
-    }
-
-    if (oldestId !== null) {
-      this.videoProjects.delete(oldestId);
-      this.projectLastAccessed.delete(oldestId);
-    }
-  }
-
-  private updateLastAccessed(id: number): void {
-    this.projectLastAccessed.set(id, Date.now());
   }
 
   async getUser(id: string): Promise<User | undefined> {
@@ -100,104 +145,44 @@ export class MemStorage implements IStorage {
     this.users.set(id, user);
     return user;
   }
+}
 
-  private validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<VideoProject> {
-    const normalized = { ...data };
-    
-    if (data.analysis !== undefined && data.analysis !== null) {
-      const result = videoAnalysisSchema.safeParse(data.analysis);
-      if (!result.success) {
-        logger.warn("Analysis data validation warning - storing raw data", {
-          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
-        });
-      } else {
-        normalized.analysis = result.data;
-      }
-    }
-    
-    if (data.editPlan !== undefined && data.editPlan !== null) {
-      const result = editPlanSchema.safeParse(data.editPlan);
-      if (!result.success) {
-        logger.warn("EditPlan data validation warning - storing raw data", {
-          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
-        });
-      } else {
-        normalized.editPlan = result.data;
-      }
-    }
-    
-    if (data.transcript !== undefined && data.transcript !== null) {
-      const result = z.array(transcriptSegmentSchema).safeParse(data.transcript);
-      if (!result.success) {
-        logger.warn("Transcript data validation warning - storing raw data", {
-          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
-        });
-      } else {
-        normalized.transcript = result.data;
-      }
-    }
-    
-    if (data.stockMedia !== undefined && data.stockMedia !== null) {
-      const result = z.array(stockMediaItemSchema).safeParse(data.stockMedia);
-      if (!result.success) {
-        logger.warn("StockMedia data validation warning - storing raw data", {
-          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
-        });
-      } else {
-        normalized.stockMedia = result.data;
-      }
-    }
-    
-    if (data.reviewData !== undefined && data.reviewData !== null) {
-      const result = reviewDataSchema.safeParse(data.reviewData);
-      if (!result.success) {
-        logger.warn("ReviewData validation warning - storing raw data", {
-          error: result.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')
-        });
-      } else {
-        normalized.reviewData = result.data;
-      }
-    }
-    
-    return normalized;
-  }
-
+export class DatabaseStorage {
   async createVideoProject(project: InsertVideoProject): Promise<VideoProject> {
-    this.evictLeastRecentlyAccessed();
-    
-    const normalizedProject = this.validateAndNormalizeJsonbFields(project as Partial<VideoProject>);
-    
-    const id = this.nextProjectId++;
-    const now = new Date();
-    const videoProject: VideoProject = {
-      id,
-      fileName: project.fileName,
-      originalPath: project.originalPath,
-      outputPath: project.outputPath || null,
-      prompt: project.prompt || null,
-      status: project.status || "pending",
-      duration: project.duration || null,
-      analysis: (normalizedProject.analysis as any) || null,
-      editPlan: (normalizedProject.editPlan as any) || null,
-      transcript: (normalizedProject.transcript as any) || null,
-      stockMedia: (normalizedProject.stockMedia as any) || null,
-      reviewData: (normalizedProject.reviewData as any) || null,
-      errorMessage: project.errorMessage || null,
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.videoProjects.set(id, videoProject);
-    this.updateLastAccessed(id);
-    return videoProject;
+    try {
+      const normalizedProject = validateAndNormalizeJsonbFields(project as Partial<VideoProject>);
+      
+      const [result] = await db.insert(videoProjects).values({
+        fileName: project.fileName,
+        originalPath: project.originalPath,
+        outputPath: project.outputPath || null,
+        prompt: project.prompt || null,
+        status: project.status || "pending",
+        duration: project.duration || null,
+        analysis: normalizedProject.analysis || null,
+        editPlan: normalizedProject.editPlan || null,
+        transcript: normalizedProject.transcript || null,
+        stockMedia: normalizedProject.stockMedia || null,
+        reviewData: normalizedProject.reviewData || null,
+        errorMessage: project.errorMessage || null,
+      }).returning();
+      
+      logger.info("Created video project", { id: result.id, fileName: result.fileName });
+      return result;
+    } catch (error) {
+      logger.error("Failed to create video project", { error, fileName: project.fileName });
+      throw error;
+    }
   }
 
   async getVideoProject(id: number): Promise<VideoProject | undefined> {
-    const project = this.videoProjects.get(id);
-    if (project) {
-      this.updateLastAccessed(id);
+    try {
+      const [result] = await db.select().from(videoProjects).where(eq(videoProjects.id, id));
+      return result;
+    } catch (error) {
+      logger.error("Failed to get video project", { error, id });
+      throw error;
     }
-    return project;
   }
 
   async updateVideoProject(
@@ -205,34 +190,215 @@ export class MemStorage implements IStorage {
     updates: Partial<VideoProject>,
     expectedVersion?: number
   ): Promise<VideoProject | undefined> {
-    const project = this.videoProjects.get(id);
-    if (!project) return undefined;
+    try {
+      const existing = await this.getVideoProject(id);
+      if (!existing) return undefined;
 
-    if (expectedVersion !== undefined && project.version !== expectedVersion) {
-      throw new OptimisticLockError(
-        `Version mismatch for project ${id}: expected ${expectedVersion}, found ${project.version}`
-      );
+      if (expectedVersion !== undefined && existing.version !== expectedVersion) {
+        throw new OptimisticLockError(
+          `Version mismatch for project ${id}: expected ${expectedVersion}, found ${existing.version}`
+        );
+      }
+
+      const normalizedUpdates = validateAndNormalizeJsonbFields(updates);
+      
+      const updateData: any = {
+        ...updates,
+        ...normalizedUpdates,
+        version: existing.version + 1,
+        updatedAt: sql`CURRENT_TIMESTAMP`,
+      };
+      
+      delete updateData.id;
+      delete updateData.createdAt;
+
+      const [result] = await db.update(videoProjects)
+        .set(updateData)
+        .where(eq(videoProjects.id, id))
+        .returning();
+
+      logger.info("Updated video project", { id, version: result.version });
+      return result;
+    } catch (error) {
+      if (error instanceof OptimisticLockError) throw error;
+      logger.error("Failed to update video project", { error, id });
+      throw error;
     }
-
-    const normalizedUpdates = this.validateAndNormalizeJsonbFields(updates);
-
-    const updatedProject: VideoProject = {
-      ...project,
-      ...updates,
-      ...normalizedUpdates,
-      version: project.version + 1,
-      updatedAt: new Date(),
-    };
-    this.videoProjects.set(id, updatedProject);
-    this.updateLastAccessed(id);
-    return updatedProject;
   }
 
   async getAllVideoProjects(): Promise<VideoProject[]> {
-    return Array.from(this.videoProjects.values()).sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    );
+    try {
+      const results = await db.select()
+        .from(videoProjects)
+        .orderBy(desc(videoProjects.createdAt));
+      return results;
+    } catch (error) {
+      logger.error("Failed to get all video projects", { error });
+      throw error;
+    }
+  }
+
+  async deleteVideoProject(id: number): Promise<void> {
+    try {
+      await db.delete(videoProjects).where(eq(videoProjects.id, id));
+      logger.info("Deleted video project", { id });
+    } catch (error) {
+      logger.error("Failed to delete video project", { error, id });
+      throw error;
+    }
+  }
+
+  async getActiveProjects(): Promise<VideoProject[]> {
+    try {
+      const results = await db.select()
+        .from(videoProjects)
+        .where(gt(videoProjects.expiresAt, sql`CURRENT_TIMESTAMP`))
+        .orderBy(desc(videoProjects.createdAt));
+      return results;
+    } catch (error) {
+      logger.error("Failed to get active projects", { error });
+      throw error;
+    }
+  }
+
+  async cleanupExpiredProjects(): Promise<number> {
+    try {
+      const result = await db.delete(videoProjects)
+        .where(lt(videoProjects.expiresAt, sql`CURRENT_TIMESTAMP`))
+        .returning({ id: videoProjects.id });
+      
+      const count = result.length;
+      if (count > 0) {
+        logger.info("Cleaned up expired projects", { count });
+      }
+      return count;
+    } catch (error) {
+      logger.error("Failed to cleanup expired projects", { error });
+      throw error;
+    }
+  }
+
+  async getCachedAsset(cacheType: string, cacheKey: string): Promise<any | undefined> {
+    try {
+      const [result] = await db.select()
+        .from(cachedAssets)
+        .where(
+          and(
+            eq(cachedAssets.cacheType, cacheType),
+            eq(cachedAssets.cacheKey, cacheKey),
+            gt(cachedAssets.expiresAt, sql`CURRENT_TIMESTAMP`)
+          )
+        );
+      return result?.data;
+    } catch (error) {
+      logger.error("Failed to get cached asset", { error, cacheType, cacheKey });
+      throw error;
+    }
+  }
+
+  async setCachedAsset(cacheType: string, cacheKey: string, data: any, projectId?: number): Promise<void> {
+    try {
+      await db.delete(cachedAssets).where(
+        and(
+          eq(cachedAssets.cacheType, cacheType),
+          eq(cachedAssets.cacheKey, cacheKey)
+        )
+      );
+
+      await db.insert(cachedAssets).values({
+        cacheType,
+        cacheKey,
+        data,
+        projectId: projectId || null,
+        expiresAt: sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`,
+      });
+
+      logger.debug("Set cached asset", { cacheType, cacheKey });
+    } catch (error) {
+      logger.error("Failed to set cached asset", { error, cacheType, cacheKey });
+      throw error;
+    }
+  }
+
+  async cleanupExpiredCache(): Promise<number> {
+    try {
+      const result = await db.delete(cachedAssets)
+        .where(lt(cachedAssets.expiresAt, sql`CURRENT_TIMESTAMP`))
+        .returning({ id: cachedAssets.id });
+      
+      const count = result.length;
+      if (count > 0) {
+        logger.info("Cleaned up expired cache entries", { count });
+      }
+      return count;
+    } catch (error) {
+      logger.error("Failed to cleanup expired cache", { error });
+      throw error;
+    }
+  }
+
+  async getAutosave(projectId: number): Promise<any | undefined> {
+    try {
+      const [result] = await db.select()
+        .from(projectAutosaves)
+        .where(eq(projectAutosaves.projectId, projectId))
+        .orderBy(desc(projectAutosaves.createdAt))
+        .limit(1);
+      return result?.reviewData;
+    } catch (error) {
+      logger.error("Failed to get autosave", { error, projectId });
+      throw error;
+    }
+  }
+
+  async saveAutosave(projectId: number, reviewData: any): Promise<void> {
+    try {
+      await db.delete(projectAutosaves).where(eq(projectAutosaves.projectId, projectId));
+
+      await db.insert(projectAutosaves).values({
+        projectId,
+        reviewData,
+      });
+
+      logger.debug("Saved autosave", { projectId });
+    } catch (error) {
+      logger.error("Failed to save autosave", { error, projectId });
+      throw error;
+    }
+  }
+
+  async deleteAutosave(projectId: number): Promise<void> {
+    try {
+      await db.delete(projectAutosaves).where(eq(projectAutosaves.projectId, projectId));
+      logger.debug("Deleted autosave", { projectId });
+    } catch (error) {
+      logger.error("Failed to delete autosave", { error, projectId });
+      throw error;
+    }
   }
 }
 
-export const storage = new MemStorage();
+const memStorage = new MemStorage();
+const dbStorage = new DatabaseStorage();
+
+export const storage: IStorage = {
+  getUser: memStorage.getUser.bind(memStorage),
+  getUserByUsername: memStorage.getUserByUsername.bind(memStorage),
+  createUser: memStorage.createUser.bind(memStorage),
+
+  createVideoProject: dbStorage.createVideoProject.bind(dbStorage),
+  getVideoProject: dbStorage.getVideoProject.bind(dbStorage),
+  updateVideoProject: dbStorage.updateVideoProject.bind(dbStorage),
+  getAllVideoProjects: dbStorage.getAllVideoProjects.bind(dbStorage),
+  deleteVideoProject: dbStorage.deleteVideoProject.bind(dbStorage),
+  getActiveProjects: dbStorage.getActiveProjects.bind(dbStorage),
+  cleanupExpiredProjects: dbStorage.cleanupExpiredProjects.bind(dbStorage),
+
+  getCachedAsset: dbStorage.getCachedAsset.bind(dbStorage),
+  setCachedAsset: dbStorage.setCachedAsset.bind(dbStorage),
+  cleanupExpiredCache: dbStorage.cleanupExpiredCache.bind(dbStorage),
+
+  getAutosave: dbStorage.getAutosave.bind(dbStorage),
+  saveAutosave: dbStorage.saveAutosave.bind(dbStorage),
+  deleteAutosave: dbStorage.deleteAutosave.bind(dbStorage),
+};

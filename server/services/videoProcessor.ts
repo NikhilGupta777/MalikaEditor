@@ -1198,12 +1198,10 @@ async function concatTwoWithTransition(
     videoLogger.warn(`[Crossfade] Reducing transition from ${transitionDuration}s to ${effectiveTransitionDuration.toFixed(2)}s (shortest segment: ${minDuration.toFixed(2)}s)`);
   }
   
-  // Offset must respect BOTH segment durations:
-  // - seg1 must have enough content before transition starts
-  // - seg2 must have enough content to overlap with transition
-  // Use the minimum of both to ensure xfade works correctly
-  const maxSafeOffset = Math.min(seg1Duration, seg2Duration) - effectiveTransitionDuration;
-  const offset = Math.max(0, Math.min(seg1Duration - effectiveTransitionDuration, maxSafeOffset));
+  // Offset is where the transition STARTS in the first video
+  // It should be near the END of seg1, not limited by seg2's duration
+  // The xfade filter overlays seg2 on top of seg1 starting at offset
+  const offset = Math.max(0, seg1Duration - effectiveTransitionDuration);
   
   videoLogger.debug(`[Crossfade] seg1=${seg1Duration.toFixed(2)}s, seg2=${seg2Duration.toFixed(2)}s, transition=${effectiveTransitionDuration.toFixed(2)}s, offset=${offset.toFixed(2)}s`);
   

@@ -19,7 +19,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
 
   if (hasOpenAIKey) {
-    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with synthesized word timing)`);
+    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with word-level timestamps)`);
   }
 
   if (hasGeminiKey) {
@@ -503,9 +503,10 @@ async function transcribeWithOpenAI(
       const transcriptionParams: any = {
         file,
         model: AI_CONFIG.models.transcription.primary,
-        // Replit AI Integration only supports 'json' format for gpt-4o-mini-transcribe
-        // Word timing will be synthesized from text and audio duration
-        response_format: "json",
+        // Use verbose_json with timestamp_granularities for accurate word-level timing
+        // This is critical for caption sync - only whisper-1 supports this
+        response_format: "verbose_json",
+        timestamp_granularities: ["word", "segment"],
       };
       
       if (languageHint) {

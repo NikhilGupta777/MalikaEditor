@@ -504,6 +504,12 @@ async function runProcessingPipeline(
       const { stockItems, aiImages: selectedAiImages } = convertSelectionsToStockMediaItems(selectionResult.selections);
       
       processorLogger.info(`Media conversion result: ${stockItems.length} stock items, ${selectedAiImages.length} AI images`);
+      
+      // Guardrail: Check if AI images were generated but not selected
+      if (generatedAiImages.length > 0 && selectedAiImages.length === 0) {
+        processorLogger.warn(`GUARDRAIL WARNING: ${generatedAiImages.length} AI images were generated but 0 were selected by media selector. Check selection logic.`);
+      }
+      
       if (stockItems.length > 0) {
         processorLogger.debug(`Stock items selected: ${stockItems.map(s => `${s.type}:${s.query?.slice(0,30)}`).join(', ')}`);
       }

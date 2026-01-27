@@ -1,0 +1,135 @@
+1️⃣ Fix AI Images Being Generated but Never Used
+
+(Highest priority – confirmed twice in logs)
+
+Proof from logs
+
+AI images generated successfully:
+
+Generated 6 AI images for video
+
+
+But:
+
+Media selection complete: 0 AI, 6 stock videos
+AI Image Summary: 0/0 applied
+
+
+Main task
+
+Make AI images eligible and selectable in media selection
+
+Prevent silent dropping when AI images exist
+
+2️⃣ Fix Media Selector Bias Toward Stock Videos
+
+Proof from logs
+
+Built 66 total media candidates (6 AI, 30 videos, 30 photos)
+Selected 6 clips - stock:video
+
+
+Main task
+
+Remove hard preference for stock videos
+
+Allow AI images to compete equally
+
+3️⃣ Fix Caption Actions Not Being Counted at Render Time
+
+Proof from logs
+
+Captions approved:
+
+Saved edit feedback { actionType: 'add_caption', wasApproved: 1 }
+
+
+But:
+
+Caption actions: 0
+
+
+Main task
+
+Ensure approved caption actions survive into render stage
+
+4️⃣ Fix AI Image → Render Pipeline Disconnect
+
+Proof from logs
+
+Total media ready: Stock=6, AI=0
+
+
+Main task
+
+Ensure AI images flow:
+
+generation → selection → conversion → rendering
+
+
+No drop between stages
+
+5️⃣ Add Guardrail: Detect When AI Output Is Ignored
+
+Proof from logs
+
+AI thinks it helped
+
+Renderer shows aiImagesApplied=0
+
+Main task
+
+Add validation/warning when:
+
+AI images generated > 0
+
+AI images applied = 0
+
+6️⃣ Fix Timing Ownership (AI vs Renderer)
+
+Proof from logs
+
+AI decides windows
+
+Renderer uses fixed placements:
+
+output=0s, 8s, 23s, 35s...
+
+
+Main task
+
+Ensure renderer respects AI timing decisions
+
+Avoid rigid fallback spacing
+
+🧠 FINAL SHORT LIST (EXECUTION ORDER)
+
+AI images not used → fix selection
+
+Stock bias → fix scoring
+
+Caption actions lost → fix render filtering
+
+Broken AI → render handoff
+
+Add “AI ignored” detection
+
+Respect AI timing
+
+That’s it.
+These are the only critical fixes proven by the logs.
+
+If you want, next I can:
+
+Turn this into a checklist for dev execution
+
+Or write one clean “fix phase 1” prompt
+
+Or map each task → exact files to edit
+
+Just tell me.
+
+
+
+
+ChatGPT can make mistakes. Check important info. See Cookie Preferences.

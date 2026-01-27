@@ -118,8 +118,16 @@ export async function selectBestMediaForWindows(
   }
 
   const totalSelected = selections.reduce((sum, s) => sum + s.selectedMedia.length, 0);
+  const totalAiAvailable = aiImages.length;
   
   selectorLogger.info(`Media selection complete: ${totalSelected} clips selected (${aiImagesUsed} AI, ${stockVideosUsed} stock videos, ${stockImagesUsed} stock images)`);
+  
+  // Guardrail: Warn when AI images were generated but not used
+  if (totalAiAvailable > 0 && aiImagesUsed === 0) {
+    selectorLogger.warn(`WARNING: ${totalAiAvailable} AI images were generated but NONE were selected. This may indicate a selection bias issue.`);
+  } else if (totalAiAvailable > 0 && aiImagesUsed < Math.ceil(totalAiAvailable * 0.3)) {
+    selectorLogger.warn(`Low AI image usage: ${aiImagesUsed}/${totalAiAvailable} AI images used (${((aiImagesUsed/totalAiAvailable)*100).toFixed(0)}%). Consider rebalancing selection.`);
+  }
 
   return {
     selections,
@@ -211,6 +219,9 @@ async function selectMediaForAllWindowsWithAI(
     return `  ${idx}: ${w.start.toFixed(1)}s-${w.end.toFixed(1)}s (${duration}s) - "${w.suggestedQuery}" [${w.priority} priority]${w.context ? ` Context: ${w.context}` : ''}`;
   }).join("\n");
 
+  const aiImageCount = availableCandidates.filter(c => c.source === 'ai').length;
+  const minAiToUse = aiImageCount > 0 ? Math.max(1, Math.ceil(aiImageCount * 0.5)) : 0;
+  
   const prompt = `You are a professional video editor selecting B-roll media for a video.
 
 VIDEO CONTEXT:
@@ -228,16 +239,16 @@ ${candidateDescriptions}
 SELECTION TASK:
 For each window, pick the BEST media based on:
 1. CONTENT MATCH - does the media represent what's being discussed?
-2. DURATION FIT - videos for longer windows (>3s), images for shorter
-3. VISUAL VARIETY - use DIFFERENT media for each window, never repeat the same number
+2. VISUAL QUALITY - AI images are custom-made for this exact video and often have the best content match
+3. VISUAL VARIETY - use DIFFERENT media for each window, mix AI images with stock footage
 4. VIEWER EXPERIENCE - what looks best and enhances understanding?
 
-MEDIA TYPES EXPLAINED:
-- AI-IMAGE: Custom-generated to match this video's exact content - excellent for specific concepts
-- VIDEO: Stock footage with motion - great for dynamic content and longer segments
-- PHOTO: Stock images - good for static concepts and quick visual references
+MEDIA TYPES EXPLAINED (in order of preference for content match):
+- AI-IMAGE: **PREFERRED** - Custom-generated specifically for this video's exact content. Use these for concepts that are hard to find in stock. ${aiImageCount > 0 ? `YOU MUST USE AT LEAST ${minAiToUse} AI-IMAGE(s) from the available ${aiImageCount}.` : ''}
+- VIDEO: Stock footage with motion - good for generic scenes and action shots
+- PHOTO: Stock images - acceptable fallback when AI images or videos don't fit
 
-Choose based on MEANING and QUALITY, not just type. Each window should have different media.
+IMPORTANT: AI images were generated specifically for this video. They are NOT generic stock - they match the exact content being discussed. Prioritize using them.
 
 For windows >6 seconds, you may select 2-3 numbers that will be staggered.
 
@@ -489,12 +500,12 @@ function fallbackSelectForWindow(
     if (window.priority === "high") score += 3;
     else if (window.priority === "medium") score += 1;
     
-    // Source and type preferences
-    if (c.source === "ai") score += 5; // Prefer AI images as they're custom
+    // Source preferences - AI images are custom-made for this video
+    if (c.source === "ai") score += 15; // Strongly prefer AI images as they're custom-made for this exact content
     
-    // Duration-appropriate media selection
-    if (windowDuration > 4 && c.type === "video") score += 4;
-    if (windowDuration <= 3 && c.type !== "video") score += 3;
+    // Duration-appropriate media selection (but not as strong as AI preference)
+    if (windowDuration > 4 && c.type === "video") score += 3;
+    if (windowDuration <= 3 && c.type !== "video") score += 2;
     if (c.type === "video" && c.duration && c.duration >= windowDuration * 0.8) score += 2;
     
     return { candidate: c, score };

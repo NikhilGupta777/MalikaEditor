@@ -288,19 +288,42 @@ RESPOND WITH JSON ONLY:
     try {
       parsed = JSON.parse(jsonText);
     } catch (firstParseError) {
-      // Strategy 2: Try to extract just the windowSelections array
-      selectorLogger.debug("First JSON parse failed, trying array extraction");
+      selectorLogger.debug("First JSON parse failed, trying recovery strategies");
+      
       const arrayMatch = response.match(/"windowSelections"\s*:\s*\[([\s\S]*?)\]/);
       if (arrayMatch) {
         try {
           const arrayContent = `[${arrayMatch[1].replace(/,\s*$/, '')}]`;
           const selections = JSON.parse(arrayContent);
           parsed = { windowSelections: selections };
-        } catch (arrayParseError) {
-          throw firstParseError; // Use original error
+          selectorLogger.debug("Recovered JSON using array extraction strategy");
+        } catch {
+          selectorLogger.debug("Array extraction failed, trying object-by-object recovery");
         }
-      } else {
-        throw firstParseError;
+      }
+      
+      if (!parsed) {
+        const objectPattern = /\{\s*"windowIndex"\s*:\s*(\d+)\s*,\s*"selectedNumbers"\s*:\s*\[([^\]]*)\]\s*(?:,\s*"reasoning"\s*:\s*"[^"]*")?\s*\}/g;
+        const recoveredSelections: { windowIndex: number; selectedNumbers: number[]; reasoning: string }[] = [];
+        let match: RegExpExecArray | null;
+        while ((match = objectPattern.exec(response)) !== null) {
+          try {
+            const windowIndex = parseInt(match[1], 10);
+            const numbers = match[2].split(',').map((n: string) => parseInt(n.trim(), 10)).filter((n: number) => !isNaN(n));
+            if (!isNaN(windowIndex) && numbers.length > 0) {
+              recoveredSelections.push({ windowIndex, selectedNumbers: numbers, reasoning: "Recovered from malformed JSON" });
+            }
+          } catch { continue; }
+        }
+        if (recoveredSelections.length > 0) {
+          parsed = { windowSelections: recoveredSelections };
+          selectorLogger.debug(`Recovered ${recoveredSelections.length} selections from malformed JSON`);
+        }
+      }
+      
+      if (!parsed) {
+        const errorMsg = firstParseError instanceof Error ? firstParseError.message : String(firstParseError);
+        throw new Error(`JSON parsing failed after all recovery attempts: ${errorMsg}`);
       }
     }
     
@@ -501,7 +524,15 @@ function fallbackSelectForWindow(
   }
 
   const bestScore = scoredCandidates[0]?.score || 0;
-  const confidence = bestScore > 20 ? "high" : bestScore > 10 ? "medium" : "low";
+  const highThreshold = AI_CONFIG.confidence?.highConfidenceScore ?? 20;
+  const minThreshold = AI_CONFIG.confidence?.minMediaSelectionScore ?? 10;
+  const confidence = bestScore > highThreshold ? "high" : bestScore > minThreshold ? "medium" : "low";
+  
+  // Filter out low-confidence selections if below minimum threshold
+  if (bestScore < minThreshold && selectedMedia.length > 0) {
+    selectorLogger.debug(`Skipping low-confidence selection (score ${bestScore} < threshold ${minThreshold})`);
+    selectedMedia.length = 0; // Clear selections below threshold
+  }
 
   return {
     windowIndex: 0,
@@ -577,8 +608,9 @@ export function convertSelectionsToStockMediaItems(
         };
         aiImages.push(staggeredAiImage);
       } else {
+        const stockType = media.type === "video" ? "video" : "image";
         stockItems.push({
-          type: media.type as "image" | "video",
+          type: stockType,
           query: media.query,
           url: media.url,
           thumbnailUrl: media.thumbnailUrl,

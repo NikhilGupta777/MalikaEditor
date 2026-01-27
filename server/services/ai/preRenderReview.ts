@@ -294,6 +294,48 @@ export interface FeedbackSummary {
 }
 
 let feedbackCache: EditFeedback[] = [];
+let dbFeedbackLoaded = false;
+
+async function loadFeedbackFromDb(): Promise<void> {
+  if (dbFeedbackLoaded) return;
+  try {
+    const { storage } = await import("../../storage");
+    const summary = await storage.getFeedbackSummary();
+    reviewLogger.debug(`Loaded feedback summary from database: ${summary.totalFeedback} total records`);
+    dbFeedbackLoaded = true;
+  } catch (error) {
+    reviewLogger.warn("Could not load feedback from database, using in-memory cache only");
+  }
+}
+
+export async function recordEditFeedbackAsync(feedback: EditFeedback): Promise<void> {
+  feedbackCache.push(feedback);
+  if (feedbackCache.length > 1000) {
+    feedbackCache = feedbackCache.slice(-1000);
+  }
+  
+  try {
+    const { storage } = await import("../../storage");
+    await storage.saveEditFeedback({
+      projectId: feedback.projectId,
+      editActionId: feedback.editActionId,
+      actionType: feedback.actionType,
+      wasApproved: feedback.wasApproved ? 1 : 0,
+      wasModified: feedback.wasModified ? 1 : 0,
+      userReason: feedback.userReason,
+      originalStart: feedback.originalStart,
+      originalEnd: feedback.originalEnd,
+      modifiedStart: feedback.modifiedStart,
+      modifiedEnd: feedback.modifiedEnd,
+      contextGenre: feedback.context.genre,
+      contextTone: feedback.context.tone,
+      contextDuration: feedback.context.duration,
+    });
+    reviewLogger.debug(`Persisted feedback to database for action ${feedback.editActionId}`);
+  } catch (error) {
+    reviewLogger.warn(`Failed to persist feedback to database: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 export function recordEditFeedback(feedback: EditFeedback): void {
   feedbackCache.push(feedback);
@@ -301,6 +343,35 @@ export function recordEditFeedback(feedback: EditFeedback): void {
     feedbackCache = feedbackCache.slice(-1000);
   }
   reviewLogger.debug(`Recorded feedback for action ${feedback.editActionId}: approved=${feedback.wasApproved}`);
+  
+  recordEditFeedbackAsync(feedback).catch(() => {});
+}
+
+export async function getFeedbackSummaryAsync(): Promise<FeedbackSummary> {
+  await loadFeedbackFromDb();
+  
+  try {
+    const { storage } = await import("../../storage");
+    const dbSummary = await storage.getFeedbackSummary();
+    
+    const commonRejections = Object.entries(dbSummary.byActionType)
+      .filter(([_, data]) => data.rejected > 0)
+      .map(([actionType, data]) => ({
+        actionType,
+        count: data.rejected,
+        commonReasons: [],
+      }))
+      .sort((a, b) => b.count - a.count);
+    
+    return {
+      totalFeedback: dbSummary.totalFeedback,
+      approvalRate: dbSummary.approvalRate / 100,
+      commonRejections,
+      preferredPatterns: [],
+    };
+  } catch {
+    return getFeedbackSummary();
+  }
 }
 
 export function getFeedbackSummary(): FeedbackSummary {

@@ -25,6 +25,13 @@ export const AI_CONFIG = {
     // maxStockQueries: removed - AI decides
   },
   
+  // Confidence thresholds for filtering AI-generated content
+  confidence: {
+    minMediaSelectionScore: 10, // Skip low-confidence B-roll selections
+    minTranscriptConfidence: 0.6, // Minimum confidence for transcript segments
+    highConfidenceScore: 20, // Score threshold for "high confidence" label
+  },
+  
   timing: {
     minWordDurationMs: 80,
     minBrollGapSeconds: 3,

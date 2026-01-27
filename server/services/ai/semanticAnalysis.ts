@@ -210,40 +210,77 @@ export function detectFillerWords(
   for (const segment of transcript) {
     const text = segment.text.toLowerCase();
     const segmentDuration = segment.end - segment.start;
-    const words = text.split(/\s+/);
-    const wordsPerSecond = words.length / Math.max(segmentDuration, 0.1);
+    const textWords = text.split(/\s+/);
+    const wordsPerSecond = textWords.length / Math.max(segmentDuration, 0.1);
+    
+    const hasWordTiming = segment.words && segment.words.length > 0;
 
     for (const filler of FILLER_WORDS) {
       const fillerLower = filler.toLowerCase();
 
       if (filler.includes(" ")) {
         if (text.includes(fillerLower)) {
-          const index = text.indexOf(fillerLower);
-          const position = index / text.length;
-          const estimatedStart = segment.start + position * segmentDuration;
-          const fillerWordCount = filler.split(" ").length;
-          const estimatedDuration = fillerWordCount / wordsPerSecond;
-
-          fillerSegments.push({
-            start: estimatedStart,
-            end: estimatedStart + estimatedDuration,
-            word: filler,
-          });
-        }
-      } else {
-        for (let i = 0; i < words.length; i++) {
-          const word = words[i].replace(/[^a-z]/g, "");
-          if (word === fillerLower) {
-            const wordPosition = i / words.length;
-            const estimatedStart =
-              segment.start + wordPosition * segmentDuration;
-            const estimatedDuration = 1 / wordsPerSecond;
+          const fillerWords = filler.split(" ");
+          
+          if (hasWordTiming) {
+            const segmentWordsLower = segment.words!.map(w => w.word.toLowerCase().replace(/[^a-z]/g, ""));
+            for (let i = 0; i <= segmentWordsLower.length - fillerWords.length; i++) {
+              let match = true;
+              for (let j = 0; j < fillerWords.length; j++) {
+                if (segmentWordsLower[i + j] !== fillerWords[j].replace(/[^a-z]/g, "")) {
+                  match = false;
+                  break;
+                }
+              }
+              if (match) {
+                fillerSegments.push({
+                  start: segment.words![i].start,
+                  end: segment.words![i + fillerWords.length - 1].end,
+                  word: filler,
+                });
+                break;
+              }
+            }
+          } else {
+            const index = text.indexOf(fillerLower);
+            const position = index / Math.max(text.length, 1);
+            const estimatedStart = segment.start + position * segmentDuration;
+            const fillerWordCount = fillerWords.length;
+            const estimatedDuration = fillerWordCount / Math.max(wordsPerSecond, 0.1);
 
             fillerSegments.push({
               start: estimatedStart,
               end: estimatedStart + estimatedDuration,
               word: filler,
             });
+          }
+        }
+      } else {
+        if (hasWordTiming) {
+          for (const wordTiming of segment.words!) {
+            const cleanWord = wordTiming.word.toLowerCase().replace(/[^a-z]/g, "");
+            if (cleanWord === fillerLower) {
+              fillerSegments.push({
+                start: wordTiming.start,
+                end: wordTiming.end,
+                word: filler,
+              });
+            }
+          }
+        } else {
+          for (let i = 0; i < textWords.length; i++) {
+            const word = textWords[i].replace(/[^a-z]/g, "");
+            if (word === fillerLower) {
+              const wordPosition = i / Math.max(textWords.length, 1);
+              const estimatedStart = segment.start + wordPosition * segmentDuration;
+              const estimatedDuration = 1 / Math.max(wordsPerSecond, 0.1);
+
+              fillerSegments.push({
+                start: estimatedStart,
+                end: estimatedStart + estimatedDuration,
+                word: filler,
+              });
+            }
           }
         }
       }

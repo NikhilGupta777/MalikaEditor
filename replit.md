@@ -104,7 +104,15 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Stale Processing Recovery**: Detects when processing was interrupted (e.g., server restart) and shows recovery options instead of silently restarting from scratch. Users see what progress was saved and can retry.
 - **Persistence & Multi-User Support**: PostgreSQL storage, project history, 1-hour project expiration, max 3 concurrent processing jobs.
 - **Error Recovery**: Failed projects show retry/re-run options. Interrupted projects show "staleRecovery" status with clear guidance.
-- **Auto-Accept Timer**: 2-minute timer only starts after autosave data has been loaded, preventing premature auto-approval.
+- **Auto-Accept Timer**: 2-minute timer only starts after autosave data has been loaded, preventing premature auto-approval. Uses stable callback refs and deferred execution to prevent race conditions.
+
+#### Reliability Features
+- **Circuit Breaker Pattern**: AI services automatically stop retrying after 5 consecutive failures (60s recovery period) to prevent API hammering.
+- **Retry with Exponential Backoff**: Stock media downloads and AI API calls use exponential backoff for transient failures.
+- **Batch Frame Extraction**: Single-pass FFmpeg extraction with automatic fallback to sequential processing.
+- **JSON Parsing Recovery**: Multi-strategy fallback for malformed AI responses (direct parse, array extraction, object-by-object matching).
+- **Feedback Learning**: User approval/rejection decisions are persisted to database and used for AI self-improvement across sessions.
+- **Natural Caption Phrasing**: Word-level timing uses punctuation and natural language boundaries for better caption readability.
 
 ## External Dependencies
 

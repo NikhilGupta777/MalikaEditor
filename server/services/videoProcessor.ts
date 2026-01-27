@@ -464,22 +464,45 @@ export async function extractFrames(
   const frameDir = path.join(FRAMES_DIR, frameId);
   await fs.mkdir(frameDir, { recursive: true });
 
-  const interval = duration / (numFrames + 1);
   const framePaths: string[] = [];
-
+  
+  const fps = numFrames / duration;
+  const outputPattern = path.join(frameDir, "frame_%03d.jpg");
+  
+  const cmd = ffmpeg(videoPath)
+    .outputOptions([
+      `-vf fps=${fps.toFixed(4)}`,
+      "-q:v 2",
+      `-frames:v ${numFrames}`,
+    ])
+    .output(outputPattern);
+  
+  await runFfmpegWithTimeout(cmd, FFMPEG_SHORT_TIMEOUT_MS, [outputPattern.replace("%03d", "*")]);
+  
   for (let i = 1; i <= numFrames; i++) {
-    const timestamp = interval * i;
     const framePath = path.join(frameDir, `frame_${String(i).padStart(3, "0")}.jpg`);
-
-    const cmd = ffmpeg(videoPath)
-      .seekInput(timestamp)
-      .frames(1)
-      .output(framePath)
-      .outputOptions(["-q:v 2"]);
-    
-    await runFfmpegWithTimeout(cmd, FFMPEG_SHORT_TIMEOUT_MS, [framePath]);
-
-    framePaths.push(framePath);
+    try {
+      await fs.access(framePath);
+      framePaths.push(framePath);
+    } catch {
+      break;
+    }
+  }
+  
+  if (framePaths.length === 0) {
+    videoLogger.warn("Batch frame extraction produced no frames, falling back to sequential extraction");
+    const interval = duration / (numFrames + 1);
+    for (let i = 1; i <= numFrames; i++) {
+      const timestamp = interval * i;
+      const framePath = path.join(frameDir, `frame_${String(i).padStart(3, "0")}.jpg`);
+      const fallbackCmd = ffmpeg(videoPath)
+        .seekInput(timestamp)
+        .frames(1)
+        .output(framePath)
+        .outputOptions(["-q:v 2"]);
+      await runFfmpegWithTimeout(fallbackCmd, FFMPEG_SHORT_TIMEOUT_MS, [framePath]);
+      framePaths.push(framePath);
+    }
   }
 
   return framePaths;
@@ -572,16 +595,48 @@ export async function detectSilence(
   });
 }
 
+const DOWNLOAD_CONFIG = {
+  timeout: 60000,
+  maxRetries: 3,
+  retryDelay: 2000,
+};
+
 async function downloadFile(url: string, outputPath: string): Promise<void> {
-  const response = await axios({
-    method: "GET",
-    url,
-    responseType: "stream",
-    timeout: 120000,
-  });
+  let lastError: Error | null = null;
   
-  const writer = createWriteStream(outputPath);
-  await pipeline(response.data, writer);
+  for (let attempt = 1; attempt <= DOWNLOAD_CONFIG.maxRetries; attempt++) {
+    try {
+      const response = await axios({
+        method: "GET",
+        url,
+        responseType: "stream",
+        timeout: DOWNLOAD_CONFIG.timeout,
+        headers: {
+          'User-Agent': 'MalikaEditor/1.0',
+        },
+      });
+      
+      const writer = createWriteStream(outputPath);
+      await pipeline(response.data, writer);
+      return;
+    } catch (error) {
+      lastError = error as Error;
+      const isRetryable = axios.isAxiosError(error) && 
+        (error.code === 'ECONNRESET' || 
+         error.code === 'ETIMEDOUT' || 
+         error.code === 'ECONNABORTED' ||
+         (error.response?.status && error.response.status >= 500));
+      
+      if (attempt < DOWNLOAD_CONFIG.maxRetries && isRetryable) {
+        videoLogger.warn(`Download attempt ${attempt} failed for ${url.slice(0, 50)}..., retrying in ${DOWNLOAD_CONFIG.retryDelay}ms`);
+        await new Promise(resolve => setTimeout(resolve, DOWNLOAD_CONFIG.retryDelay * attempt));
+      } else {
+        break;
+      }
+    }
+  }
+  
+  throw lastError || new Error(`Failed to download ${url}`);
 }
 
 function escapeFFmpegText(text: string): string {
@@ -732,10 +787,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   // Sort caption groups by start time
   captionWordGroups.sort((a, b) => a.captionStart - b.captionStart);
   
-  // Group words into phrases of 2-3 words WITHIN each caption
-  // This ensures phrases never cross caption boundaries
+  // Group words into natural phrases WITHIN each caption
+  // Prioritize breaks at punctuation and natural boundaries
   const WORDS_PER_PHRASE = 3;
-  const GAP_THRESHOLD = 0.5; // seconds
+  const GAP_THRESHOLD = 0.5;
+  const PHRASE_BREAK_PATTERNS = /[,;:!?\.\-\—]$/;
+  const SENTENCE_START_WORDS = new Set(["the", "a", "an", "this", "that", "these", "those", "it", "we", "they", "he", "she", "i", "you"]);
   
   const phrases: WordTiming[][] = [];
   
@@ -745,10 +802,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for (let i = 0; i < group.words.length; i++) {
       const word = group.words[i];
       const prevWord = i > 0 ? group.words[i - 1] : null;
+      const wordText = word.word.toLowerCase().replace(/[^a-z']/g, "");
       
-      // Check if we should start a new phrase
       const gapToPrevious = prevWord ? word.start - prevWord.end : 0;
-      const shouldBreak = gapToPrevious > GAP_THRESHOLD || currentPhrase.length >= WORDS_PER_PHRASE;
+      const prevEndsWithPunctuation = prevWord && PHRASE_BREAK_PATTERNS.test(prevWord.word);
+      const startsNewClause = SENTENCE_START_WORDS.has(wordText) && currentPhrase.length >= 2;
+      
+      const shouldBreak = 
+        gapToPrevious > GAP_THRESHOLD || 
+        currentPhrase.length >= WORDS_PER_PHRASE ||
+        prevEndsWithPunctuation ||
+        startsNewClause;
       
       if (shouldBreak && currentPhrase.length > 0) {
         phrases.push(currentPhrase);
@@ -758,7 +822,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       currentPhrase.push(word);
     }
     
-    // End of caption group - push remaining phrase
     if (currentPhrase.length > 0) {
       phrases.push(currentPhrase);
     }

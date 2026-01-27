@@ -1,0 +1,166 @@
+
+17. Sequential Frame Extraction
+Location: 
+videoProcessor.ts
+
+for (let i = 1; i <= numFrames; i++) {
+  const cmd = ffmpeg(videoPath).seekInput(timestamp)...
+  await runFfmpegWithTimeout(cmd, ...);  // Sequential!
+}
+Problem: Frames are extracted one-by-one sequentially. This is slow for videos requiring many frames.
+
+Fix: Use FFmpeg's native multi-output or extract all frames in one command with -vf fps=1/{interval}.
+
+18. No Caching of Normalization Results
+Location: 
+normalization.ts
+
+Problem: Every AI response field is normalized on-the-fly using string operations and map lookups. While individually fast, this adds up when processing large edit plans with hundreds of actions.
+
+19. Axios Timeout of 120 Seconds for File Downloads
+Location: 
+videoProcessor.ts
+
+const response = await axios({
+  timeout: 120000,  // 2 minutes
+});
+Problem: Stock media downloads have a 120-second timeout. Slow CDNs or large files could cause the entire render to fail late in the process.
+
+🟣 CLIENT-SIDE ISSUES
+20. SSE Reconnection Logic Duplicated Across Components
+Locations:
+
+Editor.tsx
+useSSE.ts
+Problem: The Editor.tsx component has 270+ lines of inline SSE connection/reconnection logic that duplicates what the useSSE hook provides. The hook exists but isn't used - instead, manual EventSource handling with similar retry logic is implemented inline.
+
+Impact: Code duplication, inconsistent reconnection behavior, harder maintenance.
+
+21. Auto-Approve Timer May Approve With Stale Data
+Location: 
+ReviewPanel.tsx
+
+const latestReviewDataRef = useRef<ReviewData>(localReviewData);
+// ...
+onApprove({ ...latestReviewDataRef.current, userApproved: true });
+Problem: The auto-approve timer uses a ref to avoid stale closures, but if the ref update effect runs after the timer fires, it could approve with partially stale data. The 1-second timer interval combined with async state updates creates a race window.
+
+Impact: Minor - could approve with slightly outdated user changes.
+
+22. Toast Remove Delay Set Extremely High
+Location: 
+use-toast.ts
+
+const TOAST_REMOVE_DELAY = 1000000  // ~16 minutes!
+Problem: Toast notifications are set to auto-remove after ~16 minutes instead of a reasonable duration. This was likely intended to prevent auto-dismiss, but it means dismissed toasts remain in memory.
+
+Impact: Memory leak for toast objects, potential UI clutter.
+
+23. Video Preview Console Logging in Production
+Location: 
+VideoPreview.tsx
+
+const handlePlay = () => {
+  console.log("Video started playing");  // Debug logs in handlers
+  setIsPlaying(true);
+};
+Problem: Debug console.log statements remain in production event handlers.
+
+Impact: Console pollution, minor performance impact.
+
+24. Feedback Cache Lost on Server Restart
+Location: 
+preRenderReview.ts
+
+let feedbackCache: EditFeedback[] = [];
+export function recordEditFeedback(feedback: EditFeedback): void {
+  feedbackCache.push(feedback);
+  if (feedbackCache.length > 1000) {
+    feedbackCache = feedbackCache.slice(-1000);
+  }
+}
+Problem: User edit feedback is stored in a module-level array, not in the database. All feedback used for AI learning is lost on every server restart.
+
+Impact: AI never learns from user preferences long-term.
+
+25. Inconsistent Query Truncation Across Stock Services
+Locations:
+
+pexelsService.ts
+ - photos truncated at 80 chars
+pexelsService.ts
+ - videos truncated at 100 chars
+freepikService.ts
+ - both at 100 chars
+Problem: Different stock media services truncate search queries at different lengths. This inconsistency can cause different results for the same B-roll window.
+
+26. Autosave Mutation May Fire Multiple Times
+Location: 
+useAutosave.ts
+
+useEffect(() => {
+  // ...
+  debounceTimerRef.current = setTimeout(() => {
+    mutation.mutate(data);  // Mutation called directly from effect
+  }, debounceMs);
+}, [data, debounceMs, enabled, mutation, projectId]);
+Problem: The effect depends on mutation, but calling mutation.mutate() can trigger a re-render which may re-run the effect. The debounce timer helps, but rapid state changes could still cause multiple concurrent saves.
+
+27. Error Pattern Matching May Miss Nested Errors
+Location: 
+errorMessages.ts
+
+const errorMessage = typeof error === "string" ? error : error.message;
+const lowerMessage = errorMessage.toLowerCase();
+Problem: Only checks error.message, not error.cause or nested error structures. Chained errors with meaningful messages in .cause will show "Something went wrong" instead of the actual issue.
+
+🔵 CODE QUALITY ISSUES
+28. Inconsistent Error Handling Patterns
+Some functions throw errors, some return null/undefined, some log and continue:
+
+generateAiImage: throws on failure
+fallbackSelectForWindow: returns null
+analyzeTranscriptSemantics: returns default object
+validateAndNormalizeJsonbFields: logs warning, stores raw data
+Impact: Callers must understand each function's failure mode.
+
+29. Magic Numbers Throughout
+Examples:
+
+CONCURRENCY_LIMIT = 5 (imageGeneration.ts)
+GAP_THRESHOLD = 0.5 (videoProcessor.ts)
+WORDS_PER_PHRASE = 3 (videoProcessor.ts)
+marginBottom = Math.round(videoHeight * 0.12) (videoProcessor.ts)
+These should be configuration constants.
+
+30. Unused/Deprecated Parameters
+Location: 
+imageGeneration.ts
+
+_maxImages?: number, // Deprecated - AI decides based on content
+Dead parameters remain in function signatures, creating confusion.
+
+31. Missing TypeScript Strict Null Checks
+Many places use optional chaining but don't handle the null case properly:
+
+const hooks = videoAnalysis.keyMoments?.filter(...) || [];
+const maxHookScore = Math.max(...hooks.map(h => h.hookScore || 50));
+If hooks is empty, Math.max(...[]) returns -Infinity.
+
+32. Commented-Out Code
+Location: 
+semanticAnalysis.ts
+
+// REMOVED: enforceEvenBrollDistribution - AI now decides B-roll placement freely
+// No redistribution, no spacing constraints - AI's decisions are used verbatim
+Comments about removed features should be cleaned up after the change is stable.
+
+📋 SUMMARY TABLE
+Category	Count	Severity
+Critical Issues	5	🔴 High
+Architectural Concerns	3	🟠 Medium-High
+Bugs/Logic Errors	7	🟡 Medium
+Performance Issues	4	🟢 Low-Medium
+Client-Side Issues	8	🟣 Medium
+Code Quality Issues	5	🔵 Low
+TOTAL	32	-

@@ -18,6 +18,65 @@ const DEFAULT_OPTIONS: Required<RetryOptions> = {
   retryableErrors: isRetryableError,
 };
 
+interface CircuitBreakerState {
+  failures: number;
+  lastFailure: number;
+  isOpen: boolean;
+}
+
+const circuitBreakers = new Map<string, CircuitBreakerState>();
+
+const CIRCUIT_BREAKER_CONFIG = {
+  failureThreshold: 5,
+  resetTimeMs: 60000,
+  halfOpenMaxRequests: 2,
+};
+
+export function getCircuitState(serviceName: string): CircuitBreakerState {
+  if (!circuitBreakers.has(serviceName)) {
+    circuitBreakers.set(serviceName, { failures: 0, lastFailure: 0, isOpen: false });
+  }
+  return circuitBreakers.get(serviceName)!;
+}
+
+export function recordSuccess(serviceName: string): void {
+  const state = getCircuitState(serviceName);
+  state.failures = 0;
+  state.isOpen = false;
+}
+
+export function recordFailure(serviceName: string): void {
+  const state = getCircuitState(serviceName);
+  state.failures++;
+  state.lastFailure = Date.now();
+  
+  if (state.failures >= CIRCUIT_BREAKER_CONFIG.failureThreshold) {
+    state.isOpen = true;
+    retryLogger.warn(`Circuit breaker OPEN for ${serviceName} after ${state.failures} failures`);
+  }
+}
+
+export function isCircuitOpen(serviceName: string): boolean {
+  const state = getCircuitState(serviceName);
+  
+  if (!state.isOpen) return false;
+  
+  const timeSinceLastFailure = Date.now() - state.lastFailure;
+  if (timeSinceLastFailure >= CIRCUIT_BREAKER_CONFIG.resetTimeMs) {
+    retryLogger.info(`Circuit breaker HALF-OPEN for ${serviceName} (reset timeout elapsed)`);
+    state.isOpen = false;
+    state.failures = Math.floor(CIRCUIT_BREAKER_CONFIG.failureThreshold / 2);
+    return false;
+  }
+  
+  return true;
+}
+
+export function resetCircuitBreaker(serviceName: string): void {
+  circuitBreakers.delete(serviceName);
+  retryLogger.info(`Circuit breaker reset for ${serviceName}`);
+}
+
 interface ErrorWithStatus extends Error {
   status?: number;
   statusCode?: number;
@@ -71,19 +130,29 @@ function sleep(ms: number): Promise<void> {
 export async function withRetry<T>(
   operation: () => Promise<T>,
   operationName: string,
-  options: RetryOptions = {}
+  options: RetryOptions = {},
+  serviceName?: string
 ): Promise<T> {
   const config = { ...DEFAULT_OPTIONS, ...options };
   let lastError: unknown;
   let delay = config.initialDelayMs;
   
+  const circuitName = serviceName || operationName.split(" ")[0];
+  
+  if (isCircuitOpen(circuitName)) {
+    throw new Error(`Circuit breaker is open for ${circuitName} - service temporarily unavailable`);
+  }
+  
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
-      return await operation();
+      const result = await operation();
+      if (serviceName) recordSuccess(circuitName);
+      return result;
     } catch (error) {
       lastError = error;
       
       if (attempt > config.maxRetries || !config.retryableErrors(error)) {
+        if (serviceName) recordFailure(circuitName);
         break;
       }
       

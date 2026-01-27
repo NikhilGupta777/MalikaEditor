@@ -93,10 +93,17 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
   const hasAutoApprovedRef = useRef(false);
   
   // Keep a ref to the latest reviewData to avoid stale closure in timer
+  // Updates run on every render to keep ref synchronized with latest state
   const latestReviewDataRef = useRef<ReviewData>(localReviewData);
   useEffect(() => {
     latestReviewDataRef.current = localReviewData;
-  }, [localReviewData]);
+  });
+  
+  // Stable callback for auto-approve to prevent stale closures
+  const onApproveRef = useRef(onApprove);
+  useEffect(() => {
+    onApproveRef.current = onApprove;
+  });
 
   // Load autosave data on mount
   const { autosaveData, hasAutosave, isLoading: isLoadingAutosave } = useLoadAutosave({
@@ -152,14 +159,17 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     timerRef.current = setInterval(() => {
       setTimeRemaining(prev => {
         if (prev <= 1) {
-          // Timer expired - auto-approve with latest data from ref
+          // Timer expired - use short timeout to ensure refs are updated
           if (!hasAutoApprovedRef.current) {
             hasAutoApprovedRef.current = true;
             // Delete autosave before auto-approving (same as manual approve)
             apiRequest("DELETE", `/api/videos/${projectId}/autosave`).catch(() => {
               // Ignore autosave deletion errors during auto-approve
             });
-            onApprove({ ...latestReviewDataRef.current, userApproved: true });
+            // Use setTimeout(0) to defer to next microtask, ensuring ref updates complete
+            setTimeout(() => {
+              onApproveRef.current({ ...latestReviewDataRef.current, userApproved: true });
+            }, 0);
           }
           return 0;
         }
@@ -172,7 +182,7 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
         clearInterval(timerRef.current);
       }
     };
-  }, [isLoading, onApprove, hasHydratedAutosave]);
+  }, [isLoading, hasHydratedAutosave, projectId]);
 
   // Reset timer when user interacts (any checkbox toggle or text edit)
   // This gives user another 2 minutes from their last action

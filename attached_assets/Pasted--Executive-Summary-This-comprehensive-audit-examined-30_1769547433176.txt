@@ -1,0 +1,185 @@
+
+Executive Summary
+This comprehensive audit examined 30+ files across the MalikaEditor codebase, a sophisticated AI-powered video editing platform. The system uses a multi-pass AI pipeline (Gemini + OpenAI) for transcription, semantic analysis, edit planning, B-roll generation, and FFmpeg-based video rendering.
+
+Overall Assessment: The codebase is well-structured with good error handling and normalization practices. However, several critical issues, architectural concerns, and potential bugs were identified that could impact production reliability and video editing quality.
+
+🔴 CRITICAL ISSUES
+1. Hardcoded Linux Paths on Windows Environment
+Location: 
+videoProcessor.ts
+
+const UPLOADS_DIR = "/tmp/uploads";
+const FRAMES_DIR = "/tmp/frames";
+const OUTPUT_DIR = "/tmp/output";
+const AUDIO_DIR = "/tmp/audio";
+const STOCK_DIR = "/tmp/stock";
+const CHAPTERS_DIR = "/tmp/chapters";
+Problem: All temporary directories use Linux-style /tmp paths. On Windows (the user's OS), these paths may work only because of WSL or virtualization, but could cause issues in native Windows deployments.
+
+Impact: File creation/deletion failures on Windows, path resolution errors.
+
+2. Race Condition in Background Job Processing
+Location: 
+backgroundProcessor.ts
+
+Problem: The job queue uses a simple Map<number, BackgroundJob> with setInterval polling. Multiple SSE connections for the same project could trigger duplicate processing or state corruption if:
+
+A re-render is requested while initial processing is running
+Multiple browser tabs connect simultaneously
+Impact: Duplicate AI API calls (costly), inconsistent project state, potential data corruption.
+
+3. Unbounded Memory Growth in Event History
+Location: 
+routes.ts
+ - SSE event broadcasting
+
+Problem: While AI_CONFIG.processing.maxEventHistory = 100 exists, there's no enforcement visible in the event collection logic. Each sendSSEEvent call appends to arrays without visible cleanup.
+
+Impact: Memory leaks during long-running processing jobs, potential server OOM crashes.
+
+4. Silent Failure in ASS Caption Generation
+Location: 
+videoProcessor.ts
+
+Problem: The generateAssContent function builds complex ASS subtitle files. If caption timing data is malformed (NaN, undefined, or out-of-bounds), the function returns early with just the header, silently producing captions that won't render.
+
+if (captionWordGroups.length === 0) {
+  return header;  // Silent early return - no captions!
+}
+Impact: Videos rendered without captions with no error indication to the user.
+
+5. Potential SQL Injection Vector in Cache Operations
+Location: 
+storage.ts
+
+Problem: While Drizzle ORM provides parameterized queries, the setCachedAsset function uses raw SQL for timestamp calculations:
+
+expiresAt: sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`
+This is safe, but the cacheKey parameter comes from user-controlled stock media queries. If Drizzle's escaping is bypassed anywhere, this could be exploited.
+
+Risk Level: Low (Drizzle handles escaping), but warrants review.
+
+🟠 ARCHITECTURAL CONCERNS
+6. Dual Normalization Systems Create Confusion
+Locations:
+
+normalization.ts
+ (616 lines)
+schema.ts
+Problem: Two parallel normalization systems exist:
+
+Server-side functions in normalization.ts (e.g., normalizePriority, normalizeEditActionType)
+Schema-level normalizers in schema.ts (e.g., normalizeImportance, normalizeEmotion)
+These duplicate logic and can diverge over time, leading to inconsistent behavior.
+
+Impact: Maintenance burden, potential for normalization mismatches between validation and processing layers.
+
+7. No Transaction Boundaries for Multi-Step Operations
+Location: 
+storage.ts
+ - All database operations
+
+Problem: Complex operations like updateVideoProject with optimistic locking don't use database transactions. If the version check passes but the update fails, state could become inconsistent.
+
+async updateVideoProject(id, updates, expectedVersion) {
+  const existing = await this.getVideoProject(id);  // Step 1
+  if (existing.version !== expectedVersion) throw new OptimisticLockError();
+  const [result] = await db.update(videoProjects)...  // Step 2 - not atomic with Step 1!
+}
+Impact: Race conditions between concurrent project updates could cause lost writes.
+
+8. No Circuit Breaker for AI API Failures
+Locations: All AI service files call withRetry() but never back off permanently.
+
+Problem: If Gemini or OpenAI is down, the system will keep retrying indefinitely (up to 3 retries per request, but new requests keep coming). There's no circuit breaker to stop hammering a failing service.
+
+Impact: During API outages, the system wastes resources on doomed requests and may hit rate limits for recovery.
+
+🟡 BUGS AND LOGIC ERRORS
+9. Semantic Analysis May Call Twice Unnecessarily
+Location: 
+videoAnalysis.ts
+
+const [videoAnalysis, semanticAnalysisResult] = await Promise.all([
+  analyzeVideoFrames(framePaths, duration, silentSegments),
+  analyzeTranscriptSemantics(transcript, undefined, duration),  // First call
+]);
+if (videoAnalysis.context) {
+  semanticAnalysis = await analyzeTranscriptSemantics(  // Second call
+    transcript, videoAnalysis.context, duration
+  );
+}
+Problem: analyzeTranscriptSemantics is always called twice - once with no context, then again with context from video analysis. This doubles AI API costs for semantic analysis.
+
+Fix: Only call once after video analysis completes.
+
+10. Filler Word Detection Timing Estimation is Imprecise
+Location: 
+semanticAnalysis.ts
+
+const estimatedStart = segment.start + position * segmentDuration;
+const estimatedDuration = 1 / wordsPerSecond;
+Problem: Filler word timing is estimated by character position in text, which doesn't account for pauses or variable speaking rates. This can place filler cut markers at wrong timestamps.
+
+Impact: Incorrect edit points, cutting during speech instead of fillers.
+
+11. Stock Media Type Validation Allows Invalid Types
+Location: 
+mediaSelector.ts
+
+stockItems.push({
+  type: media.type as "image" | "video",  // Unsafe cast
+  // ...
+});
+Problem: media.type could be "ai_generated" from the candidate, but it's cast to only "image" | "video". This bypasses type safety and could cause runtime issues downstream.
+
+12. Caption Phrase Boundaries May Cut Mid-Word
+Location: 
+videoProcessor.ts
+
+The phrase grouping logic uses WORDS_PER_PHRASE = 3 without considering natural language boundaries. This can create awkward caption breaks like:
+
+"the quick" → "brown fox jumps"
+Instead of proper sentence-aware breaks.
+
+Impact: Poor caption readability.
+
+13. intervalsOverlap Function Not Used Consistently
+Location: 
+videoProcessor.ts
+
+function intervalsOverlap(start1, end1, start2, end2): boolean {
+  return start1 < end2 && start2 < end1;
+}
+Problem: This well-designed helper function exists but is defined locally. Other parts of the codebase may implement overlap checks inconsistently.
+
+14. JSON Parsing Has Incomplete Error Recovery
+Location: 
+mediaSelector.ts
+
+try {
+  parsed = JSON.parse(jsonText);
+} catch (firstParseError) {
+  // Strategy 2: Try to extract just the windowSelections array
+  const arrayMatch = response.match(/...regex.../);
+  // ... but still throws the original error if this fails
+}
+Problem: The fallback JSON extraction uses regex that may miss valid JSON structures. The error message doesn't indicate which strategy failed.
+
+15. Edit Action Confidence Scores Not Used
+Location: 
+schema.ts
+ and edit planning passes
+
+confidence: coercedNumber().optional(),
+Problem: Edit actions have a confidence field that AI generates, but it's never used for filtering or prioritizing edits. Low-confidence actions are applied just like high-confidence ones.
+
+Impact: AI uncertainty isn't surfaced to users for review.
+
+🟢 PERFORMANCE ISSUES
+16. Large Files in Memory During Video Processing
+Location: 
+videoProcessor.ts
+
+Problem: The entire video processing pipeline loads frames into base64, stores AI images as base64, and holds all this in memory simultaneously. For long videos with many B-roll windows, memory usage can spike dramatically.

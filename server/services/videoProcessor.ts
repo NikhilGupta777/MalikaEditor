@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
 import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem, SemanticAnalysis } from "@shared/schema";
 import { createLogger } from "../utils/logger";
+import { AI_CONFIG } from "../config/ai";
 
 export interface ChapterInfo {
   title: string;
@@ -32,9 +33,10 @@ const AUDIO_DIR = path.join(TEMP_DIR, "malika_audio");
 const STOCK_DIR = path.join(TEMP_DIR, "malika_stock");
 const CHAPTERS_DIR = path.join(TEMP_DIR, "malika_chapters");
 
-const FFPROBE_TIMEOUT_MS = 30000;
-const FFMPEG_SHORT_TIMEOUT_MS = 2 * 60 * 1000;
-const FFMPEG_LONG_TIMEOUT_MS = 10 * 60 * 1000;
+// FFmpeg timeouts from centralized config
+const FFPROBE_TIMEOUT_MS = AI_CONFIG.ffmpeg?.probeTimeoutMs ?? 30000;
+const FFMPEG_SHORT_TIMEOUT_MS = AI_CONFIG.ffmpeg?.shortTimeoutMs ?? 2 * 60 * 1000;
+const FFMPEG_LONG_TIMEOUT_MS = AI_CONFIG.ffmpeg?.longTimeoutMs ?? 10 * 60 * 1000;
 
 export function generateChaptersFromEditPlan(input: ChapterExtractionInput): ChapterInfo[] {
   const { editPlan, semanticAnalysis, videoDuration, outputTimeMapping } = input;

@@ -57,6 +57,12 @@ export const AI_CONFIG = {
     pexelsQueryMaxLength: 80,
   },
   
+  ffmpeg: {
+    probeTimeoutMs: 30000,
+    shortTimeoutMs: 2 * 60 * 1000, // 2 minutes
+    longTimeoutMs: 10 * 60 * 1000, // 10 minutes
+  },
+  
   sse: {
     maxReconnectAttempts: 5,
     baseReconnectDelayMs: 2000,

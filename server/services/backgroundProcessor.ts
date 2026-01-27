@@ -1,6 +1,6 @@
 import { storage } from "../storage";
 import { getVideoMetadata, extractFrames, extractAudio, detectSilence } from "./videoProcessor";
-import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudio } from "./ai";
+import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudioEnhanced } from "./ai";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants, type StockMediaVariants } from "./pexelsService";
 import { fetchFreepikMediaWithVariants, isFreepikConfigured } from "./freepikService";
@@ -315,14 +315,49 @@ async function runProcessingPipeline(
       addActivity(projectId, `Found ${silentSegments.length} silent segments to remove`);
     }
 
-    // PHASE 2: Transcription (requires audio)
+    // PHASE 2: Transcription with enhanced AI features (requires audio)
     await updateStatus("transcribing");
-    addActivity(projectId, "Transcribing audio with AI...");
-    const transcript = await transcribeAudio(audioPath, metadata.duration);
+    addActivity(projectId, "Transcribing audio with AI (speakers, chapters, sentiment)...");
+    const transcriptResult = await transcribeAudioEnhanced(audioPath, metadata.duration);
+    const transcript = transcriptResult.segments;
     addActivity(projectId, `Transcription complete: ${transcript.length} segments`);
+    
+    // Log enhanced features if available
+    if (transcriptResult.speakers && transcriptResult.speakers.length > 0) {
+      addActivity(projectId, `Detected ${transcriptResult.speakers.length} speakers in video`);
+    }
+    if (transcriptResult.chapters && transcriptResult.chapters.length > 0) {
+      addActivity(projectId, `Generated ${transcriptResult.chapters.length} auto-chapters`);
+    }
+    if (transcriptResult.sentiments && transcriptResult.sentiments.length > 0) {
+      const positive = transcriptResult.sentiments.filter((s: { sentiment: string }) => s.sentiment === "positive").length;
+      const negative = transcriptResult.sentiments.filter((s: { sentiment: string }) => s.sentiment === "negative").length;
+      addActivity(projectId, `Sentiment analysis: ${positive} positive, ${negative} negative segments`);
+    }
+    if (transcriptResult.entities && transcriptResult.entities.length > 0) {
+      addActivity(projectId, `Found ${transcriptResult.entities.length} named entities`);
+    }
 
-    await storage.updateVideoProject(projectId, { transcript });
-    notifySubscribers(projectId, "transcript", { transcript });
+    await storage.updateVideoProject(projectId, { 
+      transcript,
+      // Store enhanced data for later use
+      transcriptEnhanced: {
+        speakers: transcriptResult.speakers,
+        chapters: transcriptResult.chapters,
+        sentiments: transcriptResult.sentiments,
+        entities: transcriptResult.entities,
+        detectedLanguage: transcriptResult.detectedLanguage,
+      }
+    });
+    notifySubscribers(projectId, "transcript", { 
+      transcript,
+      enhanced: {
+        speakers: transcriptResult.speakers,
+        chapters: transcriptResult.chapters,
+        sentiments: transcriptResult.sentiments,
+        entities: transcriptResult.entities,
+      }
+    });
 
     addActivity(projectId, "Performing deep video analysis...");
     const analysis = await analyzeVideoDeep(

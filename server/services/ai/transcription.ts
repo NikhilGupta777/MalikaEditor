@@ -19,6 +19,39 @@ interface AssemblyAIWord {
   speaker?: string;
 }
 
+interface AssemblyAIUtterance {
+  speaker: string;
+  text: string;
+  start: number;
+  end: number;
+  confidence: number;
+  words: AssemblyAIWord[];
+}
+
+interface AssemblyAIChapter {
+  gist: string;
+  headline: string;
+  summary: string;
+  start: number;
+  end: number;
+}
+
+interface AssemblyAISentiment {
+  text: string;
+  start: number;
+  end: number;
+  sentiment: "POSITIVE" | "NEGATIVE" | "NEUTRAL";
+  confidence: number;
+  speaker?: string;
+}
+
+interface AssemblyAIEntity {
+  entity_type: string; // e.g., "person_name", "location", "date_time", "organization"
+  text: string;
+  start: number;
+  end: number;
+}
+
 interface AssemblyAITranscript {
   id: string;
   status: "queued" | "processing" | "completed" | "error";
@@ -27,21 +60,68 @@ interface AssemblyAITranscript {
   error?: string;
   audio_duration?: number;
   language_code?: string;
+  // Enhanced features
+  utterances?: AssemblyAIUtterance[] | null;
+  chapters?: AssemblyAIChapter[] | null;
+  sentiment_analysis_results?: AssemblyAISentiment[] | null;
+  entities?: AssemblyAIEntity[] | null;
+}
+
+// Extended transcript result with AI intelligence features
+export interface TranscriptEnhancedResult {
+  segments: TranscriptSegment[];
+  speakers?: SpeakerInfo[];
+  chapters?: ChapterInfo[];
+  sentiments?: SentimentInfo[];
+  entities?: EntityInfo[];
+  detectedLanguage?: string;
+}
+
+export interface SpeakerInfo {
+  id: string;
+  label: string;
+  wordCount: number;
+  speakingTime: number; // seconds
+}
+
+export interface ChapterInfo {
+  title: string;
+  summary: string;
+  gist: string;
+  start: number;
+  end: number;
+}
+
+export interface SentimentInfo {
+  text: string;
+  sentiment: "positive" | "negative" | "neutral";
+  confidence: number;
+  start: number;
+  end: number;
+  speaker?: string;
+}
+
+export interface EntityInfo {
+  type: string;
+  text: string;
+  start: number;
+  end: number;
 }
 
 /**
- * Transcribe audio using AssemblyAI API
+ * Transcribe audio using AssemblyAI API with enhanced AI features
  * AssemblyAI provides native word-level timestamps - ideal for karaoke captions
+ * Also returns speaker diarization, auto chapters, sentiment analysis, and entity detection
  */
 async function transcribeWithAssemblyAI(
   audioPath: string,
   audioDuration?: number,
   languageHint?: string
-): Promise<TranscriptSegment[]> {
+): Promise<TranscriptEnhancedResult | null> {
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
   if (!apiKey) {
     aiLogger.debug("AssemblyAI API key not configured, skipping");
-    return [];
+    return null;
   }
 
   aiLogger.info(`Using AssemblyAI ${AI_CONFIG.models.transcription.primary} for transcription...`);
@@ -69,10 +149,18 @@ async function transcribeWithAssemblyAI(
     const audioUrl = uploadResult.upload_url;
     aiLogger.debug("Audio uploaded successfully");
 
-    // Step 2: Submit transcription request
+    // Step 2: Submit transcription request with enhanced AI features
     const transcriptionConfig: Record<string, unknown> = {
       audio_url: audioUrl,
       language_detection: !languageHint, // Auto-detect if no hint provided
+      // Enable speaker diarization for multi-speaker content
+      speaker_labels: true,
+      // Enable auto chapters for long-form content (podcasts, interviews)
+      auto_chapters: true,
+      // Enable sentiment analysis for emotional context
+      sentiment_analysis: true,
+      // Enable entity detection for names, dates, locations
+      entity_detection: true,
     };
 
     if (languageHint) {
@@ -117,7 +205,32 @@ async function transcribeWithAssemblyAI(
 
       if (transcript.status === "completed") {
         aiLogger.info(`AssemblyAI transcription completed${transcript.language_code ? ` (detected: ${transcript.language_code})` : ""}`);
-        return createSegmentsFromAssemblyAI(transcript, audioDuration);
+        
+        // Extract enhanced features
+        const segments = createSegmentsFromAssemblyAI(transcript, audioDuration);
+        const enhanced = extractEnhancedFeatures(transcript);
+        
+        // Log enhanced features
+        if (enhanced.speakers && enhanced.speakers.length > 0) {
+          aiLogger.info(`Speaker diarization: ${enhanced.speakers.length} speakers detected`);
+        }
+        if (enhanced.chapters && enhanced.chapters.length > 0) {
+          aiLogger.info(`Auto chapters: ${enhanced.chapters.length} chapters generated`);
+        }
+        if (enhanced.sentiments && enhanced.sentiments.length > 0) {
+          const positive = enhanced.sentiments.filter(s => s.sentiment === "positive").length;
+          const negative = enhanced.sentiments.filter(s => s.sentiment === "negative").length;
+          aiLogger.info(`Sentiment analysis: ${positive} positive, ${negative} negative segments`);
+        }
+        if (enhanced.entities && enhanced.entities.length > 0) {
+          aiLogger.info(`Entity detection: ${enhanced.entities.length} entities found`);
+        }
+        
+        return {
+          segments,
+          ...enhanced,
+          detectedLanguage: transcript.language_code,
+        };
       }
 
       if (transcript.status === "error") {
@@ -132,8 +245,69 @@ async function transcribeWithAssemblyAI(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     aiLogger.error(`AssemblyAI transcription failed: ${errorMessage}`);
-    return [];
+    return null;
   }
+}
+
+/**
+ * Extract enhanced features from AssemblyAI transcript
+ */
+function extractEnhancedFeatures(transcript: AssemblyAITranscript): Omit<TranscriptEnhancedResult, "segments" | "detectedLanguage"> {
+  const result: Omit<TranscriptEnhancedResult, "segments" | "detectedLanguage"> = {};
+  
+  // Extract speaker information from utterances
+  if (transcript.utterances && transcript.utterances.length > 0) {
+    const speakerMap = new Map<string, { wordCount: number; speakingTime: number }>();
+    
+    for (const utterance of transcript.utterances) {
+      const existing = speakerMap.get(utterance.speaker) || { wordCount: 0, speakingTime: 0 };
+      existing.wordCount += utterance.words?.length || utterance.text.split(/\s+/).length;
+      existing.speakingTime += (utterance.end - utterance.start) / 1000; // Convert ms to seconds
+      speakerMap.set(utterance.speaker, existing);
+    }
+    
+    result.speakers = Array.from(speakerMap.entries()).map(([id, stats], index) => ({
+      id,
+      label: `Speaker ${index + 1}`,
+      wordCount: stats.wordCount,
+      speakingTime: Math.round(stats.speakingTime * 10) / 10,
+    }));
+  }
+  
+  // Extract chapters
+  if (transcript.chapters && transcript.chapters.length > 0) {
+    result.chapters = transcript.chapters.map(ch => ({
+      title: ch.headline,
+      summary: ch.summary,
+      gist: ch.gist,
+      start: ch.start / 1000, // Convert ms to seconds
+      end: ch.end / 1000,
+    }));
+  }
+  
+  // Extract sentiment analysis
+  if (transcript.sentiment_analysis_results && transcript.sentiment_analysis_results.length > 0) {
+    result.sentiments = transcript.sentiment_analysis_results.map(s => ({
+      text: s.text,
+      sentiment: s.sentiment.toLowerCase() as "positive" | "negative" | "neutral",
+      confidence: s.confidence,
+      start: s.start / 1000,
+      end: s.end / 1000,
+      speaker: s.speaker,
+    }));
+  }
+  
+  // Extract entities
+  if (transcript.entities && transcript.entities.length > 0) {
+    result.entities = transcript.entities.map(e => ({
+      type: e.entity_type,
+      text: e.text,
+      start: e.start / 1000,
+      end: e.end / 1000,
+    }));
+  }
+  
+  return result;
 }
 
 /**
@@ -1122,11 +1296,15 @@ export interface TranscriptionOptions {
   confidenceThreshold?: number;
 }
 
-export async function transcribeAudio(
+/**
+ * Transcribe audio with enhanced AI features (speakers, chapters, sentiment, entities)
+ * Returns full TranscriptEnhancedResult when using AssemblyAI, or just segments for fallback providers
+ */
+export async function transcribeAudioEnhanced(
   audioPath: string,
   audioDuration?: number,
   options?: TranscriptionOptions
-): Promise<TranscriptSegment[]> {
+): Promise<TranscriptEnhancedResult> {
   const languageHint = options?.languageHint;
   const filterLowConfidence = options?.filterLowConfidence ?? true;
   const confidenceThreshold = options?.confidenceThreshold ?? 0.5;
@@ -1140,35 +1318,47 @@ export async function transcribeAudio(
   const hasOpenAI = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   const hasGemini = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   
-  // Primary: AssemblyAI (best for captions - native word-level timestamps)
+  // Primary: AssemblyAI (best for captions - native word-level timestamps + enhanced AI features)
   if (hasAssemblyAI) {
     const assemblyAIResult = await transcribeWithAssemblyAI(audioPath, audioDuration, languageHint);
-    if (assemblyAIResult.length > 0) {
-      aiLogger.info(`Transcription successful with AssemblyAI: ${assemblyAIResult.length} segments with native word timing`);
+    if (assemblyAIResult && assemblyAIResult.segments.length > 0) {
+      aiLogger.info(`Transcription successful with AssemblyAI: ${assemblyAIResult.segments.length} segments with native word timing`);
       return assemblyAIResult;
     }
     aiLogger.warn("AssemblyAI transcription failed, trying OpenAI fallback...");
   }
   
-  // Secondary: OpenAI (synthesized word timing)
+  // Secondary: OpenAI (synthesized word timing) - no enhanced features
   if (hasOpenAI) {
     const openAIResult = await transcribeWithOpenAI(audioPath, audioDuration, languageHint);
     if (openAIResult.length > 0) {
       aiLogger.info(`Transcription successful with OpenAI: ${openAIResult.length} segments extracted`);
-      return openAIResult;
+      return { segments: openAIResult };
     }
     aiLogger.warn("OpenAI transcription failed, trying Gemini fallback...");
   }
   
-  // Fallback: Gemini
+  // Fallback: Gemini - no enhanced features
   if (hasGemini) {
     const geminiResult = await transcribeWithGemini(audioPath, audioDuration, languageHint);
     if (geminiResult.length > 0) {
       aiLogger.info(`Transcription successful with Gemini: ${geminiResult.length} segments extracted`);
-      return geminiResult;
+      return { segments: geminiResult };
     }
   }
   
   aiLogger.error("All transcription methods failed. No segments extracted from audio.");
-  return [];
+  return { segments: [] };
+}
+
+/**
+ * Transcribe audio and return just segments (backward compatible)
+ */
+export async function transcribeAudio(
+  audioPath: string,
+  audioDuration?: number,
+  options?: TranscriptionOptions
+): Promise<TranscriptSegment[]> {
+  const result = await transcribeAudioEnhanced(audioPath, audioDuration, options);
+  return result.segments;
 }

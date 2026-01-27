@@ -235,6 +235,7 @@ export const videoProjects = pgTable("video_projects", {
   analysis: jsonb("analysis"),
   editPlan: jsonb("edit_plan"),
   transcript: jsonb("transcript"),
+  transcriptEnhanced: jsonb("transcript_enhanced"), // Speakers, chapters, sentiment, entities from AssemblyAI
   stockMedia: jsonb("stock_media"),
   reviewData: jsonb("review_data"),
   errorMessage: text("error_message"),
@@ -328,6 +329,52 @@ export const processingStatusEnum = z.enum([
 ]);
 
 export type ProcessingStatus = z.infer<typeof processingStatusEnum>;
+
+// AssemblyAI Enhanced Transcript Schemas
+export const speakerInfoSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  wordCount: z.number(),
+  speakingTime: z.number(),
+});
+
+export const chapterInfoSchema = z.object({
+  title: z.string(),
+  summary: z.string(),
+  gist: z.string(),
+  start: z.number(),
+  end: z.number(),
+});
+
+export const sentimentInfoSchema = z.object({
+  text: z.string(),
+  sentiment: z.enum(["positive", "negative", "neutral"]),
+  confidence: z.number(),
+  start: z.number(),
+  end: z.number(),
+  speaker: z.string().optional(),
+});
+
+export const entityInfoSchema = z.object({
+  type: z.string(),
+  text: z.string(),
+  start: z.number(),
+  end: z.number(),
+});
+
+export const transcriptEnhancedSchema = z.object({
+  speakers: z.array(speakerInfoSchema).optional(),
+  chapters: z.array(chapterInfoSchema).optional(),
+  sentiments: z.array(sentimentInfoSchema).optional(),
+  entities: z.array(entityInfoSchema).optional(),
+  detectedLanguage: z.string().optional(),
+});
+
+export type SpeakerInfoType = z.infer<typeof speakerInfoSchema>;
+export type ChapterInfoType = z.infer<typeof chapterInfoSchema>;
+export type SentimentInfoType = z.infer<typeof sentimentInfoSchema>;
+export type EntityInfoType = z.infer<typeof entityInfoSchema>;
+export type TranscriptEnhancedType = z.infer<typeof transcriptEnhancedSchema>;
 
 // Word-level timing for karaoke-style captions
 export const wordTimingSchema = z.object({

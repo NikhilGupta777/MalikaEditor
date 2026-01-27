@@ -43,6 +43,11 @@ The AI services are modularized for transcription, video analysis, semantic anal
 #### Core AI Capabilities
 - **Deep Video Understanding**: Utilizes Gemini API for multi-layer analysis including scene detection, emotion flow, speaker detection, visual importance scoring, and key moment detection.
 - **Smart Transcript Analysis**: Multi-provider audio transcription (AssemblyAI primary with native word-level timestamps, OpenAI secondary with synthesized timing, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation in multiple languages.
+- **AssemblyAI Enhanced Features** (enabled when AssemblyAI is primary):
+  - **Speaker Diarization**: Automatically identifies and labels different speakers in the video
+  - **Auto Chapters**: Generates logical chapter segments with titles, summaries, and timestamps
+  - **Sentiment Analysis**: Detects emotional tone (positive/negative/neutral) of speech segments
+  - **Entity Detection**: Extracts named entities (people, locations, organizations, dates)
 - **Multi-Pass Edit Planning**: An optimized 2-pass intelligent edit system (consolidated Structure+Quality+B-roll Pass, then Quality Review Pass) reduces API calls while generating comprehensive edit plans. Falls back to sequential 4-pass if needed.
 - **Transcript-Based Editing**: Allows users to edit video by manipulating an interactive, color-coded transcript with real-time preview, including auto-removal of filler words and manual override for AI suggestions.
 - **Additional AI Features**: Includes Karaoke-style captions and AI image generation based on transcript content.

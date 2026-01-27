@@ -2,7 +2,13 @@ export { getGeminiClient, getOpenAIClient } from "./clients";
 
 export { 
   logTranscriptionConfig, 
-  transcribeAudio 
+  transcribeAudio,
+  transcribeAudioEnhanced,
+  type TranscriptEnhancedResult,
+  type SpeakerInfo,
+  type ChapterInfo,
+  type SentimentInfo,
+  type EntityInfo
 } from "./transcription";
 
 export { 

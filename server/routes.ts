@@ -1221,6 +1221,7 @@ export async function registerRoutes(
       reviewData: project.reviewData,
       status: project.status,
       transcript: project.transcript,
+      transcriptEnhanced: project.transcriptEnhanced, // Speaker diarization, chapters, sentiment, entities
       editPlan: project.editPlan,
       stockMedia: project.stockMedia,
     });

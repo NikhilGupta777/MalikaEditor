@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { CLIENT_CONFIG } from "@/lib/config";
 import type {
   ProcessingStatus as ProcessingStatusType,
   EditPlan,
@@ -141,7 +142,11 @@ export default function Editor() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  const MAX_RECONNECT_ATTEMPTS = 5;
+  
+  // SSE reconnection constants from centralized config
+  const MAX_RECONNECT_ATTEMPTS = CLIENT_CONFIG.sse.maxReconnectAttempts;
+  const SSE_BASE_DELAY = CLIENT_CONFIG.sse.baseReconnectDelayMs;
+  const SSE_BACKOFF_MULTIPLIER = CLIENT_CONFIG.sse.reconnectBackoffMultiplier;
   
   // Load project from URL if project ID is present
   const { data: loadedProject, isLoading: isLoadingProject } = useQuery<VideoProject>({

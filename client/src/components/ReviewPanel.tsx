@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
+import { CLIENT_CONFIG } from "@/lib/config";
 import { useAutosave } from "@/hooks/useAutosave";
 import { useLoadAutosave } from "@/hooks/useLoadAutosave";
 import type { ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment } from "@shared/schema";
@@ -67,7 +68,7 @@ function getActionLabel(type: string) {
   }
 }
 
-const AUTO_ACCEPT_SECONDS = 120; // 2 minutes
+const AUTO_ACCEPT_SECONDS = CLIENT_CONFIG.review.autoAcceptSeconds;
 
 function formatLastSaved(date: Date): string {
   const now = new Date();

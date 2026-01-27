@@ -374,7 +374,9 @@ RESPOND WITH JSON ONLY:
         if (unused.length > 0) {
           const windowDuration = window.end - window.start;
           const fallback = fallbackSelectForWindow(window, unused, windowDuration);
-          if (fallback && fallback.selectedMedia.length > 0) {
+          // Apply confidence threshold filtering
+          const minScore = AI_CONFIG.confidence?.minMediaSelectionScore ?? 10;
+          if (fallback && fallback.selectedMedia.length > 0 && (fallback.reasoning?.includes("high") || fallback.reasoning?.includes("medium") || !fallback.reasoning?.includes(`score: `))) {
             for (const m of fallback.selectedMedia) {
               selectedMedia.push(m);
               usedInThisBatch.add(m.id);

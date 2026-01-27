@@ -9,11 +9,12 @@ import { createLogger } from "./utils/logger";
 import { cleanupStaleTempFiles } from "./services/videoProcessor";
 import { logTranscriptionConfig } from "./services/aiService";
 import { storage } from "./storage";
+import { AI_CONFIG } from "./config/ai";
 
 const expressLogger = createLogger("express");
 
-// Cleanup expired projects and cache every 10 minutes
-const CLEANUP_INTERVAL = 10 * 60 * 1000; // 10 minutes
+// Cleanup expired projects and cache using centralized config
+const CLEANUP_INTERVAL = AI_CONFIG.processing.cleanupIntervalMs;
 let cleanupIntervalId: NodeJS.Timeout | null = null;
 
 async function runPeriodicCleanup() {

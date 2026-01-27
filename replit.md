@@ -113,6 +113,10 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **JSON Parsing Recovery**: Multi-strategy fallback for malformed AI responses (direct parse, array extraction, object-by-object matching).
 - **Feedback Learning**: User approval/rejection decisions are persisted to database and used for AI self-improvement across sessions.
 - **Natural Caption Phrasing**: Word-level timing uses punctuation and natural language boundaries for better caption readability.
+- **Database Transaction Support**: `withTransaction` helper for multi-step database operations with automatic rollback on failure.
+- **Stock Media Validation**: Runtime Zod validation for stock media items ensures type safety.
+- **Centralized Configuration**: Magic numbers extracted to `AI_CONFIG` (server) and `CLIENT_CONFIG` (client) for maintainability.
+- **Normalization Consolidation**: All AI enum values use centralized normalization functions from `normalization.ts`.
 
 ## External Dependencies
 

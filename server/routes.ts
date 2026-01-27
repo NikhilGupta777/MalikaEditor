@@ -9,6 +9,7 @@ import { storage } from "./storage";
 import { createLogger } from "./utils/logger";
 import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
 import { validateVideoMagicBytes } from "./utils/fileValidation";
+import { AI_CONFIG } from "./config/ai";
 
 // Zod schemas for query/path parameter validation
 const idParamSchema = z.object({
@@ -535,7 +536,7 @@ export async function registerRoutes(
       if (!connectionClosed) {
         res.write(": heartbeat\n\n");
       }
-    }, 15000);
+    }, AI_CONFIG.processing.sseHeartbeatMs);
 
     const jobAlreadyRunning = isJobActive(id);
     const completedStatuses = ["awaiting_review", "completed", "failed", "cancelled"];
@@ -764,7 +765,7 @@ export async function registerRoutes(
         if (!connectionClosed) {
           res.write(": heartbeat\n\n");
         }
-      }, 15000);
+      }, AI_CONFIG.processing.sseHeartbeatMs);
       
       // Send current status
       sendEvent("status", { status: project.status });
@@ -865,7 +866,7 @@ export async function registerRoutes(
       if (!connectionClosed) {
         res.write(": heartbeat\n\n");
       }
-    }, 15000);
+    }, AI_CONFIG.processing.sseHeartbeatMs);
 
     const sendActivity = (message: string, details?: Record<string, unknown>) => {
       sendEvent("activity", { message, timestamp: Date.now(), ...details });

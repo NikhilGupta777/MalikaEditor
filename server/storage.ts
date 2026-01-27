@@ -28,6 +28,15 @@ import { eq, desc, lt, and, gt, sql } from "drizzle-orm";
 
 const logger = createLogger("storage");
 
+// Transaction helper for multi-step database operations
+export async function withTransaction<T>(
+  operation: (tx: typeof db) => Promise<T>
+): Promise<T> {
+  return await db.transaction(async (tx) => {
+    return await operation(tx as typeof db);
+  });
+}
+
 export class OptimisticLockError extends Error {
   constructor(message: string = "Version mismatch: resource was modified by another request") {
     super(message);
@@ -309,19 +318,22 @@ export class DatabaseStorage {
 
   async setCachedAsset(cacheType: string, cacheKey: string, data: any, projectId?: number): Promise<void> {
     try {
-      await db.delete(cachedAssets).where(
-        and(
-          eq(cachedAssets.cacheType, cacheType),
-          eq(cachedAssets.cacheKey, cacheKey)
-        )
-      );
+      // Use transaction for atomic delete + insert operation
+      await withTransaction(async (tx) => {
+        await tx.delete(cachedAssets).where(
+          and(
+            eq(cachedAssets.cacheType, cacheType),
+            eq(cachedAssets.cacheKey, cacheKey)
+          )
+        );
 
-      await db.insert(cachedAssets).values({
-        cacheType,
-        cacheKey,
-        data,
-        projectId: projectId || null,
-        expiresAt: sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`,
+        await tx.insert(cachedAssets).values({
+          cacheType,
+          cacheKey,
+          data,
+          projectId: projectId || null,
+          expiresAt: sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`,
+        });
       });
 
       logger.debug("Set cached asset", { cacheType, cacheKey });
@@ -390,14 +402,17 @@ export class DatabaseStorage {
 
   async saveEditFeedback(feedback: InsertEditFeedback): Promise<EditFeedbackRecord> {
     try {
-      const [result] = await db.insert(editFeedback).values(feedback).returning();
-      logger.debug("Saved edit feedback", { 
-        id: result.id, 
-        projectId: result.projectId,
-        actionType: result.actionType,
-        wasApproved: result.wasApproved,
+      // Use transaction for atomic feedback insertion
+      return await withTransaction(async (tx) => {
+        const [result] = await tx.insert(editFeedback).values(feedback).returning();
+        logger.debug("Saved edit feedback", { 
+          id: result.id, 
+          projectId: result.projectId,
+          actionType: result.actionType,
+          wasApproved: result.wasApproved,
+        });
+        return result;
       });
-      return result;
     } catch (error) {
       logger.error("Failed to save edit feedback", { error, projectId: feedback.projectId });
       throw error;

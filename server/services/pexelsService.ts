@@ -1,11 +1,32 @@
 import axios from "axios";
+import { z } from "zod";
 import type { StockMediaItem } from "@shared/schema";
 import { createLogger } from "../utils/logger";
+import { AI_CONFIG } from "../config/ai";
 
 const pexelsLogger = createLogger("pexels");
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 const PEXELS_BASE_URL = "https://api.pexels.com";
+
+// Runtime validation schema for stock media items
+const StockMediaItemSchema = z.object({
+  type: z.enum(["image", "video"]),
+  query: z.string(),
+  url: z.string().url(),
+  thumbnailUrl: z.string().optional(),
+  photographer: z.string().optional(),
+  duration: z.number().optional(),
+});
+
+function validateStockMediaItem(item: unknown): StockMediaItem | null {
+  const result = StockMediaItemSchema.safeParse(item);
+  if (!result.success) {
+    pexelsLogger.debug("Invalid stock media item:", result.error.issues[0]);
+    return null;
+  }
+  return result.data as StockMediaItem;
+}
 
 interface PexelsPhoto {
   id: number;
@@ -49,7 +70,8 @@ export async function searchPhotos(
 
   try {
     // Pexels photo search error often occurs with very long or complex queries
-    const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
+    const maxLength = AI_CONFIG.network.pexelsQueryMaxLength;
+    const searchQuery = query.length > maxLength ? query.substring(0, maxLength).trim() : query;
     
     const response = await axios.get(`${PEXELS_BASE_URL}/v1/search`, {
       headers: {
@@ -62,13 +84,18 @@ export async function searchPhotos(
       },
     });
 
-    return response.data.photos.map((photo: PexelsPhoto) => ({
-      type: "image" as const,
-      query,
-      url: photo.src.large,
-      thumbnailUrl: photo.src.small,
-      photographer: photo.photographer,
-    }));
+    return response.data.photos
+      .map((photo: PexelsPhoto) => {
+        const item = {
+          type: "image" as const,
+          query,
+          url: photo.src.large,
+          thumbnailUrl: photo.src.small,
+          photographer: photo.photographer,
+        };
+        return validateStockMediaItem(item);
+      })
+      .filter((item: StockMediaItem | null): item is StockMediaItem => item !== null);
   } catch (error) {
     pexelsLogger.error("Pexels photo search error", { query, error: error instanceof Error ? error.message : String(error) });
     return [];
@@ -113,7 +140,7 @@ export async function searchVideos(
           video.video_files.find((f) => f.quality === "sd") ||
           video.video_files[0];
 
-        return {
+        const item = {
           type: "video" as const,
           query,
           url: hdFile?.link || "",
@@ -121,8 +148,9 @@ export async function searchVideos(
           duration: video.duration,
           photographer: video.user.name,
         };
+        return item.url ? validateStockMediaItem(item) : null;
       })
-      .filter((item: { url: string }) => item.url && item.url.length > 0);
+      .filter((item: StockMediaItem | null): item is StockMediaItem => item !== null);
   } catch (error) {
     pexelsLogger.error("Pexels video search error", { 
       query: query.slice(0, 50), 

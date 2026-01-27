@@ -45,6 +45,22 @@ export const AI_CONFIG = {
     maxConcurrentJobs: 3,
     projectExpirationHours: 1,
     maxEventHistory: 100,
+    cleanupIntervalMs: 10 * 60 * 1000, // 10 minutes
+    sseHeartbeatMs: 15000, // 15 seconds
+  },
+  
+  network: {
+    defaultTimeoutMs: 30000,
+    longTimeoutMs: 60000,
+    retryBaseDelayMs: 1000,
+    maxRetryDelayMs: 15000,
+    pexelsQueryMaxLength: 80,
+  },
+  
+  sse: {
+    maxReconnectAttempts: 5,
+    baseReconnectDelayMs: 2000,
+    reconnectBackoffMultiplier: 1.5,
   },
 } as const;
 

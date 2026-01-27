@@ -137,7 +137,19 @@ const ERROR_PATTERNS: ErrorPattern[] = [
 
 export function getUserFriendlyError(error: Error | string): UserFriendlyError {
   const errorMessage = typeof error === "string" ? error : error.message;
-  const lowerMessage = errorMessage.toLowerCase();
+  
+  // Check error.cause for additional context (chained errors)
+  let causeMessage = "";
+  if (error instanceof Error && error.cause) {
+    const cause = error.cause;
+    if (cause instanceof Error) {
+      causeMessage = cause.message;
+    } else if (typeof cause === "string") {
+      causeMessage = cause;
+    }
+  }
+  
+  const lowerMessage = (errorMessage + " " + causeMessage).toLowerCase();
 
   for (const pattern of ERROR_PATTERNS) {
     for (const p of pattern.patterns) {

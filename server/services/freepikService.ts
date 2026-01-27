@@ -82,7 +82,7 @@ export async function searchFreepikPhotos(
   }
 
   try {
-    const searchQuery = query.length > 100 ? query.substring(0, 100).trim() : query;
+    const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
     
     const response = await axios.get(`${FREEPIK_BASE_URL}/resources`, {
       headers: {
@@ -137,7 +137,7 @@ export async function searchFreepikVideos(
   }
 
   try {
-    const searchQuery = query.length > 100 ? query.substring(0, 100).trim() : query;
+    const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
     
     const response = await axios.get(`${FREEPIK_BASE_URL}/videos`, {
       headers: {

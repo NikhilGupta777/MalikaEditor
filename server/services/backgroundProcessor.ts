@@ -5,9 +5,9 @@ import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants, type StockMediaVariants } from "./pexelsService";
 import { fetchFreepikMediaWithVariants, isFreepikConfigured } from "./freepikService";
 import { selectBestMediaForWindows, convertSelectionsToStockMediaItems } from "./ai/mediaSelector";
-// Dynamic limits removed - AI decides counts based on content
 import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
 import path from "path";
+import os from "os";
 import fs from "fs/promises";
 
 interface EditOptionsType {
@@ -30,8 +30,24 @@ const processorLogger = {
   debug: (...args: unknown[]) => console.log(`${new Date().toLocaleTimeString()} [DEBUG] [background-processor]`, ...args),
 };
 
-const UPLOADS_DIR = "/tmp/uploads";
-const OUTPUT_DIR = "/tmp/output";
+const TEMP_DIR = os.tmpdir();
+const UPLOADS_DIR = path.join(TEMP_DIR, "malika_uploads");
+const OUTPUT_DIR = path.join(TEMP_DIR, "malika_output");
+
+const processingLocks = new Map<number, boolean>();
+
+function acquireProcessingLock(projectId: number): boolean {
+  if (processingLocks.get(projectId)) {
+    processorLogger.info(`Project ${projectId} is already being processed, skipping duplicate request`);
+    return false;
+  }
+  processingLocks.set(projectId, true);
+  return true;
+}
+
+function releaseProcessingLock(projectId: number): void {
+  processingLocks.delete(projectId);
+}
 
 interface SSEEvent {
   id: number;
@@ -160,10 +176,16 @@ export async function startProcessingJob(
   prompt: string,
   editOptions: EditOptionsType
 ): Promise<void> {
+  // Use lock to prevent race conditions when multiple requests arrive simultaneously
+  if (!acquireProcessingLock(projectId)) {
+    return;
+  }
+  
   if (activeJobs.has(projectId)) {
     const existingJob = activeJobs.get(projectId)!;
     if (existingJob.status === "processing") {
       processorLogger.info(`Project ${projectId} is already being processed`);
+      releaseProcessingLock(projectId);
       return;
     }
   }
@@ -394,9 +416,8 @@ async function runProcessingPipeline(
           ? generateAiImagesForVideo(
               analysis.semanticAnalysis || { brollWindows: [], mainTopics: [], overallTone: "general", keyMoments: [], topicFlow: [], hookMoments: [] },
               undefined,
-              undefined, // No limit - generate for all AI-selected windows
               metadata.duration,
-              brollWindows // Pass edit plan B-roll windows (takes priority over semanticAnalysis.brollWindows)
+              brollWindows
             ).catch((aiError: Error) => {
               processorLogger.error("AI image generation failed:", aiError);
               addActivity(projectId, "AI image generation failed, continuing with stock media only");
@@ -481,7 +502,6 @@ async function runProcessingPipeline(
         const aiImages = await generateAiImagesForVideo(
           analysis.semanticAnalysis,
           undefined,
-          undefined, // No limit - AI decides based on content
           metadata.duration
         );
         
@@ -609,6 +629,9 @@ async function runProcessingPipeline(
       }
     }
   } finally {
+    // Release the processing lock to allow future processing requests
+    releaseProcessingLock(projectId);
+    
     // Call the completion callback to release the slot only if it was reserved
     const job = activeJobs.get(projectId);
     if (job?.slotReserved && onJobCompleteCallback) {

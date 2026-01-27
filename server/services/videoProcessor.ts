@@ -722,6 +722,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   }
   
   if (captionWordGroups.length === 0) {
+    videoLogger.warn("ASS caption generation returned empty: no valid caption word groups found", {
+      inputCaptionCount: captions.length,
+      inputCaptionsWithWords: captions.filter(c => c.words && c.words.length > 0).length
+    });
     return header;
   }
   

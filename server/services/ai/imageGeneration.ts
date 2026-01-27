@@ -114,7 +114,6 @@ export async function generateAiImage(
 export async function generateAiImagesForVideo(
   semanticAnalysis: SemanticAnalysis,
   videoContext?: VideoContext,
-  _maxImages?: number, // Deprecated - AI decides based on content
   videoDuration?: number,
   explicitBrollWindows?: Array<{ start: number; end: number; suggestedQuery: string; priority?: string; context?: string }>,
 ): Promise<GeneratedAiImage[]> {

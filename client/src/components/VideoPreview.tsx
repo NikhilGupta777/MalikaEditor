@@ -65,15 +65,12 @@ export function VideoPreview({
     };
 
     const handlePlay = () => {
-      console.log("Video started playing");
       setIsPlaying(true);
     };
     const handlePause = () => {
-      console.log("Video paused");
       setIsPlaying(false);
     };
     const handleEnded = () => {
-      console.log("Video ended");
       setIsPlaying(false);
     };
     const handleLoadedMetadata = () => {

@@ -265,8 +265,6 @@ interface BrollWindow {
   reason: string;
 }
 
-// REMOVED: enforceEvenBrollDistribution - AI now decides B-roll placement freely
-// No redistribution, no spacing constraints - AI's decisions are used verbatim
 
 export async function analyzeTranscriptSemantics(
   transcript: TranscriptSegment[],

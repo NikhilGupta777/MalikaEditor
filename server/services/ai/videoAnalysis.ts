@@ -752,19 +752,15 @@ export async function analyzeVideoDeep(
   
   aiLogger.info("Starting deep video analysis...");
   
-  const [videoAnalysis, semanticAnalysisResult] = await Promise.all([
-    analyzeVideoFrames(framePaths, duration, silentSegments),
-    analyzeTranscriptSemantics(transcript, undefined, duration),
-  ]);
+  // First analyze video frames to get context
+  const videoAnalysis = await analyzeVideoFrames(framePaths, duration, silentSegments);
   
-  let semanticAnalysis = semanticAnalysisResult;
-  if (videoAnalysis.context) {
-    semanticAnalysis = await analyzeTranscriptSemantics(
-      transcript,
-      videoAnalysis.context,
-      duration
-    );
-  }
+  // Then run semantic analysis with context if available (avoids duplicate call)
+  const semanticAnalysis = await analyzeTranscriptSemantics(
+    transcript,
+    videoAnalysis.context,
+    duration
+  );
   
   const fillerSegments = detectFillerWords(transcript);
   

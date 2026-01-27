@@ -120,6 +120,8 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Processing Lock System**: Atomic lock acquisition with timestamp tracking and 30-minute stale lock detection prevents race conditions and stuck jobs.
 - **Job Cleanup**: Automatic cleanup of completed/failed jobs after 5-minute delay preserves SSE replay capability while preventing memory leaks.
 - **Enhanced Edit Planning**: Video analysis data (scenes, emotionFlow, speakers) integrated into edit planning prompts for better AI decision-making.
+- **AI Image Selection Priority**: Media selector prompt explicitly prioritizes AI-generated images over stock footage, with enforced minimum usage requirement (at least 50% of generated AI images must be used). Fallback scoring gives AI images +15 bonus vs +3 for videos.
+- **AI Image Usage Guardrails**: System logs warnings when AI images are generated but not selected by media selector (0 used or <30% used), enabling detection of selection bias issues.
 
 ## External Dependencies
 

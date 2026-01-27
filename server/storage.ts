@@ -10,11 +10,13 @@ import {
   type TranscriptSegment,
   type InsertEditFeedback,
   type EditFeedbackRecord,
+  type TranscriptEnhancedType,
   videoAnalysisSchema,
   editPlanSchema,
   transcriptSegmentSchema,
   stockMediaItemSchema,
   reviewDataSchema,
+  transcriptEnhancedSchema,
   videoProjects,
   cachedAssets,
   projectAutosaves,
@@ -33,7 +35,7 @@ export async function withTransaction<T>(
   operation: (tx: typeof db) => Promise<T>
 ): Promise<T> {
   return await db.transaction(async (tx) => {
-    return await operation(tx as typeof db);
+    return await operation(tx as unknown as typeof db);
   });
 }
 

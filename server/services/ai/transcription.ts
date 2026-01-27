@@ -1,11 +1,123 @@
 import { toFile } from "openai";
 import { promises as fs } from "fs";
+import { spawn } from "child_process";
 import { createLogger } from "../../utils/logger";
 import { getOpenAIClient, getGeminiClient } from "./clients";
 import { AI_CONFIG } from "../../config/ai";
 import type { TranscriptSegment } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
+
+// Cache for speech start times to avoid redundant FFmpeg calls
+const speechStartCache = new Map<string, number>();
+
+/**
+ * Detect when speech first starts in an audio file using FFmpeg silencedetect
+ * This helps offset synthesized word timing to match actual speech start
+ * @param audioPath Path to the audio file
+ * @returns Time in seconds when speech first starts (0 if detection fails)
+ */
+async function detectSpeechStart(audioPath: string): Promise<number> {
+  // Check cache first
+  if (speechStartCache.has(audioPath)) {
+    return speechStartCache.get(audioPath)!;
+  }
+  
+  return new Promise((resolve) => {
+    const timeoutMs = 15000; // 15 second timeout
+    let completed = false;
+    let speechStart = 0;
+    
+    // Use silencedetect with sensitive settings to find first speech
+    // noise=-35dB catches most speech, d=0.2 catches short silences
+    const ffmpegArgs = [
+      '-i', audioPath,
+      '-af', 'silencedetect=noise=-35dB:d=0.2',
+      '-f', 'null',
+      '-'
+    ];
+    
+    const process = spawn('ffmpeg', ffmpegArgs);
+    
+    const timeoutId = setTimeout(() => {
+      if (!completed) {
+        completed = true;
+        process.kill('SIGKILL');
+        aiLogger.warn('Speech start detection timed out, using default offset 0');
+        speechStartCache.set(audioPath, 0);
+        resolve(0);
+      }
+    }, timeoutMs);
+    
+    let stderrData = '';
+    
+    process.stderr.on('data', (data) => {
+      stderrData += data.toString();
+    });
+    
+    process.on('close', () => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timeoutId);
+        
+        // Parse silence_start/end PAIRS from output to find leading silence
+        // FFmpeg outputs: silence_start: X ... silence_end: Y | silence_duration: Z
+        // We need to capture pairs in sequence to avoid mismatched arrays
+        // Use regex to capture start followed by its corresponding end
+        const silencePairRegex = /silence_start:\s*([\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g;
+        
+        const silencePairs: { start: number; end: number }[] = [];
+        let match;
+        while ((match = silencePairRegex.exec(stderrData)) !== null) {
+          silencePairs.push({
+            start: parseFloat(match[1]),
+            end: parseFloat(match[2])
+          });
+        }
+        
+        // Find the first silence block that starts at t=0 (within tolerance)
+        // The corresponding end time tells us when speech actually starts
+        for (const pair of silencePairs) {
+          if (pair.start < 0.1) { // Silence starts at beginning
+            speechStart = pair.end;
+            // Cap at reasonable value (don't offset more than 5 seconds)
+            speechStart = Math.min(speechStart, 5.0);
+            aiLogger.info(`Detected leading silence of ${speechStart.toFixed(2)}s, speech starts after`);
+            break;
+          }
+        }
+        
+        if (speechStart === 0 && silencePairs.length > 0) {
+          // No leading silence found (first silence starts later in audio)
+          aiLogger.debug(`No leading silence detected (first silence at ${silencePairs[0].start.toFixed(2)}s), speech starts at 0s`);
+        } else if (silencePairs.length === 0) {
+          // No silence detected at all - continuous speech
+          aiLogger.debug('No silence detected, speech starts at 0s');
+        }
+        
+        speechStartCache.set(audioPath, speechStart);
+        resolve(speechStart);
+      }
+    });
+    
+    process.on('error', (err) => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timeoutId);
+        aiLogger.warn(`Speech start detection failed: ${err.message}, using default offset 0`);
+        speechStartCache.set(audioPath, 0);
+        resolve(0);
+      }
+    });
+  });
+}
+
+/**
+ * Clear speech start cache (useful when processing new video)
+ */
+export function clearSpeechStartCache(): void {
+  speechStartCache.clear();
+}
 
 const MAX_RETRIES = AI_CONFIG.limits.maxRetries;
 const RETRY_DELAY_MS = 2000;
@@ -19,7 +131,7 @@ export function logTranscriptionConfig(): void {
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
 
   if (hasOpenAIKey) {
-    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with word-level timestamps)`);
+    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with synthesized word timing)`);
   }
 
   if (hasGeminiKey) {
@@ -373,30 +485,38 @@ function createSegmentsFromOpenAISegments(
 ): TranscriptSegment[] {
   if (!segments || segments.length === 0) return [];
   
+  // Use audioDuration for clamping if available, otherwise use a large value
+  const maxTime = audioDuration && audioDuration > 0 ? audioDuration : Infinity;
+  
   return segments.map(seg => {
-    const segmentDuration = seg.end - seg.start;
+    // Clamp segment times to audio duration
+    const segStart = Math.max(0, Math.min(seg.start, maxTime));
+    const segEnd = Math.max(segStart, Math.min(seg.end, maxTime));
+    const segmentDuration = Math.max(0.1, segEnd - segStart);
+    
     const words = seg.text.trim().split(/\s+/).filter(w => w.length > 0);
     
     // Synthesize word timing within segment bounds using improved algorithm
     const wordWeights = words.map(w => calculateWordWeight(w));
     const totalWeight = wordWeights.reduce((sum, w) => sum + w, 0);
     
-    let wordTime = seg.start;
+    let wordTime = segStart;
     const wordTimings = words.map((word, i) => {
       const weight = wordWeights[i];
-      const wordDuration = (weight / totalWeight) * segmentDuration;
+      const wordDuration = totalWeight > 0 ? (weight / totalWeight) * segmentDuration : segmentDuration / words.length;
+      // Clamp word times to never exceed audio duration
       const timing = {
         word: word,
-        start: wordTime,
-        end: wordTime + wordDuration,
+        start: Math.min(wordTime, maxTime),
+        end: Math.min(wordTime + wordDuration, maxTime),
       };
       wordTime += wordDuration;
       return timing;
     });
     
     return {
-      start: seg.start,
-      end: seg.end,
+      start: segStart,
+      end: segEnd,
       text: seg.text.trim(),
       words: wordTimings,
     };
@@ -404,32 +524,75 @@ function createSegmentsFromOpenAISegments(
 }
 
 // Create segments with improved word-level timing using syllable-based estimation
-function createSegmentsFromTextWithDuration(text: string, audioDuration: number): TranscriptSegment[] {
+// speechStartOffset: time when speech actually starts (from silence detection)
+function createSegmentsFromTextWithDuration(
+  text: string, 
+  audioDuration: number, 
+  speechStartOffset: number = 0
+): TranscriptSegment[] {
   // Split into sentences using natural language boundaries
   const sentences = splitIntoNaturalSegments(text);
+  
+  // Minimum speaking duration to prevent invalid timings
+  const MIN_SPEAKING_DURATION = 0.5;
+  
+  // Handle very short audio clips - skip offset entirely and scale to fit
+  if (audioDuration < MIN_SPEAKING_DURATION) {
+    aiLogger.debug(`Audio too short (${audioDuration.toFixed(2)}s), using minimal timing`);
+    // For very short audio, just use the full duration without offset
+    const words = text.trim().split(/\s+/).filter(w => w.length > 0);
+    const wordDuration = audioDuration / Math.max(1, words.length);
+    let t = 0;
+    const wordTimings = words.map(word => {
+      const timing = { word, start: t, end: Math.min(t + wordDuration, audioDuration) };
+      t += wordDuration;
+      return timing;
+    });
+    return [{
+      start: 0,
+      end: audioDuration,
+      text: text.trim(),
+      words: wordTimings,
+    }];
+  }
+  
+  // Clamp speechStartOffset to ensure we have at least MIN_SPEAKING_DURATION of speaking time
+  // This prevents negative/zero effective durations in edge cases
+  const safeOffset = Math.max(0, Math.min(speechStartOffset, audioDuration - MIN_SPEAKING_DURATION));
+  
+  // If audio is too short for any meaningful offset, start at 0
+  const finalOffset = audioDuration < MIN_SPEAKING_DURATION * 2 ? 0 : safeOffset;
+  
+  if (finalOffset !== speechStartOffset && speechStartOffset > 0) {
+    aiLogger.debug(`Adjusted speech offset from ${speechStartOffset.toFixed(2)}s to ${finalOffset.toFixed(2)}s (audio: ${audioDuration.toFixed(2)}s)`);
+  }
+  
+  // Effective duration is from speech start to audio end, capped to actual audio
+  const effectiveDuration = Math.min(audioDuration, Math.max(MIN_SPEAKING_DURATION, audioDuration - finalOffset));
   
   if (sentences.length === 0) {
     if (text.trim()) {
       // Single segment with syllable-weighted word timing
       const words = text.trim().split(/\s+/).filter(w => w.length > 0);
       const totalWeight = words.reduce((sum, word) => sum + calculateWordWeight(word), 0);
-      const effectiveDuration = audioDuration * 0.95; // Leave small buffer
+      const speakingDuration = effectiveDuration * 0.95; // Leave small buffer
       
-      let currentTime = 0;
+      let currentTime = finalOffset; // Start timing at detected speech start
       const wordTimings = words.map(word => {
         const weight = calculateWordWeight(word);
-        const wordDuration = (weight / totalWeight) * effectiveDuration;
+        const wordDuration = (weight / totalWeight) * speakingDuration;
+        // Clamp word times to never exceed audio duration
         const timing = {
           word: word,
-          start: currentTime,
-          end: currentTime + wordDuration,
+          start: Math.min(currentTime, audioDuration),
+          end: Math.min(currentTime + wordDuration, audioDuration),
         };
         currentTime += wordDuration;
         return timing;
       });
       
       return [{
-        start: 0,
+        start: Math.min(finalOffset, audioDuration),
         end: audioDuration,
         text: text.trim(),
         words: wordTimings,
@@ -445,15 +608,32 @@ function createSegmentsFromTextWithDuration(text: string, audioDuration: number)
   // Reserve time for inter-sentence gaps (natural pauses between sentences)
   const gapTime = 0.15; // 150ms between segments
   const totalGapTime = (sentences.length - 1) * gapTime;
-  const availableSpeakingTime = audioDuration - totalGapTime;
   
-  let currentTime = 0;
+  // Scale speaking time to fit within effective duration
+  // If total gap time exceeds effective duration, reduce gaps proportionally
+  const targetGapTime = Math.min(gapTime, effectiveDuration * 0.1 / Math.max(1, sentences.length - 1));
+  const actualTotalGapTime = (sentences.length - 1) * targetGapTime;
+  const availableSpeakingTime = Math.max(0.5, effectiveDuration - actualTotalGapTime);
   
-  return sentences.map((sentence: string, idx: number) => {
+  let currentTime = finalOffset; // Start timing at detected speech start
+  const result: TranscriptSegment[] = [];
+  
+  for (let idx = 0; idx < sentences.length; idx++) {
+    const sentence = sentences[idx];
+    
+    // Calculate remaining audio time - stop if exhausted
+    const remainingTime = audioDuration - currentTime;
+    if (remainingTime <= 0.1) {
+      aiLogger.debug(`Stopping segment creation at ${idx}/${sentences.length} - no remaining audio time`);
+      break;
+    }
+    
     // Calculate segment duration proportionally based on syllable weight
     const sentenceWeight = sentenceWeights[idx];
     const proportion = sentenceWeight / totalWeight;
-    const segmentDuration = Math.max(0.5, proportion * availableSpeakingTime);
+    // Calculate duration and ensure it doesn't exceed remaining audio time
+    const rawSegmentDuration = proportion * availableSpeakingTime;
+    const segmentDuration = Math.max(0.1, Math.min(rawSegmentDuration, remainingTime * 0.95));
     
     // Create word-level timing using syllable-weighted distribution
     const words = sentence.trim().split(/\s+/).filter(w => w.length > 0);
@@ -463,26 +643,32 @@ function createSegmentsFromTextWithDuration(text: string, audioDuration: number)
     let wordTime = currentTime;
     const wordTimings = words.map((word, i) => {
       const wordWeight = wordWeights[i];
-      const wordDuration = (wordWeight / segmentTotalWeight) * segmentDuration;
+      const wordDuration = segmentTotalWeight > 0 ? (wordWeight / segmentTotalWeight) * segmentDuration : segmentDuration / words.length;
+      // Clamp word end time to never exceed audio duration
       const timing = {
         word: word,
-        start: wordTime,
-        end: wordTime + wordDuration,
+        start: Math.min(wordTime, audioDuration),
+        end: Math.min(wordTime + wordDuration, audioDuration),
       };
       wordTime += wordDuration;
       return timing;
     });
     
     const segment: TranscriptSegment = {
-      start: currentTime,
-      end: currentTime + segmentDuration,
+      start: Math.min(currentTime, audioDuration),
+      end: Math.min(currentTime + segmentDuration, audioDuration),
       text: sentence.trim(),
       words: wordTimings,
     };
     
-    currentTime += segmentDuration + gapTime;
-    return segment;
-  }).filter((s: TranscriptSegment) => s.text.length > 0);
+    if (segment.text.length > 0) {
+      result.push(segment);
+    }
+    
+    currentTime += segmentDuration + targetGapTime;
+  }
+  
+  return result;
 }
 
 async function transcribeWithOpenAI(
@@ -503,10 +689,9 @@ async function transcribeWithOpenAI(
       const transcriptionParams: any = {
         file,
         model: AI_CONFIG.models.transcription.primary,
-        // Use verbose_json with timestamp_granularities for accurate word-level timing
-        // This is critical for caption sync - only whisper-1 supports this
-        response_format: "verbose_json",
-        timestamp_granularities: ["word", "segment"],
+        // Replit AI Integration only supports 'json' format for gpt-4o-mini-transcribe
+        // Word timing will be synthesized using improved segment-aware algorithm
+        response_format: "json",
       };
       
       if (languageHint) {
@@ -542,10 +727,13 @@ async function transcribeWithOpenAI(
       }
       
       // Fallback: Synthesize timing based on text length and audio duration
+      // Use speech start detection to align captions with actual speech
       aiLogger.warn("OpenAI returned no timestamps, falling back to synthesized timing");
       if (audioDuration && audioDuration > 0) {
-        const segments = createSegmentsFromTextWithDuration(text, audioDuration);
-        aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing (duration: ${audioDuration.toFixed(1)}s)`);
+        // Detect when speech actually starts to offset timing
+        const speechStart = await detectSpeechStart(audioPath);
+        const segments = createSegmentsFromTextWithDuration(text, audioDuration, speechStart);
+        aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing (duration: ${audioDuration.toFixed(1)}s, speech starts at ${speechStart.toFixed(2)}s)`);
         return segments;
       } else {
         aiLogger.warn("No audio duration provided - using estimated timestamps (karaoke timing may be imprecise)");
@@ -661,11 +849,17 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
       aiLogger.info(`Gemini transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
       
       // Use duration-aware segment creation for better word timing
-      const segments = audioDuration 
-        ? createSegmentsFromTextWithDuration(text, audioDuration)
-        : createSegmentsFromText(text);
-      aiLogger.info(`Created ${segments.length} transcript segments with ${audioDuration ? 'synthesized word timing' : 'estimated timestamps'}`);
-      return segments;
+      // Include speech start detection to align captions with actual speech
+      if (audioDuration) {
+        const speechStart = await detectSpeechStart(audioPath);
+        const segments = createSegmentsFromTextWithDuration(text, audioDuration, speechStart);
+        aiLogger.info(`Created ${segments.length} transcript segments with synthesized word timing (speech starts at ${speechStart.toFixed(2)}s)`);
+        return segments;
+      } else {
+        const segments = createSegmentsFromText(text);
+        aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
+        return segments;
+      }
       
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);

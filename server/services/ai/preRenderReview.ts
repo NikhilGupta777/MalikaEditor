@@ -344,7 +344,9 @@ export function recordEditFeedback(feedback: EditFeedback): void {
   }
   reviewLogger.debug(`Recorded feedback for action ${feedback.editActionId}: approved=${feedback.wasApproved}`);
   
-  recordEditFeedbackAsync(feedback).catch(() => {});
+  recordEditFeedbackAsync(feedback).catch((err) => {
+    reviewLogger.debug(`Failed to persist feedback to database: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 export async function getFeedbackSummaryAsync(): Promise<FeedbackSummary> {

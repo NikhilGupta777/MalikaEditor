@@ -169,8 +169,8 @@ export interface StockMediaVariants {
 
 export async function fetchStockMediaWithVariants(
   queries: string[],
-  photosPerQuery: number = 3,
-  videosPerQuery: number = 3
+  photosPerQuery: number = AI_CONFIG.stockMedia.photosPerQuery,
+  videosPerQuery: number = AI_CONFIG.stockMedia.videosPerQuery
 ): Promise<StockMediaVariants[]> {
   // No artificial limits - process all unique queries from AI
   const uniqueQueries = Array.from(new Set(queries));

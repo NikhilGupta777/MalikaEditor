@@ -517,6 +517,15 @@ ${analysis.narrativeStructure ? `
 - Has outro: ${analysis.narrativeStructure.hasOutro ? `Yes, starts at ${analysis.narrativeStructure.outroStart}s` : "No"}
 ` : "Not analyzed"}
 
+${analysis.scenes && analysis.scenes.length > 0 ? `SCENE ANALYSIS:
+${analysis.scenes.slice(0, 10).map(s => `  - ${s.start.toFixed(1)}s-${s.end.toFixed(1)}s: ${s.sceneType} - ${s.visualDescription || 'No description'} (${s.visualImportance} importance)`).join("\n")}
+` : ""}
+${analysis.emotionFlow && analysis.emotionFlow.length > 0 ? `EMOTION FLOW:
+${analysis.emotionFlow.slice(0, 8).map(e => `  - ${e.timestamp.toFixed(1)}s: ${e.emotion} (intensity: ${e.intensity}%)`).join("\n")}
+` : ""}
+${analysis.speakers && analysis.speakers.length > 0 ? `SPEAKERS DETECTED:
+${analysis.speakers.slice(0, 5).map(s => `  - ${s.speakerId}: ${s.start.toFixed(1)}s-${s.end.toFixed(1)}s - "${s.speakerLabel || 'Unknown'}"`).join("\n")}
+` : ""}
 TOPIC SEGMENTS:
 ${topicsSummary}
 

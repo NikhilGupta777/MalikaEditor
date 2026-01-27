@@ -49,6 +49,14 @@ export const AI_CONFIG = {
     sseHeartbeatMs: 15000, // 15 seconds
   },
   
+  stockMedia: {
+    // Per-query fetch limits - increased to give AI more options
+    photosPerQuery: 5,
+    videosPerQuery: 5,
+    freepikPhotosPerQuery: 3,
+    freepikVideosPerQuery: 3,
+  },
+  
   network: {
     defaultTimeoutMs: 30000,
     longTimeoutMs: 60000,

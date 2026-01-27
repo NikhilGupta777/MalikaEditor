@@ -26,6 +26,7 @@ export function setOnJobComplete(callback: (projectId: number) => void) {
 
 const processorLogger = {
   info: (...args: unknown[]) => console.log(`${new Date().toLocaleTimeString()} [INFO] [background-processor]`, ...args),
+  warn: (...args: unknown[]) => console.warn(`${new Date().toLocaleTimeString()} [WARN] [background-processor]`, ...args),
   error: (...args: unknown[]) => console.error(`${new Date().toLocaleTimeString()} [ERROR] [background-processor]`, ...args),
   debug: (...args: unknown[]) => console.log(`${new Date().toLocaleTimeString()} [DEBUG] [background-processor]`, ...args),
 };
@@ -34,14 +35,29 @@ const TEMP_DIR = os.tmpdir();
 const UPLOADS_DIR = path.join(TEMP_DIR, "malika_uploads");
 const OUTPUT_DIR = path.join(TEMP_DIR, "malika_output");
 
-const processingLocks = new Map<number, boolean>();
+const processingLocks = new Map<number, { acquired: boolean; timestamp: number }>();
+const LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 
 function acquireProcessingLock(projectId: number): boolean {
-  if (processingLocks.get(projectId)) {
-    processorLogger.info(`Project ${projectId} is already being processed, skipping duplicate request`);
-    return false;
+  const existing = processingLocks.get(projectId);
+  const now = Date.now();
+  
+  if (existing?.acquired) {
+    if (now - existing.timestamp > LOCK_TIMEOUT_MS) {
+      const activeJob = activeJobs.get(projectId);
+      if (activeJob?.status === "processing") {
+        processorLogger.warn(`Stale lock detected for project ${projectId} but job still marked as processing - denying new request`);
+        return false;
+      }
+      processorLogger.warn(`Stale lock detected for project ${projectId} (job not processing), forcing release`);
+      processingLocks.delete(projectId);
+    } else {
+      processorLogger.info(`Project ${projectId} is already being processed, skipping duplicate request`);
+      return false;
+    }
   }
-  processingLocks.set(projectId, true);
+  
+  processingLocks.set(projectId, { acquired: true, timestamp: now });
   return true;
 }
 
@@ -168,6 +184,23 @@ function addActivity(projectId: number, message: string) {
       job.activities.shift();
     }
     notifySubscribers(projectId, "activity", activity);
+  }
+}
+
+function cleanupJob(projectId: number, immediate: boolean = false): void {
+  const cleanup = () => {
+    const job = activeJobs.get(projectId);
+    if (job && job.status !== "processing") {
+      activeJobs.delete(projectId);
+      jobSubscribers.delete(projectId);
+      processorLogger.debug(`Cleaned up job data for project ${projectId}`);
+    }
+  };
+  
+  if (immediate) {
+    cleanup();
+  } else {
+    setTimeout(cleanup, 300000);
   }
 }
 
@@ -404,11 +437,11 @@ async function runProcessingPipeline(
       
       // Run stock fetch from both providers and AI generation in parallel
       const [pexelsVariants, freepikVariants, aiImagesResult] = await Promise.all([
-        // Pexels stock media fetching - use all queries from AI analysis
-        fetchStockMediaWithVariants(stockQueries, 3, 3),
-        // Freepik stock media fetching (if configured)
+        // Pexels stock media fetching - use all queries from AI analysis (counts from AI_CONFIG)
+        fetchStockMediaWithVariants(stockQueries),
+        // Freepik stock media fetching (if configured, counts from AI_CONFIG)
         freepikEnabled 
-          ? fetchFreepikMediaWithVariants(stockQueries, 2, 2)
+          ? fetchFreepikMediaWithVariants(stockQueries)
           : Promise.resolve([] as StockMediaVariants[]),
         // AI image generation (if enabled) - use edit plan B-roll windows for consistency
         // Works even if semanticAnalysis is missing, as long as we have explicit B-roll windows
@@ -633,20 +666,19 @@ async function runProcessingPipeline(
     releaseProcessingLock(projectId);
     
     // Call the completion callback to release the slot only if it was reserved
-    const job = activeJobs.get(projectId);
-    if (job?.slotReserved && onJobCompleteCallback) {
-      job.slotReserved = false;
+    const finalJob = activeJobs.get(projectId);
+    if (finalJob?.slotReserved && onJobCompleteCallback) {
+      finalJob.slotReserved = false;
       onJobCompleteCallback(projectId);
     }
     
-    // Clean up job after a delay to allow reconnections
-    setTimeout(() => {
-      if (activeJobs.get(projectId)?.status !== "processing") {
-        activeJobs.delete(projectId);
-        jobSubscribers.delete(projectId);
-        processorLogger.debug(`Cleaned up job data for project ${projectId}`);
-      }
-    }, 300000);
+    // Trim activities but keep event history for SSE replay on reconnect
+    if (finalJob) {
+      finalJob.activities = finalJob.activities.slice(-20);
+    }
+    
+    // Clean up job after a delay to allow reconnections and SSE replay
+    cleanupJob(projectId, false);
   }
 }
 

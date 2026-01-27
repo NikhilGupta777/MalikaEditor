@@ -1,6 +1,7 @@
 import axios from "axios";
 import type { StockMediaItem } from "@shared/schema";
 import { createLogger } from "../utils/logger";
+import { AI_CONFIG } from "../config/ai";
 
 const freepikLogger = createLogger("freepik");
 
@@ -232,8 +233,8 @@ export interface FreepikMediaVariants {
 
 export async function fetchFreepikMediaWithVariants(
   queries: string[],
-  photosPerQuery: number = 2,
-  videosPerQuery: number = 2
+  photosPerQuery: number = AI_CONFIG.stockMedia.freepikPhotosPerQuery,
+  videosPerQuery: number = AI_CONFIG.stockMedia.freepikVideosPerQuery
 ): Promise<FreepikMediaVariants[]> {
   if (!FREEPIK_API_KEY) {
     freepikLogger.debug("Freepik API key not configured, skipping all queries");

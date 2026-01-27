@@ -27,7 +27,7 @@ const processQuerySchema = z.object({
   addCaptions: booleanQueryParam(true),
   addBroll: booleanQueryParam(true),
   removeSilence: booleanQueryParam(true),
-  generateAiImages: booleanQueryParam(false),
+  generateAiImages: booleanQueryParam(true),
   addTransitions: booleanQueryParam(false),
   skipReview: booleanQueryParam(false),
   reconnect: booleanQueryParam(false),

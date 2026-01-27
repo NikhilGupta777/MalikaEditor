@@ -22,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
+import { useRenderSSE } from "@/hooks/useRenderSSE";
 import { cn } from "@/lib/utils";
 import { CLIENT_CONFIG } from "@/lib/config";
 import type {
@@ -148,6 +149,59 @@ export default function Editor() {
   const SSE_BASE_DELAY = CLIENT_CONFIG.sse.baseReconnectDelayMs;
   const SSE_BACKOFF_MULTIPLIER = CLIENT_CONFIG.sse.reconnectBackoffMultiplier;
   
+  // Render SSE hook for cleaner connection management
+  const renderSSE = useRenderSSE({
+    onStatusUpdate: (status) => {
+      setProject((prev) => prev ? { ...prev, status } : null);
+    },
+    onActivity: (activity) => {
+      setActivities((prev) => {
+        const updated = [...prev, activity];
+        return updated.length > 100 ? updated.slice(-100) : updated;
+      });
+    },
+    onComplete: (data) => {
+      setProject((prev) => prev ? {
+        ...prev,
+        status: "completed",
+        outputPath: data.outputPath,
+        duration: data.duration,
+        aiImageStats: data.aiImageStats as AiImageStats | undefined,
+      } : null);
+      setPreviewUrl(data.outputPath);
+      setIsRendering(false);
+      setReviewData(null);
+      setActivities([]);
+      toast({
+        title: "Your video is ready!",
+        description: "Download your edited video below",
+      });
+    },
+    onError: (error, suggestion) => {
+      setProject((prev) => prev ? {
+        ...prev,
+        status: "failed",
+        errorMessage: error,
+        errorSuggestion: suggestion,
+      } : null);
+      setIsRendering(false);
+      setActivities([]);
+      toast({
+        title: "Rendering failed",
+        description: error || "Please try again",
+        variant: "destructive",
+      });
+    },
+    onConnectionLost: () => {
+      setIsRendering(false);
+      toast({
+        title: "Connection lost",
+        description: "The server connection was interrupted. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+  
   // Load project from URL if project ID is present
   const { data: loadedProject, isLoading: isLoadingProject } = useQuery<VideoProject>({
     queryKey: ["/api/videos", projectIdFromUrl],
@@ -179,104 +233,11 @@ export default function Editor() {
           })
           .catch(err => console.error("Failed to load review data:", err));
       }
-      // Auto-reconnect to rendering if project is mid-render
+      // Auto-reconnect to rendering if project is mid-render using renderSSE hook
       if (loadedProject.status === "rendering") {
         console.log("Reconnecting to in-progress rendering...");
         setIsRendering(true);
-        reconnectAttemptsRef.current = 0;
-        
-        const connectRenderSSE = (projectId: number) => {
-          // Clear any pending reconnect timeout
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
-          }
-          
-          const params = new URLSearchParams();
-          params.append("reconnect", "true");
-          
-          const eventSource = new EventSource(
-            `/api/videos/${projectId}/render?${params.toString()}`
-          );
-          eventSourceRef.current = eventSource;
-          
-          eventSource.onmessage = (event) => {
-            reconnectAttemptsRef.current = 0; // Reset on successful message
-            const data = JSON.parse(event.data);
-            
-            if (data.type === "status") {
-              setProject((prev) => prev ? { ...prev, status: data.status } : null);
-            } else if (data.type === "activity") {
-              setActivities((prev) => {
-                const newActivity = { message: data.message, timestamp: data.timestamp };
-                const updated = [...prev, newActivity];
-                return updated.length > 100 ? updated.slice(-100) : updated;
-              });
-            } else if (data.type === "complete") {
-              setProject((prev) =>
-                prev ? {
-                  ...prev,
-                  status: "completed",
-                  outputPath: data.outputPath,
-                  duration: data.duration,
-                } : null
-              );
-              setPreviewUrl(data.outputPath);
-              setIsRendering(false);
-              setActivities([]);
-              eventSource.close();
-              eventSourceRef.current = null;
-            } else if (data.type === "error") {
-              setProject((prev) =>
-                prev ? { ...prev, status: "failed", errorMessage: data.error } : null
-              );
-              setIsRendering(false);
-              eventSource.close();
-              eventSourceRef.current = null;
-            }
-          };
-          
-          eventSource.onerror = () => {
-            console.log("Render SSE connection lost, attempting reconnection...");
-            eventSource.close();
-            eventSourceRef.current = null;
-            
-            // Fetch current status and reconnect if still rendering
-            fetch(`/api/videos/${projectId}`)
-              .then(res => res.json())
-              .then(data => {
-                if (data.status === "completed") {
-                  setProject((prev) => prev ? { ...prev, status: "completed", outputPath: data.outputPath } : null);
-                  setPreviewUrl(data.outputPath);
-                  setIsRendering(false);
-                } else if (data.status === "failed") {
-                  setProject((prev) => prev ? { ...prev, status: "failed", errorMessage: data.errorMessage } : null);
-                  setIsRendering(false);
-                } else if (data.status === "rendering") {
-                  // Check retry limit
-                  if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-                    console.log("Max reconnection attempts reached");
-                    setIsRendering(false);
-                    return;
-                  }
-                  // Still rendering - reconnect with exponential backoff
-                  reconnectAttemptsRef.current++;
-                  const delay = Math.min(2000 * Math.pow(1.5, reconnectAttemptsRef.current - 1), 10000);
-                  console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
-                  reconnectTimeoutRef.current = setTimeout(() => {
-                    connectRenderSSE(projectId);
-                  }, delay);
-                } else {
-                  setIsRendering(false);
-                }
-              })
-              .catch(() => {
-                setIsRendering(false);
-              });
-          };
-        };
-        
-        connectRenderSSE(loadedProject.id);
+        renderSSE.startRender(loadedProject.id, editOptions.qualityMode, true);
       }
       
       // Auto-reconnect to processing if project is in a processing state
@@ -743,83 +704,14 @@ export default function Editor() {
         reviewData: updatedReviewData,
       });
       
-      // Then start the render process
+      // Close any existing SSE connections
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
       
-      const eventSource = new EventSource(`/api/videos/${project.id}/render?qualityMode=${editOptions.qualityMode}`);
-      eventSourceRef.current = eventSource;
-      
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === "status") {
-          setProject((prev) => prev ? { ...prev, status: data.status } : null);
-        } else if (data.type === "activity") {
-          setActivities((prev) => {
-            const newActivity = {
-              message: data.message,
-              timestamp: data.timestamp,
-              details: data.details,
-            };
-            const updated = [...prev, newActivity];
-            return updated.length > 100 ? updated.slice(-100) : updated;
-          });
-        } else if (data.type === "complete") {
-          setProject((prev) =>
-            prev ? {
-              ...prev,
-              status: "completed",
-              outputPath: data.outputPath,
-              duration: data.duration,
-              aiImageStats: data.aiImageStats || prev.aiImageStats,
-            } : null
-          );
-          setPreviewUrl(data.outputPath);
-          setIsRendering(false);
-          setReviewData(null);
-          setActivities([]); // Clear activities on completion
-          eventSource.close();
-          eventSourceRef.current = null;
-          
-          toast({
-            title: "Your video is ready!",
-            description: "Download your edited video below",
-          });
-        } else if (data.type === "error") {
-          setProject((prev) =>
-            prev ? {
-              ...prev,
-              status: "failed",
-              errorMessage: data.error,
-              errorSuggestion: data.suggestion,
-            } : null
-          );
-          setIsRendering(false);
-          setActivities([]); // Clear activities on error
-          eventSource.close();
-          eventSourceRef.current = null;
-          
-          toast({
-            title: "Rendering failed",
-            description: data.error || "Please try again",
-            variant: "destructive",
-          });
-        }
-      };
-      
-      eventSource.onerror = () => {
-        setIsRendering(false);
-        eventSource.close();
-        eventSourceRef.current = null;
-        
-        toast({
-          title: "Connection lost",
-          description: "The server connection was interrupted. Please try again.",
-          variant: "destructive",
-        });
-      };
+      // Use the useRenderSSE hook for cleaner SSE management
+      renderSSE.startRender(project.id, editOptions.qualityMode);
     } catch (error) {
       setIsRendering(false);
       toast({
@@ -828,7 +720,7 @@ export default function Editor() {
         variant: "destructive",
       });
     }
-  }, [project, toast]);
+  }, [project, toast, editOptions.qualityMode, renderSSE]);
 
   const handleReviewCancel = useCallback(() => {
     setReviewData(null);

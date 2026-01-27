@@ -2,7 +2,8 @@ import { storage } from "../storage";
 import { getVideoMetadata, extractFrames, extractAudio, detectSilence } from "./videoProcessor";
 import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudio } from "./ai";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
-import { fetchStockMediaWithVariants } from "./pexelsService";
+import { fetchStockMediaWithVariants, type StockMediaVariants } from "./pexelsService";
+import { fetchFreepikMediaWithVariants, isFreepikConfigured } from "./freepikService";
 import { selectBestMediaForWindows, convertSelectionsToStockMediaItems } from "./ai/mediaSelector";
 // Dynamic limits removed - AI decides counts based on content
 import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
@@ -373,16 +374,22 @@ async function runProcessingPipeline(
       // These are completely independent operations
       const shouldGenerateAi = editOptions.generateAiImages && analysis.semanticAnalysis;
       
-      addActivity(projectId, `Fetching stock media${shouldGenerateAi ? ' + generating AI images' : ''} in parallel...`);
+      const freepikEnabled = isFreepikConfigured();
+      const sourceInfo = freepikEnabled ? 'Pexels + Freepik' : 'Pexels';
+      addActivity(projectId, `Fetching stock media from ${sourceInfo}${shouldGenerateAi ? ' + generating AI images' : ''} in parallel...`);
       const mediaFetchStart = Date.now();
       
       // No limits - AI decides count based on content analysis
-      processorLogger.info(`Processing ${metadata.duration}s video with ${stockQueries.length} stock queries, AI images based on content`);
+      processorLogger.info(`Processing ${metadata.duration}s video with ${stockQueries.length} stock queries from ${sourceInfo}, AI images based on content`);
       
-      // Run stock fetch and AI generation in parallel
-      const [stockVariants, aiImagesResult] = await Promise.all([
-        // Stock media fetching - use all queries from AI analysis
+      // Run stock fetch from both providers and AI generation in parallel
+      const [pexelsVariants, freepikVariants, aiImagesResult] = await Promise.all([
+        // Pexels stock media fetching - use all queries from AI analysis
         fetchStockMediaWithVariants(stockQueries, 3, 3),
+        // Freepik stock media fetching (if configured)
+        freepikEnabled 
+          ? fetchFreepikMediaWithVariants(stockQueries, 2, 2)
+          : Promise.resolve([] as StockMediaVariants[]),
         // AI image generation (if enabled) - use edit plan B-roll windows for consistency
         // Works even if semanticAnalysis is missing, as long as we have explicit B-roll windows
         shouldGenerateAi && (analysis.semanticAnalysis || brollWindows.length > 0)
@@ -403,9 +410,24 @@ async function runProcessingPipeline(
           : Promise.resolve([] as Awaited<ReturnType<typeof generateAiImagesForVideo>>),
       ]);
       
+      // Combine Pexels and Freepik results - merge by query
+      const stockVariants: StockMediaVariants[] = pexelsVariants.map((pexelsResult, idx) => {
+        const freepikResult = freepikVariants[idx];
+        return {
+          query: pexelsResult.query,
+          photos: [...pexelsResult.photos, ...(freepikResult?.photos || [])],
+          videos: [...pexelsResult.videos, ...(freepikResult?.videos || [])],
+          allItems: [...pexelsResult.allItems, ...(freepikResult?.allItems || [])],
+        };
+      });
+      
       const mediaFetchTime = ((Date.now() - mediaFetchStart) / 1000).toFixed(1);
-      const totalPhotos = stockVariants.reduce((sum, v) => sum + v.photos.length, 0);
-      const totalVideos = stockVariants.reduce((sum, v) => sum + v.videos.length, 0);
+      const pexelsPhotos = pexelsVariants.reduce((sum, v) => sum + v.photos.length, 0);
+      const pexelsVideos = pexelsVariants.reduce((sum, v) => sum + v.videos.length, 0);
+      const freepikPhotos = freepikVariants.reduce((sum, v) => sum + v.photos.length, 0);
+      const freepikVideos = freepikVariants.reduce((sum, v) => sum + v.videos.length, 0);
+      const totalPhotos = pexelsPhotos + freepikPhotos;
+      const totalVideos = pexelsVideos + freepikVideos;
       
       const generatedAiImages = aiImagesResult || [];
       aiImageCount = generatedAiImages.length;

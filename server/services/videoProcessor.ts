@@ -3,6 +3,26 @@ import { promises as fs, createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
 import path from "path";
 import os from "os";
+import { v4 as uuidv4 } from "uuid";
+import axios from "axios";
+import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem, SemanticAnalysis } from "@shared/schema";
+import { createLogger } from "../utils/logger";
+
+export interface ChapterInfo {
+  title: string;
+  startTime: number;
+  endTime: number;
+  type?: "intro" | "section" | "climax" | "outro" | "keypoint";
+}
+
+export interface ChapterExtractionInput {
+  editPlan?: EditPlan;
+  semanticAnalysis?: SemanticAnalysis;
+  videoDuration: number;
+  outputTimeMapping?: { sourceStart: number; sourceEnd: number; outputStart: number }[];
+}
+
+const videoLogger = createLogger("video-processor");
 
 const TEMP_DIR = os.tmpdir();
 const UPLOADS_DIR = path.join(TEMP_DIR, "malika_uploads");
@@ -12,7 +32,9 @@ const AUDIO_DIR = path.join(TEMP_DIR, "malika_audio");
 const STOCK_DIR = path.join(TEMP_DIR, "malika_stock");
 const CHAPTERS_DIR = path.join(TEMP_DIR, "malika_chapters");
 
-const videoLogger = createLogger("video-processor");
+const FFPROBE_TIMEOUT_MS = 30000;
+const FFMPEG_SHORT_TIMEOUT_MS = 2 * 60 * 1000;
+const FFMPEG_LONG_TIMEOUT_MS = 10 * 60 * 1000;
 
 export function generateChaptersFromEditPlan(input: ChapterExtractionInput): ChapterInfo[] {
   const { editPlan, semanticAnalysis, videoDuration, outputTimeMapping } = input;

@@ -252,7 +252,7 @@ async function runProcessingPipeline(
     if (framePaths.length > 0) {
       tempFiles.push(path.dirname(framePaths[0]));
     } else {
-      videoLogger.warn(`No frames extracted from video - visual analysis may be limited`);
+      processorLogger.error(`No frames extracted from video - visual analysis may be limited`);
     }
     tempFiles.push(audioPath);
     
@@ -562,6 +562,20 @@ async function runProcessingPipeline(
 
     notifySubscribers(projectId, "reviewReady", { reviewData });
     notifySubscribers(projectId, "status", { status: "awaiting_review" });
+
+    // Clean up temp files except the final output
+    for (const file of tempFiles) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.isDirectory()) {
+          await fs.rm(file, { recursive: true });
+        } else {
+          await fs.unlink(file);
+        }
+      } catch (e) {
+        // File may already be deleted or doesn't exist - ignore
+      }
+    }
     addActivity(projectId, "Processing complete! Ready for your review.");
 
     job.status = "completed";

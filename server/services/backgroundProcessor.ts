@@ -287,13 +287,11 @@ async function runProcessingPipeline(
       ? analysis.videoAnalysis.duration
       : (metadata.duration || transcriptEnd || 60);
     
+    // Flatten analysis to match videoAnalysisSchema - spread videoAnalysis props at top level
     const sanitizedAnalysis = {
-      ...analysis,
-      videoAnalysis: {
-        ...analysis.videoAnalysis,
-        duration: validDuration,
-        frames: analysis.videoAnalysis?.frames || [],
-      },
+      ...analysis.videoAnalysis,
+      duration: validDuration,
+      frames: analysis.videoAnalysis?.frames || [],
       semanticAnalysis: analysis.semanticAnalysis,
     };
     
@@ -319,10 +317,10 @@ async function runProcessingPipeline(
     addActivity(projectId, "Creating intelligent edit plan...");
     const fillerSegments: { start: number; end: number; word: string }[] = [];
     
-    // Use the already sanitized analysis with valid duration
+    // Use the already sanitized analysis with valid duration (now flattened)
     const editPlan = await generateSmartEditPlan(
       prompt,
-      sanitizedAnalysis.videoAnalysis,
+      sanitizedAnalysis,
       transcript,
       sanitizedAnalysis.semanticAnalysis || {},
       fillerSegments

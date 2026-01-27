@@ -178,10 +178,19 @@ const normalizedEnum = <T extends [string, ...string[]]>(
 ) => z.enum(values).or(z.string().transform(normalizer));
 
 // Coerced number that handles string inputs from AI
-const coercedNumber = () => z.coerce.number();
-const coercedNumberMin = (min: number) => z.coerce.number().min(min);
-const coercedNumberMax = (max: number) => z.coerce.number().max(max);
-const coercedNumberRange = (min: number, max: number) => z.coerce.number().min(min).max(max);
+const coercedNumber = () => z.coerce.number().refine(v => !Number.isNaN(v), { message: "Expected valid number" });
+const coercedNumberMin = (min: number) => z.coerce.number().min(min).refine(v => !Number.isNaN(v), { message: "Expected valid number" });
+const coercedNumberMax = (max: number) => z.coerce.number().max(max).refine(v => !Number.isNaN(v), { message: "Expected valid number" });
+const coercedNumberRange = (min: number, max: number) => z.coerce.number().min(min).max(max).refine(v => !Number.isNaN(v), { message: "Expected valid number" });
+
+// Coerced number with fallback - use only for optional/non-critical fields where NaN should be treated as default
+const coercedNumberWithDefault = (defaultValue: number = 0) => z.preprocess(
+  (val) => {
+    const num = Number(val);
+    return Number.isNaN(num) || val === undefined || val === null ? defaultValue : num;
+  },
+  z.number()
+);
 
 export const projectStatusEnum = pgEnum("project_status", [
   "pending",
@@ -358,7 +367,7 @@ export const sceneSegmentSchema = z.object({
   sceneType: z.string(),
   visualDescription: z.string(),
   emotionalTone: z.string(),
-  speakerId: z.string().optional(),
+  speakerId: z.string().nullish(),
   visualImportance: normalizedEnum(["high", "medium", "low"], normalizeImportance),
 });
 
@@ -377,7 +386,7 @@ export type EmotionFlowPoint = z.infer<typeof emotionFlowPointSchema>;
 export const speakerSegmentSchema = z.object({
   start: coercedNumber(),
   end: coercedNumber(),
-  speakerId: z.string(),
+  speakerId: z.string().nullish().transform(v => v ?? "speaker_1"),
   speakerLabel: z.string().optional(),
 });
 
@@ -492,7 +501,7 @@ export const videoAnalysisSchema = z.object({
   fps: coercedNumber().optional(),
   width: coercedNumber().optional(),
   height: coercedNumber().optional(),
-  frames: z.array(frameAnalysisSchema),
+  frames: z.array(frameAnalysisSchema).optional().default([]),
   silentSegments: z.array(z.object({
     start: coercedNumber(),
     end: coercedNumber(),

@@ -219,7 +219,7 @@ const SceneSegmentResponseSchema = z.object({
   sceneType: z.string(),
   visualDescription: z.string().optional().default(""),
   emotionalTone: z.string(),
-  speakerId: z.string().optional(),
+  speakerId: z.string().nullish(),
   visualImportance: z.enum(["high", "medium", "low"])
     .or(z.string().transform(normalizeVisualImportance)),
 });
@@ -233,7 +233,7 @@ const EmotionFlowPointResponseSchema = z.object({
 const SpeakerSegmentResponseSchema = z.object({
   start: z.number(),
   end: z.number(),
-  speakerId: z.string(),
+  speakerId: z.string().nullish().transform(v => v ?? "speaker_1"),
   speakerLabel: z.string().optional(),
 });
 

@@ -572,7 +572,7 @@ async function runProcessingPipeline(
         } else {
           await fs.unlink(file);
         }
-      } catch (e) {
+      } catch (cleanupErr) {
         // File may already be deleted or doesn't exist - ignore
       }
     }
@@ -580,19 +580,6 @@ async function runProcessingPipeline(
 
     job.status = "completed";
     processorLogger.info(`Background processing completed for project ${projectId}`);
-
-    for (const file of tempFiles) {
-      try {
-        const stat = await fs.stat(file);
-        if (stat.isDirectory()) {
-          await fs.rm(file, { recursive: true });
-        } else {
-          await fs.unlink(file);
-        }
-      } catch (cleanupErr) {
-        // File may already be deleted or doesn't exist - ignore
-      }
-    }
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Processing failed";

@@ -42,7 +42,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 
 #### Core AI Capabilities
 - **Deep Video Understanding**: Utilizes Gemini API for multi-layer analysis including scene detection, emotion flow, speaker detection, visual importance scoring, and key moment detection.
-- **Smart Transcript Analysis**: Multi-provider audio transcription (OpenAI primary, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation in multiple languages.
+- **Smart Transcript Analysis**: Multi-provider audio transcription (AssemblyAI primary with native word-level timestamps, OpenAI secondary with synthesized timing, Gemini fallback) with filler word detection, hook analysis, structure analysis, topic flow mapping, and ultra-specific B-roll query generation in multiple languages.
 - **Multi-Pass Edit Planning**: An optimized 2-pass intelligent edit system (consolidated Structure+Quality+B-roll Pass, then Quality Review Pass) reduces API calls while generating comprehensive edit plans. Falls back to sequential 4-pass if needed.
 - **Transcript-Based Editing**: Allows users to edit video by manipulating an interactive, color-coded transcript with real-time preview, including auto-removal of filler words and manual override for AI suggestions.
 - **Additional AI Features**: Includes Karaoke-style captions and AI image generation based on transcript content.
@@ -53,7 +53,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 ### Video Processing Pipeline
 1.  **Upload**: Video stored temporarily.
 2.  **Analysis**: Frames extracted, analyzed with Gemini Vision.
-3.  **Transcription**: Audio extracted and transcribed (OpenAI gpt-4o-mini-transcribe with synthesized word timing from syllable-based algorithm; Gemini fallback for reliability).
+3.  **Transcription**: Audio extracted and transcribed (AssemblyAI Universal with native word-level timestamps preferred; OpenAI gpt-4o-mini-transcribe with synthesized timing as secondary; Gemini fallback for reliability).
 4.  **Planning**: AI generates edit plan using multi-pass system.
 5.  **Stock Media**: Fetches media from Pexels.
 6.  **AI Images**: Generates custom AI images.

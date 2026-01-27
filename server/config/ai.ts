@@ -1,9 +1,10 @@
 export const AI_CONFIG = {
   models: {
     transcription: {
-      // Replit AI Integration only supports gpt-4o-mini-transcribe with 'json' format
-      // Word timing is synthesized using improved segment-aware algorithm
-      primary: "gpt-4o-mini-transcribe",
+      // AssemblyAI provides native word-level timestamps - best for captions
+      // Falls back to OpenAI/Gemini if AssemblyAI unavailable
+      primary: "assemblyai-universal",
+      secondary: "gpt-4o-mini-transcribe",
       fallback: "gemini-2.5-flash",
     },
     analysis: "gemini-2.5-flash",

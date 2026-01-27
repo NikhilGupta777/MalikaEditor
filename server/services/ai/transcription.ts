@@ -8,6 +8,219 @@ import type { TranscriptSegment } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
 
+// AssemblyAI API configuration
+const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2";
+
+interface AssemblyAIWord {
+  text: string;
+  start: number; // milliseconds
+  end: number;   // milliseconds
+  confidence: number;
+  speaker?: string;
+}
+
+interface AssemblyAITranscript {
+  id: string;
+  status: "queued" | "processing" | "completed" | "error";
+  text: string | null;
+  words: AssemblyAIWord[] | null;
+  error?: string;
+  audio_duration?: number;
+  language_code?: string;
+}
+
+/**
+ * Transcribe audio using AssemblyAI API
+ * AssemblyAI provides native word-level timestamps - ideal for karaoke captions
+ */
+async function transcribeWithAssemblyAI(
+  audioPath: string,
+  audioDuration?: number,
+  languageHint?: string
+): Promise<TranscriptSegment[]> {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (!apiKey) {
+    aiLogger.debug("AssemblyAI API key not configured, skipping");
+    return [];
+  }
+
+  aiLogger.info(`Using AssemblyAI ${AI_CONFIG.models.transcription.primary} for transcription...`);
+
+  try {
+    // Step 1: Upload audio file to AssemblyAI
+    aiLogger.debug("Uploading audio to AssemblyAI...");
+    const audioBuffer = await fs.readFile(audioPath);
+    
+    const uploadResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/upload`, {
+      method: "POST",
+      headers: {
+        "Authorization": apiKey,
+        "Content-Type": "application/octet-stream",
+      },
+      body: audioBuffer,
+    });
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      throw new Error(`Upload failed: ${uploadResponse.status} - ${errorText}`);
+    }
+
+    const uploadResult = await uploadResponse.json() as { upload_url: string };
+    const audioUrl = uploadResult.upload_url;
+    aiLogger.debug("Audio uploaded successfully");
+
+    // Step 2: Submit transcription request
+    const transcriptionConfig: Record<string, unknown> = {
+      audio_url: audioUrl,
+      language_detection: !languageHint, // Auto-detect if no hint provided
+    };
+
+    if (languageHint) {
+      transcriptionConfig.language_code = languageHint;
+    }
+
+    const submitResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/transcript`, {
+      method: "POST",
+      headers: {
+        "Authorization": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(transcriptionConfig),
+    });
+
+    if (!submitResponse.ok) {
+      const errorText = await submitResponse.text();
+      throw new Error(`Submit failed: ${submitResponse.status} - ${errorText}`);
+    }
+
+    const submitResult = await submitResponse.json() as AssemblyAITranscript;
+    const transcriptId = submitResult.id;
+    aiLogger.debug(`Transcription submitted, ID: ${transcriptId}`);
+
+    // Step 3: Poll for completion
+    const maxWaitMs = 5 * 60 * 1000; // 5 minutes max
+    const pollIntervalMs = 3000; // Poll every 3 seconds
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+
+      const pollResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/transcript/${transcriptId}`, {
+        headers: { "Authorization": apiKey },
+      });
+
+      if (!pollResponse.ok) {
+        throw new Error(`Poll failed: ${pollResponse.status}`);
+      }
+
+      const transcript = await pollResponse.json() as AssemblyAITranscript;
+
+      if (transcript.status === "completed") {
+        aiLogger.info(`AssemblyAI transcription completed${transcript.language_code ? ` (detected: ${transcript.language_code})` : ""}`);
+        return createSegmentsFromAssemblyAI(transcript, audioDuration);
+      }
+
+      if (transcript.status === "error") {
+        throw new Error(`Transcription error: ${transcript.error}`);
+      }
+
+      aiLogger.debug(`Transcription status: ${transcript.status}...`);
+    }
+
+    throw new Error("Transcription timed out after 5 minutes");
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    aiLogger.error(`AssemblyAI transcription failed: ${errorMessage}`);
+    return [];
+  }
+}
+
+/**
+ * Convert AssemblyAI transcript response to TranscriptSegment format
+ * Groups words into natural sentence segments based on punctuation and timing gaps
+ */
+function createSegmentsFromAssemblyAI(
+  transcript: AssemblyAITranscript,
+  audioDuration?: number
+): TranscriptSegment[] {
+  // Determine effective duration from param or response (AssemblyAI returns duration in seconds)
+  const effectiveDuration = audioDuration ?? (transcript.audio_duration ? transcript.audio_duration : undefined);
+  
+  if (!transcript.words || transcript.words.length === 0) {
+    aiLogger.warn("AssemblyAI returned no words, falling back to text-only");
+    if (transcript.text) {
+      // Pass audioDuration to ensure timestamps are clamped
+      return createSegmentsFromText(transcript.text, effectiveDuration);
+    }
+    return [];
+  }
+
+  // Convert to ms for comparison, use Infinity only if no duration available
+  const maxTime = effectiveDuration ? effectiveDuration * 1000 : Infinity;
+  const result: TranscriptSegment[] = [];
+  let currentWords: AssemblyAIWord[] = [];
+  
+  const GAP_THRESHOLD_MS = 1000; // 1 second gap triggers new segment
+  const MAX_SEGMENT_WORDS = 15; // Prevent overly long segments
+
+  for (let i = 0; i < transcript.words.length; i++) {
+    const word = transcript.words[i];
+    const prevWord = currentWords.length > 0 ? currentWords[currentWords.length - 1] : null;
+    
+    // Skip words that exceed audio duration
+    if (word.start > maxTime) continue;
+
+    // Check for segment break conditions
+    const hasLargeGap = prevWord ? (word.start - prevWord.end) > GAP_THRESHOLD_MS : false;
+    const endsWithPunctuation = prevWord ? /[.!?]$/.test(prevWord.text) : false;
+    const tooManyWords = currentWords.length >= MAX_SEGMENT_WORDS;
+    const shouldBreak = hasLargeGap || (endsWithPunctuation && currentWords.length >= 3) || tooManyWords;
+
+    if (shouldBreak && currentWords.length > 0) {
+      // Save current segment
+      result.push(createSegmentFromAssemblyAIWords(currentWords, maxTime));
+      currentWords = [];
+    }
+
+    currentWords.push(word);
+  }
+
+  // Don't forget the last segment
+  if (currentWords.length > 0) {
+    result.push(createSegmentFromAssemblyAIWords(currentWords, maxTime));
+  }
+
+  aiLogger.info(`Created ${result.length} segments from AssemblyAI with native word timestamps`);
+  return result;
+}
+
+/**
+ * Create a single TranscriptSegment from AssemblyAI words
+ * Converts millisecond timestamps to seconds
+ */
+function createSegmentFromAssemblyAIWords(
+  words: AssemblyAIWord[],
+  maxTimeMs: number
+): TranscriptSegment {
+  const firstWord = words[0];
+  const lastWord = words[words.length - 1];
+  
+  // Convert ms to seconds and clamp to audio duration
+  const maxTimeSec = maxTimeMs === Infinity ? Infinity : maxTimeMs / 1000;
+  
+  return {
+    start: Math.min(firstWord.start / 1000, maxTimeSec),
+    end: Math.min(lastWord.end / 1000, maxTimeSec),
+    text: words.map(w => w.text).join(" "),
+    words: words.map(w => ({
+      word: w.text,
+      start: Math.min(w.start / 1000, maxTimeSec),
+      end: Math.min(w.end / 1000, maxTimeSec),
+    })),
+  };
+}
+
 // Cache for speech start times to avoid redundant FFmpeg calls
 const speechStartCache = new Map<string, number>();
 
@@ -124,23 +337,28 @@ const RETRY_DELAY_MS = 2000;
 const GEMINI_MAX_FILE_SIZE_MB = AI_CONFIG.limits.geminiMaxFileSizeMB;
 
 export function logTranscriptionConfig(): void {
+  const hasAssemblyAIKey = !!process.env.ASSEMBLYAI_API_KEY;
   const hasOpenAIKey = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   const hasGeminiKey = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
 
   aiLogger.info("═══════════════════════════════════════════════════════");
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
 
+  if (hasAssemblyAIKey) {
+    aiLogger.info(`Primary: AssemblyAI Universal (native word-level timestamps)`);
+  }
+
   if (hasOpenAIKey) {
-    aiLogger.info(`Primary: Replit AI OpenAI ${AI_CONFIG.models.transcription.primary} (with synthesized word timing)`);
+    aiLogger.info(`${hasAssemblyAIKey ? "Secondary" : "Primary"}: Replit AI OpenAI ${AI_CONFIG.models.transcription.secondary} (synthesized word timing)`);
   }
 
   if (hasGeminiKey) {
     aiLogger.info(`Fallback: Replit AI Gemini 2.5 Flash (audio files < ${GEMINI_MAX_FILE_SIZE_MB}MB)`);
   }
   
-  if (!hasOpenAIKey && !hasGeminiKey) {
+  if (!hasAssemblyAIKey && !hasOpenAIKey && !hasGeminiKey) {
     aiLogger.error("WARNING: No transcription API keys configured");
-    aiLogger.error("Transcription will fail. Please set up OpenAI or Gemini integration.");
+    aiLogger.error("Transcription will fail. Please set up AssemblyAI, OpenAI, or Gemini.");
   } else {
     aiLogger.info("Status: Ready");
   }
@@ -173,14 +391,15 @@ function isRetryableError(error: unknown): boolean {
   return true;
 }
 
-function createSegmentsFromText(text: string): TranscriptSegment[] {
+function createSegmentsFromText(text: string, audioDuration?: number): TranscriptSegment[] {
   const segments = splitIntoNaturalSegments(text);
+  const maxTime = audioDuration && audioDuration > 0 ? audioDuration : Infinity;
   
   if (segments.length === 0) {
     if (text.trim()) {
       return [{
         start: 0,
-        end: 10,
+        end: Math.min(10, maxTime),
         text: text.trim(),
       }];
     }
@@ -189,17 +408,28 @@ function createSegmentsFromText(text: string): TranscriptSegment[] {
   
   const charsPerSecond = 12.5;
   let currentTime = 0;
+  const result: TranscriptSegment[] = [];
   
-  return segments.map((sentence: string) => {
-    const duration = Math.max(1.5, sentence.length / charsPerSecond);
-    const segment = {
-      start: currentTime,
-      end: currentTime + duration,
-      text: sentence.trim(),
-    };
-    currentTime += duration + 0.3;
-    return segment;
-  }).filter((s: TranscriptSegment) => s.text.length > 0);
+  for (const sentence of segments) {
+    // Stop if we've exceeded audio duration
+    if (currentTime >= maxTime) break;
+    
+    const rawDuration = Math.max(1.5, sentence.length / charsPerSecond);
+    // Clamp end time to audio duration
+    const endTime = Math.min(currentTime + rawDuration, maxTime);
+    
+    if (sentence.trim().length > 0) {
+      result.push({
+        start: currentTime,
+        end: endTime,
+        text: sentence.trim(),
+      });
+    }
+    
+    currentTime = endTime + 0.3;
+  }
+  
+  return result;
 }
 
 function splitIntoNaturalSegments(text: string): string[] {
@@ -906,9 +1136,21 @@ export async function transcribeAudio(
     aiLogger.debug(`Low-confidence filtering enabled (threshold: ${confidenceThreshold})`);
   }
   
+  const hasAssemblyAI = !!process.env.ASSEMBLYAI_API_KEY;
   const hasOpenAI = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   const hasGemini = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   
+  // Primary: AssemblyAI (best for captions - native word-level timestamps)
+  if (hasAssemblyAI) {
+    const assemblyAIResult = await transcribeWithAssemblyAI(audioPath, audioDuration, languageHint);
+    if (assemblyAIResult.length > 0) {
+      aiLogger.info(`Transcription successful with AssemblyAI: ${assemblyAIResult.length} segments with native word timing`);
+      return assemblyAIResult;
+    }
+    aiLogger.warn("AssemblyAI transcription failed, trying OpenAI fallback...");
+  }
+  
+  // Secondary: OpenAI (synthesized word timing)
   if (hasOpenAI) {
     const openAIResult = await transcribeWithOpenAI(audioPath, audioDuration, languageHint);
     if (openAIResult.length > 0) {
@@ -918,6 +1160,7 @@ export async function transcribeAudio(
     aiLogger.warn("OpenAI transcription failed, trying Gemini fallback...");
   }
   
+  // Fallback: Gemini
   if (hasGemini) {
     const geminiResult = await transcribeWithGemini(audioPath, audioDuration, languageHint);
     if (geminiResult.length > 0) {

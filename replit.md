@@ -115,8 +115,11 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Natural Caption Phrasing**: Word-level timing uses punctuation and natural language boundaries for better caption readability.
 - **Database Transaction Support**: `withTransaction` helper for multi-step database operations with automatic rollback on failure.
 - **Stock Media Validation**: Runtime Zod validation for stock media items ensures type safety.
-- **Centralized Configuration**: Magic numbers extracted to `AI_CONFIG` (server) and `CLIENT_CONFIG` (client) for maintainability.
+- **Centralized Configuration**: Magic numbers extracted to `AI_CONFIG` (server) and `CLIENT_CONFIG` (client) for maintainability. Stock media per-query limits also in `AI_CONFIG.stockMedia`.
 - **Normalization Consolidation**: All AI enum values use centralized normalization functions from `normalization.ts`.
+- **Processing Lock System**: Atomic lock acquisition with timestamp tracking and 30-minute stale lock detection prevents race conditions and stuck jobs.
+- **Job Cleanup**: Automatic cleanup of completed/failed jobs after 5-minute delay preserves SSE replay capability while preventing memory leaks.
+- **Enhanced Edit Planning**: Video analysis data (scenes, emotionFlow, speakers) integrated into edit planning prompts for better AI decision-making.
 
 ## External Dependencies
 

@@ -556,13 +556,12 @@ export const editActionSchema = z.object({
   stockQuery: z.string().optional(),
   stockUrl: z.string().optional(),
   transitionType: z.string().optional(),
+  timestamp: coercedNumber().optional(),
   speed: coercedNumber().optional(),
   reason: z.string().optional(),
   priority: normalizedEnum(["low", "medium", "high"], normalizeImportance).optional(),
   confidence: coercedNumber().optional(),
-  // Context from transcript for better matching
   transcriptContext: z.string().optional(),
-  // Enhanced AI video editing field
   qualityScore: coercedNumberRange(0, 100).optional(),
 });
 

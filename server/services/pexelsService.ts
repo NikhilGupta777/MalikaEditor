@@ -48,12 +48,15 @@ export async function searchPhotos(
   }
 
   try {
+    // Pexels photo search error often occurs with very long or complex queries
+    const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
+    
     const response = await axios.get(`${PEXELS_BASE_URL}/v1/search`, {
       headers: {
         Authorization: PEXELS_API_KEY,
       },
       params: {
-        query,
+        query: searchQuery,
         per_page: perPage,
         orientation: "landscape",
       },

@@ -439,11 +439,14 @@ export async function getVideoMetadata(
     }
   }
 
+  // Ensure duration is always a number and not NaN
+  const safeDuration = typeof duration === 'number' && !isNaN(duration) ? duration : 0;
+
   return {
-    duration,
+    duration: safeDuration,
     width: videoStream?.width || 1920,
     height: videoStream?.height || 1080,
-    fps,
+    fps: fps || 30,
   };
 }
 
@@ -1402,10 +1405,11 @@ async function applyAllBrollOverlays(
   
   videoLogger.info(`Applying ${overlays.length} overlays in single pass (quality: ${quality})`);
   
-  // Step 1: Prepare all overlay video files in parallel (scaled to match base video)
+  // Step 1: Prepare all overlay video files (sequential to reduce CPU/memory pressure)
   const preparedOverlays: { path: string; startTime: number; duration: number }[] = [];
   
-  const preparationPromises = overlays.map(async (overlay, i) => {
+  for (let i = 0; i < overlays.length; i++) {
+    const overlay = overlays[i];
     const overlayVideoPath = path.join(OUTPUT_DIR, `overlay_${outputId}_${i}.mp4`);
     
     try {
@@ -1424,30 +1428,17 @@ async function applyAllBrollOverlays(
       tempFiles.push(overlayVideoPath);
       videoLogger.debug(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s (animation: ${animPreset})`);
       
-      return {
-        index: i,
+      preparedOverlays.push({
         path: overlayVideoPath,
         startTime: overlay.startTime,
         duration: overlay.duration,
-      };
+      });
+
+      // Small sleep to let system breathe and prevent SIGKILL
+      await new Promise(resolve => setTimeout(resolve, 300));
     } catch (err) {
       videoLogger.error(`Failed to prepare overlay ${i}:`, err);
-      return null;
     }
-  });
-  
-  const results = await Promise.all(preparationPromises);
-  
-  // Filter out failed preparations and sort by index to maintain order
-  const validResults = results.filter((r): r is NonNullable<typeof r> => r !== null);
-  validResults.sort((a, b) => a.index - b.index);
-  
-  for (const result of validResults) {
-    preparedOverlays.push({
-      path: result.path,
-      startTime: result.startTime,
-      duration: result.duration,
-    });
   }
 
   if (preparedOverlays.length === 0) {

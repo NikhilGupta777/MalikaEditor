@@ -1,6 +1,7 @@
 import { getGeminiClient } from "./clients";
 import { createLogger } from "../../utils/logger";
 import { AI_CONFIG } from "../../config/ai";
+import { extractJsonFromResponse } from "./normalization";
 import { z } from "zod";
 import type { EditPlan, VideoAnalysis, TranscriptSegment, ReviewData } from "@shared/schema";
 
@@ -190,7 +191,17 @@ Respond in JSON format:
         return getDefaultReviewResult();
       }
       
-      const parsedJson = tryParseJSON(text);
+      // Robust JSON extraction for Gemini
+    const jsonString = extractJsonFromResponse(text);
+    if (!jsonString) {
+      reviewLogger.warn(`Attempt ${attempt}: Could not extract JSON from response`, { 
+        textPreview: text.slice(0, 300) 
+      });
+      if (attempt < maxRetries) continue;
+      return getDefaultReviewResult();
+    }
+    
+    const parsedJson = tryParseJSON(jsonString);
       
       if (!parsedJson) {
         reviewLogger.warn(`Attempt ${attempt}: Could not parse JSON response`, { 

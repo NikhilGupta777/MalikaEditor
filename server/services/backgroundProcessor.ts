@@ -208,6 +208,20 @@ export async function recoverInterruptedJobs(): Promise<void> {
         continue;
       }
       
+      // Special handling for rendering status - resume background render
+      if (project.status === "rendering") {
+        const reviewData = project.reviewData as ReviewData | null;
+        if (reviewData?.userApproved) {
+          processorLogger.info(`Recovering rendering for project ${project.id}`);
+          setTimeout(() => {
+            startBackgroundRender(project.id).catch(err => {
+              processorLogger.error(`Failed to recover render for project ${project.id}:`, err);
+            });
+          }, 3000);
+          continue;
+        }
+      }
+      
       // Determine resume stage based on what data already exists
       const stage = determineResumeStage(project);
       processorLogger.info(`Recovering project ${project.id} from stage: ${stage}`);
@@ -1199,8 +1213,9 @@ export async function startBackgroundRender(projectId: number): Promise<void> {
     return;
   }
   
-  if (project.status !== "awaiting_review") {
-    processorLogger.warn(`[Background Render] Project ${projectId} is not awaiting_review, skipping`);
+  // Allow both awaiting_review (new render) and rendering (recovery after restart)
+  if (project.status !== "awaiting_review" && project.status !== "rendering") {
+    processorLogger.warn(`[Background Render] Project ${projectId} status is ${project.status}, skipping`);
     return;
   }
   
@@ -1210,8 +1225,10 @@ export async function startBackgroundRender(projectId: number): Promise<void> {
     return;
   }
   
-  // Update status to rendering
-  await storage.updateVideoProject(projectId, { status: "rendering" as ProcessingStatus });
+  // Update status to rendering (may already be rendering if recovering)
+  if (project.status !== "rendering") {
+    await storage.updateVideoProject(projectId, { status: "rendering" as ProcessingStatus });
+  }
   
   // Run the render in background (fire-and-forget)
   runBackgroundRender(projectId, project, reviewData).catch(err => {

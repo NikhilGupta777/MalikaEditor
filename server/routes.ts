@@ -734,10 +734,20 @@ export async function registerRoutes(
         routesLogger.info(`[Approve-Review] NO CUTS APPROVED - Video will remain at original length`);
       }
       
-      // Store the updated review data
+      // Store the updated review data with userApproved=true
       await storage.updateVideoProject(id, { 
         reviewData: { ...parseResult.data, userApproved: true },
       });
+    } else {
+      // Even without updated review data, mark as approved using existing review data
+      const existingReviewData = project.reviewData as ReviewData | null;
+      if (existingReviewData) {
+        await storage.updateVideoProject(id, {
+          reviewData: { ...existingReviewData, userApproved: true },
+        });
+      } else {
+        return res.status(400).json({ error: "No review data found. Please re-process the video." });
+      }
     }
 
     // Automatically trigger background rendering (fire-and-forget)

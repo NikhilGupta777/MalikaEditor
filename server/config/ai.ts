@@ -7,8 +7,8 @@ export const AI_CONFIG = {
       secondary: "gpt-4o-mini-transcribe",
       fallback: "gemini-2.5-flash",
     },
-    analysis: "gemini-2.0-flash-001", // Video analysis model
-    fullVideoWatch: "gemini-2.0-flash-001", // Full video file upload and analysis
+    analysis: "gemini-flash-latest", // Video analysis model (uses user's API key)
+    fullVideoWatch: "gemini-flash-latest", // Full video file upload and analysis (uses user's API key)
     selfReview: "gemini-2.5-flash", // AI reviews its own rendered output
     editPlanning: "gemini-2.5-flash",
     imageGeneration: "gemini-2.5-flash-image",

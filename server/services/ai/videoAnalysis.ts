@@ -3,7 +3,7 @@ import * as path from "path";
 import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
-import { getGeminiClient } from "./clients";
+import { getVideoAnalysisGeminiClient } from "./clients";
 import { AI_CONFIG } from "../../config/ai";
 import { createUserContent, createPartFromUri } from "@google/genai";
 import {
@@ -317,7 +317,7 @@ async function waitForFileProcessing(
   fileName: string,
   timeoutMs: number = VIDEO_PROCESSING_TIMEOUT_MS
 ): Promise<{ uri: string; mimeType: string; state: string }> {
-  const gemini = getGeminiClient();
+  const gemini = getVideoAnalysisGeminiClient();
   const startTime = Date.now();
   
   while (Date.now() - startTime < timeoutMs) {
@@ -566,7 +566,7 @@ export async function watchFullVideo(
   duration: number,
   silentSegments: { start: number; end: number }[] = []
 ): Promise<FullVideoAnalysisResult> {
-  const gemini = getGeminiClient();
+  const gemini = getVideoAnalysisGeminiClient();
   
   // Check file size
   const fileSizeMB = await getFileSizeMB(videoPath);
@@ -961,7 +961,7 @@ Respond in JSON format only (no markdown):
   }));
 
   const response = await withRetry(
-    () => getGeminiClient().models.generateContent({
+    () => getVideoAnalysisGeminiClient().models.generateContent({
       model: AI_CONFIG.models.analysis,
       contents: [
         {

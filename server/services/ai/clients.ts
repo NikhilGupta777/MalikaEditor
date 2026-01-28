@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 
 let geminiClient: GoogleGenAI | null = null;
+let videoAnalysisGeminiClient: GoogleGenAI | null = null;
 
 export function getGeminiClient(): GoogleGenAI {
   if (!geminiClient) {
@@ -17,6 +18,26 @@ export function getGeminiClient(): GoogleGenAI {
     });
   }
   return geminiClient;
+}
+
+// Separate Gemini client for video analysis using user's own API key
+export function getVideoAnalysisGeminiClient(): GoogleGenAI {
+  if (!videoAnalysisGeminiClient) {
+    // Use user's own API key for video analysis, fall back to Replit integration
+    const apiKey = process.env.GEMINI_VIDEO_ANALYSIS_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('Gemini API key for video analysis is not configured. Please set GEMINI_VIDEO_ANALYSIS_API_KEY.');
+    }
+    videoAnalysisGeminiClient = new GoogleGenAI({
+      apiKey: apiKey,
+      // Use direct Google API when using user's own key
+      httpOptions: process.env.GEMINI_VIDEO_ANALYSIS_API_KEY ? undefined : {
+        apiVersion: "",
+        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+      },
+    });
+  }
+  return videoAnalysisGeminiClient;
 }
 
 let openaiClient: OpenAI | null = null;

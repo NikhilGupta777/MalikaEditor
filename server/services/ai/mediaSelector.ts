@@ -738,7 +738,7 @@ RESPOND WITH JSON ONLY:
   // POST-SELECTION VALIDATION: Check if motion content has video (not enforcement, just logging)
   // We no longer force AI images - let the AI make smart decisions based on content type
   const aiCandidates = availableCandidates.filter(c => c.source === 'ai');
-  const selectedAiCount = [...usedInThisBatch].filter(id => id.startsWith('ai_')).length;
+  const selectedAiCount = Array.from(usedInThisBatch).filter(id => id.startsWith('ai_')).length;
   
   // Count motion windows that got video vs AI
   let motionWindowsWithVideo = 0;

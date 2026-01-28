@@ -11,6 +11,7 @@ export const AI_CONFIG = {
     editPlanning: "gemini-2.5-flash",
     imageGeneration: "gemini-2.5-flash-image",
     mediaSelection: "gemini-2.5-flash",
+    mediaVision: "gemini-2.5-flash", // Vision-capable model for analyzing stock thumbnails
     reviewPass: "gemini-2.5-flash",
   },
   

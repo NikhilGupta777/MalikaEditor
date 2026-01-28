@@ -77,12 +77,15 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, fade transitions, Ken Burns effect for images, and smart AI image placement.
 - **Video Transitions**: Implements crossfade transitions between video segments using FFmpeg's `xfade` filter.
 - **Enhanced Media Selection System** (`server/services/ai/mediaSelector.ts`):
+  - **Visual Analysis**: AI actually SEES stock media thumbnails using Gemini Vision before selecting
+  - Generates detailed visual descriptions of each thumbnail (subjects, actions, settings, mood, quality)
   - Uses Gemini 2.5 Flash AI to intelligently select best media for each B-roll window
   - AI sees ALL windows and ALL media at once for globally-optimal selections
-  - Selects based on semantic meaning, content match, and viewer experience
+  - Selects based on ACTUAL visual content, not just query metadata
   - Strict duplicate prevention ensures each clip is used only once
   - Multi-clip support: longer windows (>6s) can have 2-3 staggered clips
-  - Content-aware fallback when AI selection needs backup
+  - Content-aware fallback with visual-weighted scoring when AI selection needs backup
+  - Caches visual analysis results to avoid redundant API calls
 
 #### Performance and Quality
 - **Performance Optimizations**: Single-pass FFmpeg rendering, parallel overlay preparation, configurable encoding quality (preview, balanced, quality modes), proxy video generation, parallelized background processing (frame+audio+silence detection, stock fetch+AI image generation), and controlled-concurrency AI image generation with graceful partial-success handling.

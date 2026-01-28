@@ -5,8 +5,14 @@ import { AI_CONFIG } from "../../config/ai";
 import type { StockMediaItem } from "@shared/schema";
 import type { StockMediaVariants } from "../pexelsService";
 import type { GeneratedAiImage } from "./imageGeneration";
+import axios from "axios";
 
 const selectorLogger = createLogger("media-selector");
+
+// Visual analysis cache to avoid re-analyzing the same thumbnails
+const visualAnalysisCache = new Map<string, string>();
+const VISUAL_ANALYSIS_CONCURRENCY = 5; // Analyze 5 thumbnails at a time
+const VISUAL_ANALYSIS_TIMEOUT = 8000; // 8 second timeout per thumbnail
 
 interface BrollWindow {
   start: number;
@@ -26,6 +32,7 @@ export interface MediaCandidate {
   thumbnailUrl?: string;
   duration?: number;
   description?: string;
+  visualDescription?: string; // AI-generated description of actual visual content
   originalAiImage?: GeneratedAiImage;
 }
 
@@ -43,6 +50,110 @@ export interface MediaSelectionResult {
   aiImagesUsed: number;
   stockVideosUsed: number;
   stockImagesUsed: number;
+}
+
+// Fetch thumbnail image as base64
+async function fetchThumbnailAsBase64(url: string): Promise<{ base64: string; mimeType: string } | null> {
+  try {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: VISUAL_ANALYSIS_TIMEOUT,
+      headers: {
+        'Accept': 'image/*',
+        'User-Agent': 'Mozilla/5.0 (compatible; VideoEditor/1.0)',
+      },
+    });
+    
+    const contentType = response.headers['content-type'] || 'image/jpeg';
+    const base64 = Buffer.from(response.data).toString('base64');
+    return { base64, mimeType: contentType };
+  } catch (error) {
+    selectorLogger.debug(`Failed to fetch thumbnail: ${url.slice(0, 50)}...`);
+    return null;
+  }
+}
+
+// Analyze a single thumbnail using Gemini Vision
+async function analyzeThumbailWithVision(
+  thumbnailUrl: string,
+  query: string,
+  mediaType: "image" | "video"
+): Promise<string> {
+  // Check cache first
+  if (visualAnalysisCache.has(thumbnailUrl)) {
+    return visualAnalysisCache.get(thumbnailUrl)!;
+  }
+  
+  try {
+    const gemini = getGeminiClient();
+    const thumbnail = await fetchThumbnailAsBase64(thumbnailUrl);
+    
+    if (!thumbnail) {
+      return `Unable to analyze (thumbnail unavailable)`;
+    }
+    
+    const prompt = `Describe this ${mediaType === "video" ? "video thumbnail" : "stock photo"} in 1-2 sentences. 
+Focus on: main subjects, actions, setting, mood, colors, and quality.
+Be specific about what you SEE, not what the search query "${query}" suggests.
+Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
+
+    const result = await gemini.models.generateContent({
+      model: AI_CONFIG.models.mediaVision, // Use vision-capable model for thumbnail analysis
+      contents: [{
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inlineData: { mimeType: thumbnail.mimeType, data: thumbnail.base64 } }
+        ]
+      }],
+    });
+    
+    const description = result.text?.trim() || "Visual content analyzed";
+    
+    // Cache the result
+    visualAnalysisCache.set(thumbnailUrl, description);
+    
+    return description;
+  } catch (error) {
+    selectorLogger.debug(`Vision analysis failed for: ${thumbnailUrl.slice(0, 50)}...`);
+    return `Stock ${mediaType} matching "${query}"`;
+  }
+}
+
+// Batch analyze thumbnails with concurrency control
+async function analyzeMediaThumbnails(
+  candidates: MediaCandidate[]
+): Promise<Map<string, string>> {
+  const results = new Map<string, string>();
+  const stockCandidates = candidates.filter(c => c.source === "stock" && c.thumbnailUrl);
+  
+  if (stockCandidates.length === 0) {
+    return results;
+  }
+  
+  selectorLogger.info(`Analyzing ${stockCandidates.length} stock media thumbnails with Gemini Vision...`);
+  const startTime = Date.now();
+  
+  // Process in batches for concurrency control
+  for (let i = 0; i < stockCandidates.length; i += VISUAL_ANALYSIS_CONCURRENCY) {
+    const batch = stockCandidates.slice(i, i + VISUAL_ANALYSIS_CONCURRENCY);
+    
+    const batchPromises = batch.map(async (candidate) => {
+      const description = await analyzeThumbailWithVision(
+        candidate.thumbnailUrl!,
+        candidate.query,
+        candidate.type as "image" | "video"
+      );
+      results.set(candidate.id, description);
+    });
+    
+    await Promise.all(batchPromises);
+  }
+  
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  selectorLogger.info(`Visual analysis complete: ${results.size} thumbnails analyzed in ${elapsed}s`);
+  
+  return results;
 }
 
 export async function selectBestMediaForWindows(
@@ -65,6 +176,7 @@ export async function selectBestMediaForWindows(
   }
   
   if (!geminiAvailable) {
+    selectorLogger.info("Visual analysis SKIPPED - Gemini not available, using fallback selection without visual analysis");
     return fallbackSelection(brollWindows, stockVariants, aiImages);
   }
 
@@ -83,6 +195,21 @@ export async function selectBestMediaForWindows(
   const freepikPhotoCount = allCandidates.filter(c => c.provider === 'freepik' && c.type === 'image').length;
   
   selectorLogger.info(`Built ${allCandidates.length} media candidates: ${aiCount} AI, Pexels(${pexelsVideoCount} videos, ${pexelsPhotoCount} photos), Freepik(${freepikVideoCount} videos, ${freepikPhotoCount} photos)`);
+
+  // Run visual analysis on stock media thumbnails (AI actually SEES the content)
+  const visualDescriptions = await analyzeMediaThumbnails(allCandidates);
+  
+  // Apply visual descriptions to candidates
+  for (const candidate of allCandidates) {
+    if (visualDescriptions.has(candidate.id)) {
+      candidate.visualDescription = visualDescriptions.get(candidate.id);
+    }
+  }
+  
+  const analyzedCount = visualDescriptions.size;
+  if (analyzedCount > 0) {
+    selectorLogger.info(`Applied visual analysis to ${analyzedCount} stock media candidates`);
+  }
 
   try {
     const batchSelection = await selectMediaForAllWindowsWithAI(
@@ -237,7 +364,13 @@ async function selectMediaForAllWindowsWithAI(
       typeLabel = c.provider === "freepik" ? "FREEPIK-PHOTO" : "PEXELS-PHOTO";
     }
     const durationInfo = c.duration ? ` [${c.duration}s]` : "";
-    return `  ${idx + 1}. [${typeLabel}] ${c.description}${durationInfo}`;
+    
+    // Include visual description if available (AI-analyzed content)
+    const visualInfo = c.visualDescription 
+      ? `\n     VISUAL: ${c.visualDescription}` 
+      : "";
+    
+    return `  ${idx + 1}. [${typeLabel}] Query: "${c.query.slice(0, 50)}"${durationInfo}${visualInfo}`;
   }).join("\n");
 
   const windowDescriptions = windows.map((w, idx) => {
@@ -269,12 +402,13 @@ MEDIA SOURCES AVAILABLE:
 - PEXELS (${pexelsCount} available): Large stock library with diverse professional footage  
 - FREEPIK (${freepikCount} available): Premium stock library with high-quality creative assets
 
-SELECTION CRITERIA (evaluate ALL sources fairly):
-1. CONTENT RELEVANCE - How well does the media match what's being discussed? Consider the specific context.
-2. VISUAL QUALITY - Is the media visually appealing and professionally produced?
-3. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
-4. NARRATIVE FLOW - Does this media enhance the story and viewer comprehension?
-5. SOURCE DIVERSITY - Mix assets from different sources for visual variety
+SELECTION CRITERIA (use VISUAL descriptions to make informed decisions):
+1. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed? Don't trust just the query.
+2. CONTENT RELEVANCE - How well does the ACTUAL visual content match the B-roll window's context?
+3. VISUAL QUALITY - Based on the VISUAL description, is it professional, well-lit, and suitable?
+4. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
+5. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
+6. SOURCE DIVERSITY - Mix assets from different sources for visual variety
 
 SELECTION GUIDELINES:
 - AI-IMAGE: ${aiImageCount > 0 ? `**PRIORITIZE** - Custom-made for this video. YOU MUST USE AT LEAST ${minAiToUse} AI-IMAGE(s).` : 'None available'}
@@ -515,14 +649,23 @@ function fallbackSelectForWindow(
 ): SelectedMedia | null {
   if (candidates.length === 0) return null;
   
-  // Enhanced scoring with semantic matching
+  // Enhanced scoring with semantic matching AND visual analysis
   const scoredCandidates = candidates.map(c => {
     let score = 0;
     
-    const candidateText = (c.query + " " + (c.description || "")).toLowerCase();
+    // Include visual description in candidate text for better matching
+    const candidateText = (c.query + " " + (c.description || "") + " " + (c.visualDescription || "")).toLowerCase();
     
-    // Semantic similarity score
+    // Semantic similarity score using query
     score += computeSemanticScore(window.suggestedQuery, candidateText);
+    
+    // Visual description bonus - reward candidates with visual analysis
+    if (c.visualDescription) {
+      // Extra points for having visual analysis
+      score += 5;
+      // Additional matching on visual description
+      score += computeSemanticScore(window.suggestedQuery, c.visualDescription.toLowerCase()) * 0.8;
+    }
     
     // Context matching (if available)
     if (window.context) {

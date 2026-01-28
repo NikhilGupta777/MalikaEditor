@@ -532,6 +532,9 @@ export async function registerRoutes(
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+    
+    // Disable request timeout for long-running SSE connection
+    req.setTimeout(0);
 
     let connectionClosed = false;
     
@@ -871,6 +874,9 @@ export async function registerRoutes(
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+    
+    // Disable request timeout for long-running render SSE connection
+    req.setTimeout(0);
 
     const abortController = new AbortController();
     let connectionClosed = false;

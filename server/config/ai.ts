@@ -50,7 +50,7 @@ export const AI_CONFIG = {
     projectExpirationHours: 1,
     maxEventHistory: 100,
     cleanupIntervalMs: 10 * 60 * 1000, // 10 minutes
-    sseHeartbeatMs: 15000, // 15 seconds
+    sseHeartbeatMs: 5000, // 5 seconds - more frequent to prevent proxy timeouts
   },
   
   stockMedia: {

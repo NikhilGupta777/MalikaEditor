@@ -40,6 +40,11 @@ function startCleanupJob() {
 const app = express();
 const httpServer = createServer(app);
 
+// Configure server timeouts for long-running SSE connections (10 minutes for renders)
+httpServer.timeout = 10 * 60 * 1000; // 10 minutes
+httpServer.keepAliveTimeout = 10 * 60 * 1000; // 10 minutes
+httpServer.headersTimeout = 10 * 60 * 1000 + 1000; // Slightly longer than keepAliveTimeout
+
 // ==========================================
 // HEALTH CHECK ENDPOINTS - MUST BE FIRST
 // These endpoints respond immediately before any middleware

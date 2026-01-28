@@ -15,6 +15,23 @@ const VISUAL_ANALYSIS_CONCURRENCY = 5; // Analyze 5 thumbnails at a time
 const VISUAL_ANALYSIS_TIMEOUT = 8000; // 8 second timeout per thumbnail
 const MAX_VISION_CANDIDATES = 30; // Maximum candidates to analyze with Vision API (cost optimization)
 
+// Keywords that indicate motion/action content where VIDEO is preferred over static images
+const MOTION_KEYWORDS = [
+  'motion', 'moving', 'action', 'dynamic', 'flow', 'flowing', 'running', 'walking',
+  'flying', 'driving', 'swimming', 'dancing', 'jumping', 'falling', 'spinning',
+  'explosion', 'eruption', 'flood', 'tornado', 'hurricane', 'storm', 'wave', 'waves',
+  'fire', 'flames', 'burning', 'smoke', 'rain', 'raining', 'snow', 'snowing',
+  'timelapse', 'time-lapse', 'montage', 'sequence', 'transition', 'animation',
+  'traffic', 'crowd', 'people walking', 'city life', 'busy', 'movement',
+  'waterfall', 'river', 'ocean', 'stream', 'clouds moving', 'wind', 'blowing'
+];
+
+// Detect if a query suggests motion/action content that needs video
+function detectMotionContent(query: string): boolean {
+  const lowerQuery = query.toLowerCase();
+  return MOTION_KEYWORDS.some(keyword => lowerQuery.includes(keyword));
+}
+
 interface BrollWindow {
   start: number;
   end: number;
@@ -148,13 +165,18 @@ function preFilterCandidatesByMetadata(
     const matchingWords = candidateWords.filter(w => targetKeywords.has(w));
     score += Math.min(30, matchingWords.length * 10);
     
-    // 2. Source priority: AI images > videos > photos (0-20 points)
-    if (candidate.source === "ai") {
-      score += 20; // AI images always get priority
+    // 2. Source priority - balanced approach (0-15 points)
+    // Check if any B-roll window needs motion content
+    const hasMotionNeeds = brollWindows.some(w => detectMotionContent(w.suggestedQuery));
+    
+    if (hasMotionNeeds && candidate.type === "video") {
+      score += 18; // Videos strongly preferred when motion is needed
+    } else if (candidate.source === "ai") {
+      score += 12; // AI images good for specific concepts
     } else if (candidate.type === "video") {
-      score += 15; // Videos preferred for B-roll
+      score += 14; // Videos generally valuable
     } else {
-      score += 10; // Photos as fallback
+      score += 8; // Photos as fallback
     }
     
     // 3. Duration appropriateness for videos (0-15 points)
@@ -485,7 +507,7 @@ async function selectMediaForAllWindowsWithAI(
   const aiImageCount = availableCandidates.filter(c => c.source === 'ai').length;
   const pexelsCount = availableCandidates.filter(c => c.provider === 'pexels').length;
   const freepikCount = availableCandidates.filter(c => c.provider === 'freepik').length;
-  const minAiToUse = aiImageCount > 0 ? Math.max(1, Math.ceil(aiImageCount * 0.5)) : 0;
+  // Note: We no longer enforce minimum AI usage - let the AI make smart decisions based on content type
   
   const prompt = `You are a professional video editor selecting B-roll media for a video.
 
@@ -510,16 +532,25 @@ SELECTION CRITERIA (use VISUAL descriptions to make informed decisions):
 1. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed? Don't trust just the query.
 2. CONTENT RELEVANCE - How well does the ACTUAL visual content match the B-roll window's context?
 3. VISUAL QUALITY - Based on the VISUAL description, is it professional, well-lit, and suitable?
-4. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
-5. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
-6. SOURCE DIVERSITY - Mix assets from different sources for visual variety
+4. MOTION vs STATIC - **CRITICAL**: For content involving movement, action, nature phenomena (floods, tornadoes, fire, water, crowds, traffic, etc.), STRONGLY PREFER VIDEO over static images. Motion content needs motion!
+5. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
+6. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
+
+WHEN TO USE VIDEO vs AI-IMAGE:
+- **USE VIDEO** for: action scenes, motion, nature phenomena (water, fire, storms), crowds, traffic, anything that moves
+- **USE AI-IMAGE** for: symbolic concepts, abstract ideas, specific illustrations that stock doesn't have, spiritual/mystical imagery
+- Example: "volcanic eruption" → VIDEO is better (movement). "Ancient spiritual manuscript" → AI-IMAGE may be better (specific concept)
 
 SELECTION GUIDELINES:
-- AI-IMAGE: ${aiImageCount > 0 ? `**PRIORITIZE** - Custom-made for this video. YOU MUST USE AT LEAST ${minAiToUse} AI-IMAGE(s).` : 'None available'}
-- PEXELS-VIDEO/PHOTO: Professional stock footage with broad coverage
-- FREEPIK-VIDEO/PHOTO: Premium creative assets, often with unique artistic styles
+- AI-IMAGE (${aiImageCount} available): Custom-generated for specific concepts. Good for symbolic/abstract visuals.
+- PEXELS-VIDEO: Professional motion footage. **Prefer for action/motion content**.
+- FREEPIK-VIDEO: Premium motion footage. **Prefer for action/motion content**.
+- PEXELS-PHOTO/FREEPIK-PHOTO: Static images, use when stillness is appropriate.
 
-IMPORTANT: Genuinely evaluate ALL fetched assets from both Pexels and Freepik. Choose the BEST option for each window based on relevance to the content, not just source preference. AI images take priority for specific concepts, but stock footage may be better for generic scenes.
+IMPORTANT: Do NOT blindly prefer AI images. Evaluate each window's needs:
+- If the query mentions motion/action/phenomena → prefer VIDEO
+- If the query is a specific symbolic concept → AI-IMAGE may be appropriate
+Choose the BEST option for each window based on what the content actually needs.
 
 For windows >6 seconds, you may select 2-3 numbers that will be staggered.
 
@@ -704,65 +735,34 @@ RESPOND WITH JSON ONLY:
     throw parseError;
   }
 
-  // POST-SELECTION ENFORCEMENT: Ensure AI images are actually used when available
-  // This fixes the issue where AI may ignore instructions to prioritize AI images
+  // POST-SELECTION VALIDATION: Check if motion content has video (not enforcement, just logging)
+  // We no longer force AI images - let the AI make smart decisions based on content type
   const aiCandidates = availableCandidates.filter(c => c.source === 'ai');
   const selectedAiCount = [...usedInThisBatch].filter(id => id.startsWith('ai_')).length;
-  const minAiRequired = aiCandidates.length > 0 ? Math.max(1, Math.ceil(aiCandidates.length * 0.5)) : 0;
   
-  if (aiCandidates.length > 0 && selectedAiCount < minAiRequired) {
-    selectorLogger.warn(`AI selection bias detected: ${selectedAiCount}/${minAiRequired} required AI images used. Enforcing AI image usage.`);
-    
-    // Find unused AI images
-    const unusedAiImages = aiCandidates.filter(c => !usedInThisBatch.has(c.id));
-    
-    // Find windows that could accept an AI image replacement
-    const windowsToEnhance = selections
-      .filter(s => s.selectedMedia.some(m => m.source !== 'ai')) // Has non-AI media
-      .sort((a, b) => {
-        // Prefer high-priority windows
-        const aPriority = a.window.priority === 'high' ? 3 : a.window.priority === 'medium' ? 2 : 1;
-        const bPriority = b.window.priority === 'high' ? 3 : b.window.priority === 'medium' ? 2 : 1;
-        return bPriority - aPriority;
-      });
-    
-    let aiInjected = 0;
-    const targetInjections = minAiRequired - selectedAiCount;
-    
-    for (const windowSelection of windowsToEnhance) {
-      if (aiInjected >= targetInjections || unusedAiImages.length === 0) break;
-      
-      // Find best AI image for this window using semantic matching
-      let bestAi: MediaCandidate | null = null;
-      let bestScore = -1;
-      
-      for (const ai of unusedAiImages) {
-        const score = computeSemanticScore(windowSelection.window.suggestedQuery, ai.query);
-        if (score > bestScore) {
-          bestScore = score;
-          bestAi = ai;
-        }
+  // Count motion windows that got video vs AI
+  let motionWindowsWithVideo = 0;
+  let motionWindowsTotal = 0;
+  
+  for (const selection of selections) {
+    const isMotionWindow = detectMotionContent(selection.window.suggestedQuery);
+    if (isMotionWindow) {
+      motionWindowsTotal++;
+      if (selection.selectedMedia.some(m => m.type === 'video')) {
+        motionWindowsWithVideo++;
       }
-      
-      if (bestAi) {
-        // Replace the first non-AI media with the AI image
-        const nonAiIndex = windowSelection.selectedMedia.findIndex(m => m.source !== 'ai');
-        if (nonAiIndex >= 0) {
-          const replaced = windowSelection.selectedMedia[nonAiIndex];
-          windowSelection.selectedMedia[nonAiIndex] = bestAi;
-          usedInThisBatch.add(bestAi.id);
-          usedInThisBatch.delete(replaced.id);
-          unusedAiImages.splice(unusedAiImages.indexOf(bestAi), 1);
-          aiInjected++;
-          selectorLogger.info(`Enforced AI image in window ${windowSelection.windowIndex}: replaced ${replaced.provider || replaced.source}:${replaced.type} with AI image`);
-        }
-      }
-    }
-    
-    if (aiInjected > 0) {
-      selectorLogger.info(`AI image enforcement complete: injected ${aiInjected} AI images`);
     }
   }
+  
+  if (motionWindowsTotal > 0) {
+    selectorLogger.info(`Motion content coverage: ${motionWindowsWithVideo}/${motionWindowsTotal} motion windows have video B-roll`);
+    
+    if (motionWindowsWithVideo < motionWindowsTotal) {
+      selectorLogger.debug(`Some motion windows got static images - this may be acceptable if no suitable video was available`);
+    }
+  }
+  
+  selectorLogger.info(`Media mix: ${selectedAiCount} AI images, ${selections.length - selectedAiCount} stock media selected`);
 
   return selections;
 }
@@ -840,13 +840,29 @@ function fallbackSelectForWindow(
     if (window.priority === "high") score += 3;
     else if (window.priority === "medium") score += 1;
     
-    // Source preferences - AI images are custom-made for this video
-    if (c.source === "ai") score += 15; // Strongly prefer AI images as they're custom-made for this exact content
+    // Motion-aware media selection
+    const isMotionQuery = detectMotionContent(window.suggestedQuery);
     
-    // Duration-appropriate media selection (but not as strong as AI preference)
-    if (windowDuration > 4 && c.type === "video") score += 3;
+    // For motion content, strongly prefer video over static images
+    if (isMotionQuery) {
+      if (c.type === "video") {
+        score += 20; // Strong preference for video when motion is needed
+      } else if (c.source === "ai") {
+        score += 5; // AI images are static, less suitable for motion
+      } else {
+        score += 3; // Stock photos also static
+      }
+    } else {
+      // For non-motion content, AI images can be good for specific concepts
+      if (c.source === "ai") score += 10; // Moderate preference for AI on non-motion
+      else if (c.type === "video") score += 6; // Videos still valuable
+      else score += 4; // Photos can work for static scenes
+    }
+    
+    // Duration-appropriate media selection
+    if (windowDuration > 4 && c.type === "video") score += 4;
     if (windowDuration <= 3 && c.type !== "video") score += 2;
-    if (c.type === "video" && c.duration && c.duration >= windowDuration * 0.8) score += 2;
+    if (c.type === "video" && c.duration && c.duration >= windowDuration * 0.8) score += 3;
     
     return { candidate: c, score };
   }).sort((a, b) => b.score - a.score);

@@ -173,13 +173,20 @@ export async function recoverInterruptedJobs(): Promise<void> {
   processorLogger.info("Checking for interrupted processing jobs to recover...");
   
   try {
-    // Find all projects in processing states (not pending, not completed, not failed)
+    // Find all projects in any processing state (not completed, not awaiting_review, not failed)
+    // This includes: processing, uploading, transcribing, analyzing, planning, rendering, etc.
     const allProjects = await storage.getAllVideoProjects();
+    const inProgressStatuses = ["processing", "uploading", "transcribing", "analyzing", "planning", "rendering"];
     const interruptedProjects = allProjects.filter(p => 
-      p.status === "analyzing" || 
-      p.status === "transcribing" || 
-      p.status === "planning" ||
-      (p.processingStage && p.processingStage !== "complete" && p.processingStage !== "review_ready" && p.status !== "failed")
+      // Check if status indicates in-progress work
+      inProgressStatuses.includes(p.status) ||
+      // Or if we have a processing stage that isn't complete/review_ready
+      (p.processingStage && 
+       p.processingStage !== "complete" && 
+       p.processingStage !== "review_ready" && 
+       p.status !== "failed" &&
+       p.status !== "awaiting_review" &&
+       p.status !== "completed")
     );
     
     if (interruptedProjects.length === 0) {
@@ -224,29 +231,43 @@ export async function recoverInterruptedJobs(): Promise<void> {
   }
 }
 
-// Determine which stage to resume from based on existing data
+// Determine which stage to resume from based on persisted checkpoint (primary) or existing data (fallback)
 function determineResumeStage(project: any): ProcessingStage {
-  // If we have review data, we're at review_ready
+  // PRIMARY: Use the persisted processingStage if available
+  // This is the most reliable source as it was saved at the exact point processing stopped
+  if (project.processingStage) {
+    const stage = project.processingStage as ProcessingStage;
+    // If we completed a stage, we should resume from the NEXT stage
+    const stageOrder: ProcessingStage[] = ["upload", "transcription", "analysis", "planning", "media_fetch", "media_selection", "review_ready", "complete"];
+    const currentIdx = stageOrder.indexOf(stage);
+    // Resume from the next stage after the completed checkpoint
+    if (currentIdx >= 0 && currentIdx < stageOrder.length - 1) {
+      const nextStage = stageOrder[currentIdx + 1];
+      processorLogger.debug(`Using persisted stage ${stage}, resuming from next stage: ${nextStage}`);
+      return nextStage;
+    }
+    return stage;
+  }
+  
+  // FALLBACK: Infer from existing data if no processingStage is set
+  // This handles projects created before the processingStage field was added
+  processorLogger.debug(`No persisted processingStage for project ${project.id}, inferring from data...`);
+  
   if (project.reviewData && project.stockMedia) {
     return "review_ready";
   }
-  // If we have stock media but no review data, we need media selection
   if (project.stockMedia) {
     return "media_selection";
   }
-  // If we have edit plan, we need to fetch media
   if (project.editPlan) {
     return "media_fetch";
   }
-  // If we have analysis, we need planning
   if (project.analysis) {
     return "planning";
   }
-  // If we have transcript, we need analysis
   if (project.transcript) {
     return "analysis";
   }
-  // Start from the beginning
   return "upload";
 }
 
@@ -833,6 +854,9 @@ async function runProcessingPipeline(
       aiImageCount = generatedAiImages.length;
       
       addActivity(projectId, `Parallel media fetch complete in ${mediaFetchTime}s: ${totalPhotos} photos + ${totalVideos} videos + ${aiImageCount} AI images`);
+      
+      // Save checkpoint: media fetch complete
+      await updateProcessingStage(projectId, "media_fetch");
       
       addActivity(projectId, "AI selecting best media for each B-roll window...");
       const selectionResult = await selectBestMediaForWindows(

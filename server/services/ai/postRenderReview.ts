@@ -162,8 +162,8 @@ export async function performPostRenderSelfReview(
       `[${t.start.toFixed(1)}s]: ${t.text}`
     ).join("\n");
     
-    // Extract enhancedAnalysis for comparison with rendered output
-    const enhancedAnalysis = (videoAnalysis as any)?.enhancedAnalysis;
+    // Extract enhancedAnalysis for comparison with rendered output (now properly typed in VideoAnalysis)
+    const enhancedAnalysis = videoAnalysis?.enhancedAnalysis;
     const motionAnalysis = enhancedAnalysis?.motionAnalysis;
     const transitionAnalysis = enhancedAnalysis?.transitionAnalysis;
     const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;

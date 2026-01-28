@@ -157,8 +157,8 @@ export function storePattern(
   const storedPatterns: EditingPattern[] = [];
   const promptKeywords = extractKeywords(userPrompt);
   
-  // Extract enhancedAnalysis for pattern context
-  const enhancedAnalysis = (videoAnalysis as any)?.enhancedAnalysis;
+  // Extract enhancedAnalysis for pattern context (now properly typed in VideoAnalysis)
+  const enhancedAnalysis = videoAnalysis?.enhancedAnalysis;
   const motionAnalysis = enhancedAnalysis?.motionAnalysis;
   const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
   const audioVisualSync = enhancedAnalysis?.audioVisualSync;
@@ -346,8 +346,8 @@ export function retrievePatterns(
   const targetGenre = videoAnalysis?.context?.genre;
   const targetTone = videoAnalysis?.context?.tone;
   
-  // Extract enhancedAnalysis for better pattern matching
-  const enhancedAnalysis = (videoAnalysis as any)?.enhancedAnalysis;
+  // Extract enhancedAnalysis for better pattern matching (now properly typed in VideoAnalysis)
+  const enhancedAnalysis = videoAnalysis?.enhancedAnalysis;
   const targetMotion = enhancedAnalysis?.motionAnalysis?.motionIntensity;
   const targetPacing = enhancedAnalysis?.pacingAnalysis?.overallPacing;
   

@@ -740,10 +740,16 @@ export async function registerRoutes(
       });
     }
 
-    // Return success - the render endpoint will be called separately
+    // Automatically trigger background rendering (fire-and-forget)
+    // This ensures rendering continues even if client disconnects
+    const { startBackgroundRender } = await import("./services/backgroundProcessor");
+    startBackgroundRender(id).catch(err => {
+      routesLogger.error(`[Approve-Review] Failed to start background render for ${id}:`, err);
+    });
+    
     res.json({ 
       success: true, 
-      message: "Review approved. You can now proceed with rendering.",
+      message: "Review approved. Rendering has started automatically.",
       projectId: id 
     });
   });

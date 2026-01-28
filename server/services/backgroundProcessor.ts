@@ -1187,3 +1187,169 @@ export function isJobActive(projectId: number): boolean {
   const job = activeJobs.get(projectId);
   return job?.status === "processing";
 }
+
+// Fire-and-forget background render after user approval
+// This allows rendering to continue even if client disconnects
+export async function startBackgroundRender(projectId: number): Promise<void> {
+  processorLogger.info(`[Background Render] Starting fire-and-forget render for project ${projectId}`);
+  
+  const project = await storage.getVideoProject(projectId);
+  if (!project) {
+    processorLogger.error(`[Background Render] Project ${projectId} not found`);
+    return;
+  }
+  
+  if (project.status !== "awaiting_review") {
+    processorLogger.warn(`[Background Render] Project ${projectId} is not awaiting_review, skipping`);
+    return;
+  }
+  
+  const reviewData = project.reviewData as ReviewData | null;
+  if (!reviewData || !reviewData.userApproved) {
+    processorLogger.warn(`[Background Render] Project ${projectId} review not approved, skipping`);
+    return;
+  }
+  
+  // Update status to rendering
+  await storage.updateVideoProject(projectId, { status: "rendering" as ProcessingStatus });
+  
+  // Run the render in background (fire-and-forget)
+  runBackgroundRender(projectId, project, reviewData).catch(err => {
+    processorLogger.error(`[Background Render] Failed for project ${projectId}:`, err);
+    storage.updateVideoProject(projectId, {
+      status: "failed" as ProcessingStatus,
+      errorMessage: `Rendering failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  });
+}
+
+async function runBackgroundRender(projectId: number, project: any, reviewData: ReviewData): Promise<void> {
+  const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
+  
+  try {
+    await fs.access(videoPath);
+  } catch {
+    throw new Error("Video file not found");
+  }
+  
+  // Get stored data
+  const editPlan = project.editPlan as { actions?: any[]; estimatedDuration?: number } | null;
+  let transcript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
+  let stockMedia = project.stockMedia as StockMediaItem[] || [];
+  
+  // Apply user modifications from reviewData
+  if (reviewData.editPlan?.actions) {
+    const approvedActions = reviewData.editPlan.actions.filter((a: any) => a.approved);
+    const approvedStockMedia = (reviewData.stockMedia || []).filter((m: any) => m.approved);
+    const approvedAiImages = (reviewData.aiImages || []).filter((m: any) => m.approved);
+    
+    // Apply transcript edits
+    const reviewTranscriptByTime = new Map(
+      (reviewData.transcript || []).map((t: any) => [`${t.start.toFixed(3)}_${t.end.toFixed(3)}`, t])
+    );
+    transcript = transcript
+      .map((seg) => {
+        const timeKey = `${seg.start.toFixed(3)}_${seg.end.toFixed(3)}`;
+        const reviewSeg = reviewTranscriptByTime.get(timeKey) as any;
+        if (reviewSeg) {
+          if (!reviewSeg.approved) return null;
+          if (reviewSeg.edited) return { ...seg, text: reviewSeg.text };
+        }
+        return seg;
+      })
+      .filter((seg): seg is NonNullable<typeof seg> => seg !== null);
+    
+    if (transcript.length === 0) {
+      transcript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
+    }
+    
+    // Update edit plan
+    if (editPlan) {
+      editPlan.actions = approvedActions;
+    }
+    
+    // Update stock media
+    stockMedia = [
+      ...approvedStockMedia.map((m: any) => ({
+        type: m.type,
+        query: m.query,
+        url: m.url,
+        thumbnailUrl: m.thumbnailUrl,
+        duration: m.duration,
+        startTime: m.startTime,
+        endTime: m.endTime,
+      } as StockMediaItem)),
+      ...approvedAiImages.map((m: any) => ({
+        type: 'ai_generated' as const,
+        query: m.query,
+        url: m.url,
+        duration: m.duration,
+        aiPrompt: m.query,
+        startTime: m.startTime,
+        endTime: m.endTime,
+      } as StockMediaItem)),
+    ];
+  }
+  
+  processorLogger.info(`[Background Render] Applying edits for project ${projectId}`);
+  
+  // Determine edit options
+  const storedOptions = (reviewData.editOptions || {}) as Record<string, any>;
+  const hasApprovedCuts = editPlan?.actions?.some((a: any) => a.type === 'cut' && a.approved) ?? false;
+  
+  const editOptions = {
+    addCaptions: storedOptions.addCaptions ?? true,
+    addBroll: stockMedia.length > 0,
+    removeSilence: hasApprovedCuts,
+    generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
+    addTransitions: storedOptions.addTransitions ?? false,
+  };
+  
+  // Ensure editPlan has required structure
+  const finalEditPlan = {
+    actions: editPlan?.actions || [],
+    estimatedDuration: editPlan?.estimatedDuration,
+  } as any;
+  
+  // Apply edits
+  const editResult = await applyEdits(
+    videoPath,
+    finalEditPlan,
+    transcript,
+    stockMedia,
+    editOptions,
+    undefined,
+    (project.analysis as any)?.semanticAnalysis
+  );
+  
+  // Get output metadata
+  const outputMetadata = await getVideoMetadata(editResult.outputPath);
+  const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
+  
+  processorLogger.info(`[Background Render] Complete for project ${projectId}, output: ${publicOutputPath}`);
+  
+  // Perform self-review in background
+  try {
+    const selfReviewResult = await performPostRenderSelfReview(
+      editResult.outputPath,
+      videoPath,
+      finalEditPlan,
+      transcript,
+      reviewData,
+      stockMedia,
+      project.prompt || "",
+      (project.analysis as any)?.videoAnalysis
+    );
+    processorLogger.info(`[Background Render] Self-review complete: score=${selfReviewResult.overallScore}`);
+  } catch (reviewErr) {
+    processorLogger.warn(`[Background Render] Self-review failed (non-critical):`, reviewErr);
+  }
+  
+  // Mark as completed
+  await storage.updateVideoProject(projectId, {
+    status: "completed" as ProcessingStatus,
+    outputPath: publicOutputPath,
+  });
+  
+  processorLogger.info(`[Background Render] Project ${projectId} completed successfully`);
+}

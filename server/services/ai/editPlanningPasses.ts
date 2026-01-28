@@ -13,11 +13,13 @@ import {
   normalizeSectionType,
   normalizeFillerAction,
 } from "./normalization";
+import { createContextAggregator } from "./contextAggregator";
 import type {
   VideoAnalysis,
   TranscriptSegment,
   SemanticAnalysis,
   EditAction,
+  TranscriptEnhancedType,
 } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
@@ -663,15 +665,31 @@ function getDefaultBrollPlan(
 }
 
 // CONSOLIDATED PASS: Combines Passes 1-3 into a single API call for efficiency
+// Now accepts enhancedTranscript for rich context (speakers, chapters, entities, sentiment)
 export async function executeConsolidatedAnalysis(
   analysis: VideoAnalysis,
   transcript: TranscriptSegment[],
   semanticAnalysis: SemanticAnalysis,
-  fillerSegments: { start: number; end: number; word: string }[]
+  fillerSegments: { start: number; end: number; word: string }[],
+  enhancedTranscript?: TranscriptEnhancedType
 ): Promise<ConsolidatedAnalysisResult> {
   const duration = analysis.duration || 0;
   const genre = analysis.context?.genre || "general";
   const tone = analysis.context?.tone || "casual";
+  
+  // Create context aggregator to unify all analysis data
+  const contextAggregator = createContextAggregator(
+    analysis, 
+    transcript, 
+    semanticAnalysis,
+    enhancedTranscript
+  );
+  
+  // Generate rich context from all underused data sources
+  const richContextData = contextAggregator.generateEditPlanningContext();
+  const unifiedContext = contextAggregator.getUnifiedContext();
+  
+  aiLogger.info(`[Context Aggregator] Data sources available: ${Object.entries(unifiedContext.hasData).filter(([_, v]) => v).map(([k]) => k).join(", ")}`);
   
   // Extract enhancedAnalysis data for intelligent editing decisions (now properly typed in VideoAnalysis)
   const enhancedAnalysis = analysis.enhancedAnalysis;
@@ -728,7 +746,7 @@ AUDIO-VISUAL SYNC:
 - Sync Quality: ${audioVisualSync.syncQuality || "good"}
 ${(audioVisualSync.outOfSyncMoments?.length || 0) > 0 ? `- Sync Issues:\n${audioVisualSync.outOfSyncMoments!.slice(0, 5).map((m) => `  [${safeFixed(m.timestamp)}s]: ${m.issue}`).join("\n")}` : ""}` : "";
 
-  const prompt = `You are an expert video editor. Perform a COMPREHENSIVE analysis of this video in a single pass.
+  const prompt = `You are an expert video editor with deep understanding of narrative, emotion, and visual storytelling. Perform a COMPREHENSIVE analysis of this video in a single pass.
 
 VIDEO METADATA:
 - Duration: ${safeFixed(duration)} seconds
@@ -739,6 +757,8 @@ ${motionContext}
 ${transitionContext}
 ${pacingContext}
 ${syncContext}
+
+${richContextData}
 
 SEMANTIC ANALYSIS:
 - Main topics: ${semanticAnalysis.mainTopics.join(", ")}
@@ -763,10 +783,26 @@ ANALYZE AND PROVIDE:
 2. QUALITY ASSESSMENT - Score segments (0-100) for engagement and value
 3. B-ROLL OPTIMIZATION - Plan optimal B-roll placements with ULTRA-SPECIFIC queries
 
+INTELLIGENT EDITING RULES (use the rich context data above):
+- USE SPEAKER DATA: Prefer cuts during speaker transitions, not mid-sentence
+- USE EMOTION DATA: Slow down during emotional peaks, add emphasis at high-intensity moments
+- USE SCENE DATA: Use scene boundaries as natural transition points
+- USE ENTITY DATA: When entities (people, places, things) are mentioned, use them in B-roll queries
+- USE SENTIMENT DATA: Match B-roll mood to sentiment (positive = upbeat, negative = subdued)
+- USE CHAPTER DATA: Respect chapter boundaries for natural section breaks
+
+B-ROLL PLACEMENT DECISIONS (explain your reasoning):
+- DECIDE IF B-roll is needed at each point (not always yes!)
+- DON'T add B-roll during high visual importance scenes or emotional peaks
+- DO add B-roll when same speaker talks >15 seconds (visual variety)
+- PREFER VIDEO over images during high-motion segments
+- PREFER IMAGES during reflective/calm segments
+- USE ENTITIES mentioned in transcript for specific B-roll queries
+
 B-ROLL RULES:
 - DISTRIBUTE EVENLY across entire video timeline (not clustered at start)
 - YOU DECIDE optimal placement count based on content needs (no fixed limit)
-- Each 3-5 seconds duration
+- AI decides duration (2-6s) based on pacing: fast content = shorter B-roll, slow = longer
 - Minimum 3 second spacing between clips
 - Match ${genre} content with ${tone} imagery
 - Use ${getBrollStyleHint(genre)}
@@ -781,16 +817,22 @@ Respond in JSON only (no markdown):
     "narrativeArc": "linear|problem_solution|story|tutorial|listicle|conversational"
   },
   "quality": {
-    "segmentScores": [{"start": number, "end": number, "engagementScore": 0-100, "valueLevel": "must_keep|high|medium|low|cut_candidate", "reason": "string"}],
+    "segmentScores": [{"start": number, "end": number, "engagementScore": 0-100, "valueLevel": "must_keep|high|medium|low|cut_candidate", "reason": "string", "speakerId": "speaker_1|null", "emotionAtPoint": "emotion|null"}],
     "hookStrength": 0-100,
     "overallEngagement": 0-100,
-    "lowValueSegments": [{"start": number, "end": number, "reason": "string"}],
-    "mustKeepSegments": [{"start": number, "end": number, "reason": "string"}]
+    "lowValueSegments": [{"start": number, "end": number, "reason": "string", "isSpeakerChange": boolean}],
+    "mustKeepSegments": [{"start": number, "end": number, "reason": "string", "isKeyMoment": boolean}]
   },
   "broll": {
-    "brollPlacements": [{"start": number, "duration": 3-5, "query": "SPECIFIC search query", "transcriptContext": "what speaker says", "priority": "high|medium|low", "reason": "string"}],
+    "brollPlacements": [{"start": number, "duration": 2-6, "query": "SPECIFIC search query using entities if mentioned", "transcriptContext": "what speaker says", "priority": "high|medium|low", "reason": "string", "preferVideo": boolean, "emotionMatch": "emotion to match", "shouldUseBroll": true, "whyBroll": "explanation of why B-roll is appropriate here"}],
     "fillerActions": [{"start": number, "end": number, "word": "string", "action": "cut|overlay"}],
-    "cutActions": [{"start": number, "end": number, "reason": "string"}]
+    "cutActions": [{"start": number, "end": number, "reason": "string", "isSpeakerChange": boolean, "isSceneBoundary": boolean}]
+  },
+  "planReasoning": {
+    "overallApproach": "explanation of editing strategy",
+    "dataSourcesUsed": ["speakers", "emotions", "scenes", "entities", "chapters", "sentiment"],
+    "confidenceScore": 0-100,
+    "keyDecisions": [{"decision": "what was decided", "reason": "why", "dataSource": "which data informed this"}]
   }
 }`;
 

@@ -654,6 +654,79 @@ export const qualityScoreSchema = z.object({
 
 export type QualityScore = z.infer<typeof qualityScoreSchema>;
 
+// ============================================================================
+// DECISION REASONING SYSTEM
+// Captures WHY the AI made specific decisions for explainability and learning
+// ============================================================================
+
+// Individual factor that contributed to a decision
+export const decisionFactorSchema = z.object({
+  factor: z.string(),                   // What influenced the decision (e.g., "high motion detected")
+  weight: coercedNumberRange(0, 1),     // How much this factor contributed (0-1)
+  source: z.string(),                   // Where this data came from (e.g., "motionAnalysis", "emotionFlow", "speaker")
+  value: z.string().optional(),         // The actual value (e.g., "high", "speaker_1", "excited")
+});
+
+export type DecisionFactor = z.infer<typeof decisionFactorSchema>;
+
+// Complete reasoning for a single decision
+export const decisionReasoningSchema = z.object({
+  decision: z.string(),                              // What was decided (e.g., "selected video over image")
+  confidence: coercedNumberRange(0, 100),            // How confident the AI is (0-100)
+  factors: z.array(decisionFactorSchema),            // Factors that led to this decision
+  alternatives: z.array(z.string()).optional(),      // What other options were considered
+  whyNotAlternatives: z.array(z.string()).optional(), // Why alternatives weren't chosen
+  contextualData: z.record(z.any()).optional(),      // Raw context data for learning
+});
+
+export type DecisionReasoning = z.infer<typeof decisionReasoningSchema>;
+
+// Media selection specific reasoning
+export const mediaSelectionReasoningSchema = z.object({
+  shouldUseBroll: z.boolean(),                       // AI decision: whether B-roll is even needed here
+  shouldUseBrollReason: z.string(),                  // Why B-roll is or isn't needed
+  preferredMediaType: z.enum(["video", "image", "ai_generated"]).optional(),
+  mediaTypeReason: z.string().optional(),            // Why this type was preferred
+  sceneContext: z.object({                           // What's happening in the video at this point
+    currentSpeaker: z.string().nullish(),
+    isGesturing: z.boolean().optional(),
+    visualDescription: z.string().optional(),
+    emotionalTone: z.string().optional(),
+    motionLevel: z.enum(["low", "medium", "high"]).optional(),
+  }).optional(),
+  emotionalMatch: coercedNumberRange(0, 100).optional(),  // How well media matches emotional tone
+  visualContinuity: coercedNumberRange(0, 100).optional(), // How well it flows with surrounding content
+  selectedMediaId: z.string().optional(),
+  selectionReasoning: decisionReasoningSchema.optional(),
+});
+
+export type MediaSelectionReasoning = z.infer<typeof mediaSelectionReasoningSchema>;
+
+// Edit action specific reasoning
+export const editActionReasoningSchema = z.object({
+  actionType: z.string(),
+  reasoning: decisionReasoningSchema,
+  speakerContext: z.object({                         // Speaker data at this point
+    speakerId: z.string().nullish(),
+    isSpeakerChange: z.boolean().optional(),
+    speakerDuration: coercedNumber().optional(),     // How long this speaker has been talking
+  }).optional(),
+  emotionContext: z.object({                         // Emotional data at this point
+    emotion: z.string().optional(),
+    intensity: coercedNumberRange(0, 100).optional(),
+    isEmotionalPeak: z.boolean().optional(),
+  }).optional(),
+  sceneContext: z.object({                           // Scene data at this point
+    sceneType: z.string().optional(),
+    isSceneBoundary: z.boolean().optional(),
+    visualImportance: z.enum(["low", "medium", "high"]).optional(),
+  }).optional(),
+  entityContext: z.array(z.string()).optional(),     // Entities mentioned near this point
+  chapterContext: z.string().optional(),             // Current chapter if applicable
+});
+
+export type EditActionReasoning = z.infer<typeof editActionReasoningSchema>;
+
 export const editActionSchema = z.object({
   type: normalizedEnum(["cut", "keep", "insert_stock", "insert_ai_image", "add_caption", "add_text_overlay", "transition", "speed_change"], normalizeEditActionType),
   start: coercedNumber().optional(),
@@ -670,6 +743,16 @@ export const editActionSchema = z.object({
   confidence: coercedNumber().optional(),
   transcriptContext: z.string().optional(),
   qualityScore: coercedNumberRange(0, 100).optional(),
+  // New: Decision reasoning for explainability
+  aiReasoning: editActionReasoningSchema.optional(),
+  // New: Context data for smart decisions
+  speakerAtPoint: z.string().nullish(),                    // Who's speaking at this timestamp
+  emotionAtPoint: z.string().optional(),                    // Emotional state at this timestamp
+  sceneAtPoint: z.string().optional(),                      // Scene description at this timestamp
+  entitiesMentioned: z.array(z.string()).optional(),        // Entities mentioned near this point
+  isSceneBoundary: z.boolean().optional(),                  // Is this a natural scene transition
+  isSpeakerChange: z.boolean().optional(),                  // Is this a speaker change point
+  motionLevel: z.enum(["low", "medium", "high"]).optional(), // Motion intensity at this point
 });
 
 export type EditAction = z.infer<typeof editActionSchema>;
@@ -687,6 +770,20 @@ export const editPlanSchema = z.object({
   qualityScore: coercedNumber().optional(),
   // Enhanced AI video editing field
   qualityMetrics: qualityScoreSchema.optional(),
+  // New: Overall reasoning for the edit plan
+  planReasoning: z.object({
+    overallApproach: z.string().optional(),                // High-level explanation of editing approach
+    speakerAwareness: z.boolean().optional(),              // Whether speaker data was used
+    emotionAwareness: z.boolean().optional(),              // Whether emotion data was used
+    sceneAwareness: z.boolean().optional(),                // Whether scene data was used
+    dataSourcesUsed: z.array(z.string()).optional(),       // Which analysis sources informed the plan
+    confidenceScore: coercedNumberRange(0, 100).optional(), // Overall plan confidence
+    keyDecisions: z.array(z.object({                       // Major decisions and their reasoning
+      decision: z.string(),
+      reason: z.string(),
+      dataSource: z.string().optional(),
+    })).optional(),
+  }).optional(),
 });
 
 export type EditPlan = z.infer<typeof editPlanSchema>;

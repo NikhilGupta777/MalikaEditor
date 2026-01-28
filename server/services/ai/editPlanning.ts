@@ -24,6 +24,7 @@ import type {
   SemanticAnalysis,
   EditPlan,
   EditAction,
+  TranscriptEnhancedType,
 } from "@shared/schema";
 
 const aiLogger = createLogger("ai-service");
@@ -694,10 +695,23 @@ export async function generateSmartEditPlan(
   analysis: VideoAnalysis,
   transcript: TranscriptSegment[],
   semanticAnalysis: SemanticAnalysis,
-  fillerSegments: { start: number; end: number; word: string }[]
+  fillerSegments: { start: number; end: number; word: string }[],
+  enhancedTranscript?: TranscriptEnhancedType
 ): Promise<EditPlan> {
   aiLogger.info("Starting optimized smart edit planning (2-pass consolidated approach)...");
   const startTime = Date.now();
+  
+  // Log rich context availability
+  if (enhancedTranscript) {
+    const richDataSources: string[] = [];
+    if (enhancedTranscript.speakers?.length) richDataSources.push(`${enhancedTranscript.speakers.length} speakers`);
+    if (enhancedTranscript.chapters?.length) richDataSources.push(`${enhancedTranscript.chapters.length} chapters`);
+    if (enhancedTranscript.entities?.length) richDataSources.push(`${enhancedTranscript.entities.length} entities`);
+    if (enhancedTranscript.sentiments?.length) richDataSources.push(`${enhancedTranscript.sentiments.length} sentiments`);
+    if (richDataSources.length > 0) {
+      aiLogger.info(`[Rich Context] Enhanced transcript data available: ${richDataSources.join(", ")}`);
+    }
+  }
 
   // PHASE 4: Apply learned preferences from previous successful edits
   const learningContext = getLearningContext(analysis, prompt);
@@ -718,7 +732,7 @@ export async function generateSmartEditPlan(
   try {
     aiLogger.info("Consolidated Pass: Analyzing structure, quality, and B-roll in single call...");
     const consolidated = await executeConsolidatedAnalysis(
-      analysis, transcript, semanticAnalysis, fillerSegments
+      analysis, transcript, semanticAnalysis, fillerSegments, enhancedTranscript
     );
     structuredPlan = consolidated.structuredPlan;
     qualityMap = consolidated.qualityMap;

@@ -741,13 +741,23 @@ async function runProcessingPipeline(
     addActivity(projectId, "Creating intelligent edit plan...");
     const fillerSegments: { start: number; end: number; word: string }[] = [];
     
+    // Create enhanced transcript with rich context for intelligent editing decisions
+    const enhancedTranscript = {
+      speakers: transcriptResult.speakers || [],
+      chapters: transcriptResult.chapters || [],
+      sentiments: transcriptResult.sentiments || [],
+      entities: transcriptResult.entities || [],
+      detectedLanguage: transcriptResult.detectedLanguage,
+    };
+    
     // Use the already sanitized analysis with valid duration (now flattened)
     const editPlan = await generateSmartEditPlan(
       prompt,
       sanitizedAnalysis,
       transcript,
       sanitizedAnalysis.semanticAnalysis || {},
-      fillerSegments
+      fillerSegments,
+      enhancedTranscript
     );
     addActivity(projectId, `Edit plan ready: ${editPlan.actions?.length || 0} actions planned`);
 

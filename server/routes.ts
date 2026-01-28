@@ -63,6 +63,8 @@ import {
   generateSmartEditPlan,
   detectFillerWords,
   performPreRenderReview,
+  performPostRenderSelfReview,
+  shouldAutoCorrect,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment, EditOptionsType } from "@shared/schema";
 import { editPlanSchema, reviewDataSchema } from "@shared/schema";
@@ -1138,7 +1140,58 @@ export async function registerRoutes(
       const outputMetadata = await getVideoMetadata(editResult.outputPath);
       const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
       
-      sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s, ready for download!`);
+      sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s`);
+      sendActivity("Video ready for download!");
+      
+      // AI SELF-REVIEW: Fire-and-forget background task (truly non-blocking)
+      // Store the output path for background self-review
+      const outputPathForReview = editResult.outputPath;
+      const projectIdForReview = id;
+      const promptForReview = project.prompt || "Edit this video";
+      const videoAnalysisForReview = (project.analysis as { videoAnalysis?: unknown })?.videoAnalysis as import("@shared/schema").VideoAnalysis | undefined;
+      
+      // Only run self-review if we have valid reviewData
+      if (reviewData && reviewData.userApproved) {
+        // Fire-and-forget: don't await this
+        (async () => {
+          try {
+            routesLogger.info(`[SelfReview] Starting background self-review for project ${projectIdForReview}`);
+            
+            const selfReviewResult = await performPostRenderSelfReview(
+              outputPathForReview,
+              videoPath,
+              finalEditPlan,
+              transcript,
+              reviewData,
+              stockMedia,
+              promptForReview,
+              videoAnalysisForReview
+            );
+            
+            routesLogger.info(`[SelfReview] Completed: Score ${selfReviewResult.overallScore}/100, Approved: ${selfReviewResult.approved}, Issues: ${selfReviewResult.issues.length}`);
+            
+            // Check if auto-correction is needed (Phase 3 preparation)
+            const correctionCheck = await shouldAutoCorrect(selfReviewResult);
+            if (correctionCheck.shouldCorrect) {
+              routesLogger.info(`[SelfReview] Auto-correction recommended: ${correctionCheck.reason}`);
+              // Phase 3 will implement the actual auto-correction loop
+            }
+            
+            // Store self-review results for future reference (Phase 3 preparation)
+            // For now, just log the results. Full persistence will be added in Phase 3.
+            routesLogger.info(`[SelfReview] Quality metrics: audioSync=${selfReviewResult.qualityMetrics.audioVideoSync}, visual=${selfReviewResult.qualityMetrics.visualQuality}, pacing=${selfReviewResult.qualityMetrics.pacingFlow}`);
+            
+          } catch (selfReviewError) {
+            routesLogger.warn(`[SelfReview] Background self-review failed: ${selfReviewError instanceof Error ? selfReviewError.message : String(selfReviewError)}`);
+          }
+        })().catch(err => {
+          routesLogger.debug(`[SelfReview] Background task error: ${err}`);
+        });
+        
+        sendActivity("Self-review started in background...");
+      } else {
+        routesLogger.debug(`[SelfReview] Skipped: reviewData not available or not approved`);
+      }
       
       await storage.updateVideoProject(id, {
         status: "completed" as ProcessingStatus,
@@ -1149,6 +1202,7 @@ export async function registerRoutes(
       sendEvent("complete", {
         outputPath: publicOutputPath,
         duration: Math.round(outputMetadata.duration),
+        selfReviewStarted: reviewData && reviewData.userApproved ? true : false,
         aiImageStats: editOptions.generateAiImages ? {
           applied: editResult.aiImagesApplied,
           skipped: editResult.aiImagesSkipped,

@@ -47,3 +47,12 @@ export {
   type EditFeedback,
   type FeedbackSummary
 } from "./preRenderReview";
+
+export {
+  performPostRenderSelfReview,
+  shouldAutoCorrect,
+  generateCorrectionPlan,
+  type SelfReviewResult,
+  type SelfReviewIssue,
+  type CorrectionPlan
+} from "./postRenderReview";

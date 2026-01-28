@@ -1692,10 +1692,14 @@ function validateEditActions(actions: EditAction[], videoDuration: number): {
         continue;
       }
     } else if (action.type === "add_caption") {
-      if (!action.text) {
+      // Accept 'text' or 'transcriptContext' for caption text (AI may use either)
+      const captionText = action.text || action.transcriptContext;
+      if (!captionText) {
         invalid.push({ action, reason: `Missing text for caption` });
         continue;
       }
+      // Normalize: ensure 'text' field is populated
+      action.text = captionText;
     } else if (action.type === "transition") {
       if (action.timestamp === undefined || !Number.isFinite(action.timestamp)) {
         invalid.push({ action, reason: `Missing/invalid timestamp for transition` });

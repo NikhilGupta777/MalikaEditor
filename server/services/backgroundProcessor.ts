@@ -53,24 +53,13 @@ const processingLocks = new Map<number, { acquired: boolean; timestamp: number }
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 const STALE_JOB_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-// Cleanup all locks and mark stale jobs as failed on process exit
+// Cleanup locks on process exit - DO NOT mark jobs as failed
+// Jobs will continue automatically when server restarts
 function cleanupAllJobsOnExit(): void {
-  processorLogger.info(`Process exit: cleaning up ${processingLocks.size} locks and ${activeJobs.size} active jobs`);
+  processorLogger.info(`Process exit: cleaning up ${processingLocks.size} locks (jobs will continue on restart)`);
   
-  // Use Array.from() for Map iteration compatibility
-  for (const [projectId, job] of Array.from(activeJobs.entries())) {
-    if (job.status === "processing") {
-      job.status = "failed";
-      processorLogger.warn(`Marking job ${projectId} as failed due to process exit`);
-      
-      // Try to update storage (may fail if DB connection closed)
-      storage.updateVideoProject(projectId, {
-        status: "failed",
-        errorMessage: "Processing interrupted by server restart. Please retry.",
-      }).catch(() => {/* ignore errors during shutdown */});
-    }
-  }
-  
+  // Just clear in-memory state - don't mark jobs as failed
+  // The recovery system will restart them automatically
   processingLocks.clear();
   activeJobs.clear();
 }

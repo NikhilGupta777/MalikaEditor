@@ -7,7 +7,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { createLogger } from "./utils/logger";
 import { cleanupStaleTempFiles } from "./services/videoProcessor";
-// Checkpoint recovery disabled - processing runs continuously
+import { recoverInterruptedJobs } from "./services/backgroundProcessor";
 import { logTranscriptionConfig } from "./services/aiService";
 import { storage } from "./storage";
 import { AI_CONFIG } from "./config/ai";
@@ -237,8 +237,12 @@ async function runStartupTasks() {
   // Log transcription system configuration at startup
   logTranscriptionConfig();
 
-  // NOTE: Checkpoint recovery disabled - processing runs continuously without interruption
-  // The system runs from upload to final render in one continuous flow
+  // Recover any interrupted processing jobs - they will continue from their current state
+  try {
+    await recoverInterruptedJobs();
+  } catch (e) {
+    expressLogger.warn("Failed to recover interrupted jobs on startup:", e);
+  }
 
   // Create default admin user from environment variables if not exists
   try {

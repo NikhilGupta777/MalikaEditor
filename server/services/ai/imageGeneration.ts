@@ -21,16 +21,27 @@ export async function generateAiImage(
   videoContext?: VideoContext,
 ): Promise<{ base64Data: string; mimeType: string }> {
   try {
+    // Sanitize prompt to remove conflicting style instructions that could break consistency
+    const sanitizedPrompt = prompt
+      .replace(/\b(abstract|digital animation|cartoon|animated|illustration|graphic design|3d render|cgi|vector|stylized|anime|pixel art)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
     const contextualPrompt = videoContext
-      ? `Create a UHD, cinematic, high-quality image suitable for ${videoContext.genre} video content with a ${videoContext.tone} tone. 
-         The image should visually represent: ${prompt}
-       Use realistic lighting, natural depth of field, strong composition, and emotionally appropriate atmosphere.
-       Style: Professional, cinematic realism, documentary-grade, clean and context-aware.
-       Must look authentic, timeless, and suitable for high-quality B-roll usage.
+      ? `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for ${videoContext.genre} video content with a ${videoContext.tone} tone. 
+         The image should visually represent: ${sanitizedPrompt}
+       CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
+       - MUST be photorealistic - no abstract, digital, animated, or illustrated styles
+       - Use realistic lighting, natural depth of field, strong composition, and emotionally appropriate atmosphere
+       - Style: Professional, cinematic realism, documentary-grade, clean and context-aware
+       - Must look authentic, timeless, and suitable for high-quality B-roll usage
+       - Consistent with other images in the same video project
        No text, subtitles, logos, symbols, watermarks, UI elements, or graphic overlays.`
-      : `Create a UHD, cinematic, professional-quality image representing: ${prompt}.
-       Use realistic lighting, clear subject focus, natural depth, and balanced composition.
-       Style: Clean, cinematic realism suitable for generic AI B-roll footage.
+      : `Create a UHD, cinematic, professional-quality PHOTOREALISTIC image representing: ${sanitizedPrompt}.
+       CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
+       - MUST be photorealistic - no abstract, digital, animated, or illustrated styles
+       - Use realistic lighting, clear subject focus, natural depth, and balanced composition
+       - Style: Clean, cinematic realism suitable for generic AI B-roll footage
        No text, subtitles, logos, watermarks, or graphic overlays.`;
 
     aiLogger.debug(

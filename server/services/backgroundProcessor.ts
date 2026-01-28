@@ -557,7 +557,7 @@ async function runProcessingPipeline(
         thumbnailUrl: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
         width: 1024,
         height: 1024,
-        source: 'imagen',
+        source: 'ai',
         startTime: img.startTime,
         endTime: img.endTime,
       }));
@@ -587,7 +587,7 @@ async function runProcessingPipeline(
           thumbnailUrl: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
           width: 1024,
           height: 1024,
-          source: 'imagen',
+          source: 'ai',
           startTime: img.startTime,
           endTime: img.endTime,
         }));

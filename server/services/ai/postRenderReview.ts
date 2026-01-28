@@ -2,7 +2,7 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { z } from "zod";
 import { createLogger } from "../../utils/logger";
-import { getGeminiClient } from "./clients";
+import { getGeminiClient, getVideoAnalysisGeminiClient } from "./clients";
 import { AI_CONFIG } from "../../config/ai";
 import { extractJsonFromResponse } from "./normalization";
 import type { EditPlan, TranscriptSegment, ReviewData, StockMediaItem, VideoAnalysis } from "@shared/schema";
@@ -127,7 +127,9 @@ export async function performPostRenderSelfReview(
     return getDefaultSelfReviewResult(false, "Video too large for full self-review");
   }
   
-  const client = getGeminiClient();
+  // Use the video analysis client which supports file uploads (direct Google API, not Replit proxy)
+  // The Replit proxy doesn't support file uploads (POST /upload/v1beta/files endpoint)
+  const client = getVideoAnalysisGeminiClient();
   
   try {
     selfReviewLogger.info(`Uploading rendered video for self-review: ${sizeMB.toFixed(1)}MB`);
@@ -349,7 +351,6 @@ function getDefaultSelfReviewResult(watchedVideo: boolean, reason: string, force
       description: `Self-review could not be completed: ${reason}. Quality unverified.`,
       suggestedFix: "Manual quality check recommended before delivery",
       autoFixable: false,
-      priority: 5,
     }],
     qualityMetrics: {
       audioVideoSync: watchedVideo ? 80 : 0,
@@ -364,7 +365,11 @@ function getDefaultSelfReviewResult(watchedVideo: boolean, reason: string, force
     detailedFeedback: watchedVideo 
       ? `Automatic approval: ${reason}` 
       : `QUALITY UNVERIFIED: ${reason}. Video was not watched by AI. Manual review is strongly recommended.`,
-    recommendedActions: watchedVideo ? [] : ["manual_review"],
+    recommendedActions: watchedVideo ? [] : [{
+      actionType: "none" as const,
+      priority: 5,
+      details: "Manual review recommended - self-review could not verify quality",
+    }],
   };
 }
 

@@ -888,12 +888,95 @@ export async function registerRoutes(
       
       // RACE CONDITION GUARD: If userApproved is true and a background render is active,
       // the background render was already triggered by approve-review endpoint.
-      // Redirect to SSE status updates instead of starting a duplicate render.
+      // Switch to SSE polling mode - do NOT start another parallel render.
       if (isRenderActive(id)) {
-        routesLogger.info(`[Render] Background render already active for project ${id} - switching to SSE polling`);
-        // Force this request to use the rendering reconnection logic
-        // by updating the project reference status (used in the check below)
-        (project as any).status = "rendering";
+        routesLogger.info(`[Render] Background render already active for project ${id} - switching to SSE polling mode`);
+        
+        // Set up SSE response for polling
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        req.setTimeout(0);
+        
+        let connectionClosed = false;
+        let pollInterval: NodeJS.Timeout | null = null;
+        let heartbeatInterval: NodeJS.Timeout | null = null;
+        
+        req.on("close", () => {
+          connectionClosed = true;
+          if (pollInterval) clearInterval(pollInterval);
+          if (heartbeatInterval) clearInterval(heartbeatInterval);
+          routesLogger.info(`[Render] SSE polling client disconnected for project ${id}`);
+        });
+        
+        const sendPollingEvent = (type: string, data: Record<string, unknown>) => {
+          if (!connectionClosed) {
+            res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+          }
+        };
+        
+        // Send heartbeat to keep connection alive
+        heartbeatInterval = setInterval(() => {
+          if (!connectionClosed) {
+            res.write(": heartbeat\n\n");
+          }
+        }, AI_CONFIG.processing.sseHeartbeatMs);
+        
+        // Send initial status
+        sendPollingEvent("status", { status: "rendering" });
+        sendPollingEvent("activity", { message: "Render in progress (already started by background processor)..." });
+        
+        // Helper to clear intervals safely
+        const cleanupIntervals = () => {
+          if (pollInterval) clearInterval(pollInterval);
+          if (heartbeatInterval) clearInterval(heartbeatInterval);
+        };
+        
+        // Poll for render completion
+        pollInterval = setInterval(async () => {
+          if (connectionClosed) {
+            cleanupIntervals();
+            return;
+          }
+          
+          const currentProject = await storage.getVideoProject(id);
+          if (!currentProject) {
+            sendPollingEvent("error", { error: "Project not found" });
+            cleanupIntervals();
+            connectionClosed = true;
+            res.end();
+            return;
+          }
+          
+          if (currentProject.status === "completed" && currentProject.outputPath) {
+            sendPollingEvent("complete", { 
+              outputPath: currentProject.outputPath,
+              duration: currentProject.duration
+            });
+            cleanupIntervals();
+            connectionClosed = true;
+            res.end();
+            return;
+          }
+          
+          if (currentProject.status === "failed") {
+            sendPollingEvent("error", { error: "Render failed" });
+            cleanupIntervals();
+            connectionClosed = true;
+            res.end();
+            return;
+          }
+          
+          // Send heartbeat with status update
+          sendPollingEvent("activity", { 
+            message: "Rendering in progress...",
+            status: currentProject.status
+          });
+        }, 2000);
+        
+        // Don't continue to start another render
+        return;
       }
     }
 

@@ -68,6 +68,7 @@ import {
   generateCorrectionPlan,
   applyCorrectionPlan,
   shouldTriggerReRender,
+  storePattern,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment, EditOptionsType } from "@shared/schema";
 import { editPlanSchema, reviewDataSchema } from "@shared/schema";
@@ -1324,6 +1325,25 @@ export async function registerRoutes(
             }
             
             routesLogger.info(`[SelfReview] Quality metrics: audioSync=${selfReviewResult.qualityMetrics.audioVideoSync}, visual=${selfReviewResult.qualityMetrics.visualQuality}, pacing=${selfReviewResult.qualityMetrics.pacingFlow}`);
+            
+            // PHASE 4: AI Learning System - Store successful patterns when score is good
+            const finalScore = lastSelfReview?.overallScore ?? selfReviewResult.overallScore;
+            if (finalScore >= 70 && reviewData) {
+              try {
+                routesLogger.info(`[Learning] Storing successful patterns (score: ${finalScore}/100)...`);
+                const storedPatterns = storePattern(
+                  reviewData,
+                  lastSelfReview || selfReviewResult,
+                  videoAnalysisForReview,
+                  promptForReview
+                );
+                routesLogger.info(`[Learning] Stored ${storedPatterns.length} patterns from successful edit`);
+              } catch (learningError) {
+                routesLogger.warn(`[Learning] Failed to store patterns: ${learningError instanceof Error ? learningError.message : String(learningError)}`);
+              }
+            } else {
+              routesLogger.debug(`[Learning] Skipped pattern storage: score ${finalScore}/100 below threshold or reviewData unavailable`);
+            }
             
           } catch (selfReviewError) {
             routesLogger.warn(`[SelfReview] Background self-review failed: ${selfReviewError instanceof Error ? selfReviewError.message : String(selfReviewError)}`);

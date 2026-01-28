@@ -59,3 +59,19 @@ export {
   type CorrectionPlan,
   type AppliedCorrections
 } from "./postRenderReview";
+
+export {
+  storePattern,
+  retrievePatterns,
+  applyLearnedPreferences,
+  recordFeedback,
+  getPatternStats,
+  clearOldPatterns,
+  getLearningContext,
+  type PatternType,
+  type EditingPattern,
+  type FeedbackLearning,
+  type LearningStats,
+  type PatternSuggestion,
+  type LearnedPreferences
+} from "./learningSystem";

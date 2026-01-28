@@ -16,6 +16,7 @@ import {
   type ReviewedEditPlan,
   type ConsolidatedAnalysisResult,
 } from "./editPlanningPasses";
+import { getLearningContext, retrievePatterns, applyLearnedPreferences } from "./learningSystem";
 import type {
   VideoAnalysis,
   TranscriptSegment,
@@ -661,6 +662,17 @@ export async function generateSmartEditPlan(
   aiLogger.info("Starting optimized smart edit planning (2-pass consolidated approach)...");
   const startTime = Date.now();
 
+  // PHASE 4: Apply learned preferences from previous successful edits
+  const learningContext = getLearningContext(analysis, prompt);
+  if (learningContext) {
+    aiLogger.info("[Learning] Applying learned preferences from successful past edits");
+  }
+  const learnedPreferences = applyLearnedPreferences(analysis, prompt);
+  const relevantPatterns = retrievePatterns(["cut", "transition", "broll", "pacing"], analysis, prompt, 5);
+  if (relevantPatterns.length > 0) {
+    aiLogger.info(`[Learning] Found ${relevantPatterns.length} relevant patterns from past edits`);
+  }
+
   let structuredPlan: StructuredPlan;
   let qualityMap: QualityMap;
   let brollPlan: OptimizedBrollPlan;
@@ -698,9 +710,13 @@ export async function generateSmartEditPlan(
 
   aiLogger.info("Final Pass: Quality review and refinement...");
   let reviewedPlan;
+  
+  // Enhance prompt with learning context from successful past edits
+  const enhancedPrompt = learningContext ? `${prompt}${learningContext}` : prompt;
+  
   try {
     reviewedPlan = await executePass4QualityReview(
-      analysis, structuredPlan, qualityMap, brollPlan, prompt
+      analysis, structuredPlan, qualityMap, brollPlan, enhancedPrompt
     );
     aiLogger.debug(`Final pass complete: ${reviewedPlan.actions.length} final actions, overall score: ${reviewedPlan.qualityMetrics.overallScore}`);
   } catch (error) {

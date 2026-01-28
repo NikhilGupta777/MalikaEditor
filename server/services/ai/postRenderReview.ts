@@ -329,24 +329,42 @@ Your goal is to produce the best possible video, so identify anything that could
   }
 }
 
-function getDefaultSelfReviewResult(watchedVideo: boolean, reason: string): SelfReviewResult {
+function getDefaultSelfReviewResult(watchedVideo: boolean, reason: string, forceApproval: boolean = false): SelfReviewResult {
+  // Only auto-approve if AI actually watched the video or if explicitly forced
+  // For large files or errors, we should NOT silently approve - that bypasses quality gates
+  const approved = forceApproval || watchedVideo;
+  
+  // If we couldn't watch the video, use a lower score to flag for manual review
+  const overallScore = watchedVideo ? 75 : 50;
+  
+  selfReviewLogger.info(`Default self-review result: approved=${approved}, score=${overallScore}, reason="${reason}"`);
+  
   return {
-    overallScore: 75,
-    approved: true,
+    overallScore,
+    approved,
     watchedFullVideo: watchedVideo,
-    issues: [],
+    issues: watchedVideo ? [] : [{
+      type: "visual_quality" as const,
+      severity: "moderate" as const,
+      description: `Self-review could not be completed: ${reason}. Quality unverified.`,
+      suggestedFix: "Manual quality check recommended before delivery",
+      autoFixable: false,
+      priority: 5,
+    }],
     qualityMetrics: {
-      audioVideoSync: 80,
-      visualQuality: 80,
-      pacingFlow: 75,
-      transitionSmoothness: 75,
-      brollRelevance: 70,
-      narrativeCoherence: 75,
-      captionAccuracy: 80,
+      audioVideoSync: watchedVideo ? 80 : 0,
+      visualQuality: watchedVideo ? 80 : 0,
+      pacingFlow: watchedVideo ? 75 : 0,
+      transitionSmoothness: watchedVideo ? 75 : 0,
+      brollRelevance: watchedVideo ? 70 : 0,
+      narrativeCoherence: watchedVideo ? 75 : 0,
+      captionAccuracy: watchedVideo ? 80 : 0,
     },
-    suggestions: [],
-    detailedFeedback: `Automatic approval: ${reason}`,
-    recommendedActions: [],
+    suggestions: watchedVideo ? [] : ["Quality could not be verified - manual review recommended"],
+    detailedFeedback: watchedVideo 
+      ? `Automatic approval: ${reason}` 
+      : `QUALITY UNVERIFIED: ${reason}. Video was not watched by AI. Manual review is strongly recommended.`,
+    recommendedActions: watchedVideo ? [] : ["manual_review"],
   };
 }
 

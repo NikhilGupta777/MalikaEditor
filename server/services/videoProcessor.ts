@@ -1636,6 +1636,83 @@ export async function applyEdits(
   }
 }
 
+// Validate edit actions before FFmpeg execution - prevent crashes from invalid data
+function validateEditActions(actions: EditAction[], videoDuration: number): {
+  valid: EditAction[];
+  invalid: { action: EditAction; reason: string }[];
+} {
+  const valid: EditAction[] = [];
+  const invalid: { action: EditAction; reason: string }[] = [];
+  
+  for (const action of actions) {
+    // Check for required fields based on action type
+    if (action.type === "cut" || action.type === "keep") {
+      if (action.start === undefined || action.end === undefined) {
+        invalid.push({ action, reason: `Missing start/end for ${action.type}` });
+        continue;
+      }
+      if (!Number.isFinite(action.start) || !Number.isFinite(action.end)) {
+        invalid.push({ action, reason: `Non-finite start/end values` });
+        continue;
+      }
+      if (action.start < 0 || action.end < 0) {
+        invalid.push({ action, reason: `Negative timestamps` });
+        continue;
+      }
+      if (action.start >= action.end) {
+        invalid.push({ action, reason: `Start >= end (${action.start} >= ${action.end})` });
+        continue;
+      }
+      if (action.start >= videoDuration) {
+        invalid.push({ action, reason: `Start after video end (${action.start} >= ${videoDuration})` });
+        continue;
+      }
+      // Clamp end to video duration (don't reject, just fix)
+      if (action.end > videoDuration) {
+        videoLogger.debug(`Clamping ${action.type} end from ${action.end} to ${videoDuration}`);
+        action.end = videoDuration;
+      }
+    } else if (action.type === "insert_stock" || action.type === "insert_ai_image") {
+      if (action.start === undefined) {
+        invalid.push({ action, reason: `Missing start for ${action.type}` });
+        continue;
+      }
+      if (!Number.isFinite(action.start)) {
+        invalid.push({ action, reason: `Non-finite start value` });
+        continue;
+      }
+      if (action.start < 0 || action.start >= videoDuration) {
+        invalid.push({ action, reason: `Start out of bounds (${action.start})` });
+        continue;
+      }
+      // Duration validation
+      const duration = action.duration ?? 4;
+      if (!Number.isFinite(duration) || duration <= 0 || duration > 30) {
+        invalid.push({ action, reason: `Invalid duration (${duration})` });
+        continue;
+      }
+    } else if (action.type === "add_caption") {
+      if (!action.text) {
+        invalid.push({ action, reason: `Missing text for caption` });
+        continue;
+      }
+    } else if (action.type === "transition") {
+      if (action.timestamp === undefined || !Number.isFinite(action.timestamp)) {
+        invalid.push({ action, reason: `Missing/invalid timestamp for transition` });
+        continue;
+      }
+      if (action.timestamp < 0 || action.timestamp >= videoDuration) {
+        invalid.push({ action, reason: `Transition timestamp out of bounds (${action.timestamp} not in 0-${videoDuration})` });
+        continue;
+      }
+    }
+    
+    valid.push(action);
+  }
+  
+  return { valid, invalid };
+}
+
 async function applyEditsInternal(
   videoPath: string,
   editPlan: EditPlan,
@@ -1649,17 +1726,35 @@ async function applyEditsInternal(
   semanticAnalysis?: SemanticAnalysis
 ): Promise<EditResult> {
 
-  // Extract action types from edit plan
-  const keepSegments = editPlan.actions
-    .filter((a: EditAction) => a.type === "keep" && a.start !== undefined && a.end !== undefined)
+  // Validate all edit actions before processing
+  const { valid: validActions, invalid: invalidActions } = validateEditActions(
+    editPlan.actions || [],
+    metadata.duration
+  );
+  
+  if (invalidActions.length > 0) {
+    videoLogger.warn(`Edit action validation: ${invalidActions.length} invalid actions skipped:`);
+    for (const { action, reason } of invalidActions.slice(0, 10)) {
+      videoLogger.warn(`  - ${action.type}: ${reason}`);
+    }
+  }
+  
+  videoLogger.info(`Edit action validation: ${validActions.length} valid, ${invalidActions.length} invalid`);
+  
+  // Use validated actions for processing
+  const validatedEditPlan = { ...editPlan, actions: validActions };
+
+  // Extract action types from validated edit plan (all actions already validated)
+  const keepSegments = validatedEditPlan.actions
+    .filter((a: EditAction) => a.type === "keep")
     .sort((a, b) => (a.start || 0) - (b.start || 0));
 
-  const cutSegments = editPlan.actions
-    .filter((a: EditAction) => a.type === "cut" && a.start !== undefined && a.end !== undefined)
+  const cutSegments = validatedEditPlan.actions
+    .filter((a: EditAction) => a.type === "cut")
     .sort((a, b) => (a.start || 0) - (b.start || 0));
 
-  const insertStockActions = editPlan.actions
-    .filter((a: EditAction) => a.type === "insert_stock" && a.start !== undefined)
+  const insertStockActions = validatedEditPlan.actions
+    .filter((a: EditAction) => a.type === "insert_stock")
     .sort((a, b) => (a.start || 0) - (b.start || 0));
 
   // Note: insert_ai_image actions are no longer used in edit plans
@@ -1670,11 +1765,11 @@ async function applyEditsInternal(
   // TODO: Implement chapters feature with topic titles at chapter start points
   const textOverlayActions: EditAction[] = [];
   // Original code (disabled):
-  // const textOverlayActions = editPlan.actions
+  // const textOverlayActions = validatedEditPlan.actions
   //   .filter((a: EditAction) => a.type === "add_text_overlay" && a.text && a.start !== undefined);
 
-  const captionActions = editPlan.actions.filter((a: EditAction) => 
-    a.type === "add_caption" && a.text
+  const captionActions = validatedEditPlan.actions.filter((a: EditAction) => 
+    a.type === "add_caption"
   );
 
   videoLogger.debug(`Keep segments: ${keepSegments.length}`);

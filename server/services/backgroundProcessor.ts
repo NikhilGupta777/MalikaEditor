@@ -49,6 +49,113 @@ const OUTPUT_DIR = path.join(TEMP_DIR, "malika_output");
 
 const processingLocks = new Map<number, { acquired: boolean; timestamp: number }>();
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000;
+const STALE_JOB_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Cleanup all locks and mark stale jobs as failed on process exit
+function cleanupAllJobsOnExit(): void {
+  processorLogger.info(`Process exit: cleaning up ${processingLocks.size} locks and ${activeJobs.size} active jobs`);
+  
+  for (const [projectId, job] of activeJobs.entries()) {
+    if (job.status === "processing") {
+      job.status = "failed";
+      processorLogger.warn(`Marking job ${projectId} as failed due to process exit`);
+      
+      // Try to update storage (may fail if DB connection closed)
+      storage.updateVideoProject(projectId, {
+        status: "failed",
+        errorMessage: "Processing interrupted by server restart. Please retry.",
+      }).catch(() => {/* ignore errors during shutdown */});
+    }
+  }
+  
+  processingLocks.clear();
+  activeJobs.clear();
+}
+
+// Register process exit handlers
+process.on("exit", cleanupAllJobsOnExit);
+process.on("SIGINT", () => { cleanupAllJobsOnExit(); process.exit(0); });
+process.on("SIGTERM", () => { cleanupAllJobsOnExit(); process.exit(0); });
+process.on("uncaughtException", (err) => {
+  processorLogger.error("Uncaught exception, cleaning up jobs:", err);
+  cleanupAllJobsOnExit();
+  process.exit(1);
+});
+
+// Periodically clean up stale jobs that have been running too long
+function startStaleJobCleanup(): void {
+  setInterval(() => {
+    const now = Date.now();
+    let cleanedCount = 0;
+    
+    // First: Clean up stale locks
+    for (const [projectId, lock] of processingLocks.entries()) {
+      if (lock.acquired && now - lock.timestamp > LOCK_TIMEOUT_MS) {
+        const job = activeJobs.get(projectId);
+        
+        // Only clean up if job is not actively processing or is truly stale
+        if (!job || job.status !== "processing") {
+          processingLocks.delete(projectId);
+          cleanedCount++;
+          processorLogger.info(`Cleaned up stale lock for project ${projectId}`);
+        } else {
+          // Job still processing but exceeded timeout - mark as failed
+          job.status = "failed";
+          processingLocks.delete(projectId);
+          cleanedCount++;
+          processorLogger.warn(`Force-cleaned stale processing job ${projectId} after ${LOCK_TIMEOUT_MS}ms`);
+          
+          // Update storage
+          storage.updateVideoProject(projectId, {
+            status: "failed",
+            errorMessage: "Processing timed out. Please retry with a shorter video.",
+          }).catch((err) => {
+            processorLogger.error(`Failed to update timed-out project ${projectId}:`, err);
+          });
+        }
+      }
+    }
+    
+    // Second: Clean up zombie jobs (processing without a lock)
+    for (const [projectId, job] of activeJobs.entries()) {
+      if (job.status === "processing") {
+        const lock = processingLocks.get(projectId);
+        
+        // If no lock exists, job is a zombie - check if it's been processing too long
+        if (!lock) {
+          // Use job startTime if available, otherwise mark as zombie immediately
+          // Convert Date to numeric timestamp for comparison
+          const jobStartTime = job.startTime ? job.startTime.getTime() : 0;
+          if (now - jobStartTime > LOCK_TIMEOUT_MS || jobStartTime === 0) {
+            job.status = "failed";
+            cleanedCount++;
+            processorLogger.warn(`Cleaned up zombie job ${projectId} (processing without lock)`);
+            
+            // Release slot if reserved
+            if (job.slotReserved && onJobCompleteCallback) {
+              job.slotReserved = false;
+              onJobCompleteCallback(projectId);
+            }
+            
+            storage.updateVideoProject(projectId, {
+              status: "failed",
+              errorMessage: "Processing state lost. Please retry.",
+            }).catch((err) => {
+              processorLogger.error(`Failed to update zombie project ${projectId}:`, err);
+            });
+          }
+        }
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      processorLogger.info(`Stale job cleanup: cleaned ${cleanedCount} stale locks/jobs`);
+    }
+  }, STALE_JOB_CLEANUP_INTERVAL_MS);
+}
+
+// Start the cleanup interval
+startStaleJobCleanup();
 
 function acquireProcessingLock(projectId: number): boolean {
   const existing = processingLocks.get(projectId);
@@ -702,12 +809,12 @@ async function runProcessingPipeline(
     notifySubscribers(projectId, "reviewReady", { reviewData });
     notifySubscribers(projectId, "status", { status: "awaiting_review" });
     
-    // Send review ready update to chat companion with summary
+    // Send review ready update to chat companion with summary (with safe defaults)
     sendReviewReadyUpdate(projectId, {
-      totalCuts: reviewData.summary.totalCuts,
-      totalKeeps: reviewData.summary.totalKeeps,
-      totalBroll: reviewData.summary.totalBroll,
-      totalAiImages: reviewData.summary.totalAiImages,
+      totalCuts: reviewData.summary?.totalCuts ?? 0,
+      totalKeeps: reviewData.summary?.totalKeeps ?? 0,
+      totalBroll: reviewData.summary?.totalBroll ?? 0,
+      totalAiImages: reviewData.summary?.totalAiImages ?? 0,
     });
     updateProjectContext(projectId, { status: "awaiting_review" });
 

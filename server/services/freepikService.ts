@@ -2,6 +2,14 @@ import axios from "axios";
 import type { StockMediaItem } from "@shared/schema";
 import { createLogger } from "../utils/logger";
 import { AI_CONFIG } from "../config/ai";
+import { withRetry } from "../utils/retry";
+
+const STOCK_API_RETRY_OPTIONS = {
+  maxRetries: 2,
+  initialDelayMs: 500,
+  maxDelayMs: 5000,
+  backoffMultiplier: 2,
+};
 
 const freepikLogger = createLogger("freepik");
 
@@ -85,20 +93,25 @@ export async function searchFreepikPhotos(
   try {
     const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
     
-    const response = await axios.get(`${FREEPIK_BASE_URL}/resources`, {
-      headers: {
-        "x-freepik-api-key": FREEPIK_API_KEY,
-        "Accept-Language": "en-US",
-      },
-      params: {
-        term: searchQuery,
-        limit: perPage,
-        order: "relevance",
-        "filters[content_type][photo]": 1,
-        "filters[orientation][landscape]": 1,
-      },
-      timeout: 15000,
-    });
+    const response = await withRetry(
+      async () => axios.get(`${FREEPIK_BASE_URL}/resources`, {
+        headers: {
+          "x-freepik-api-key": FREEPIK_API_KEY,
+          "Accept-Language": "en-US",
+        },
+        params: {
+          term: searchQuery,
+          limit: perPage,
+          order: "relevance",
+          "filters[content_type][photo]": 1,
+          "filters[orientation][landscape]": 1,
+        },
+        timeout: 15000,
+      }),
+      "Freepik photo search",
+      STOCK_API_RETRY_OPTIONS,
+      "freepik"
+    );
 
     const resources = response.data?.data || [];
     
@@ -117,7 +130,7 @@ export async function searchFreepikPhotos(
     if (axios.isAxiosError(error) && error.response?.status === 401) {
       freepikLogger.warn("Freepik API key invalid or expired");
     } else if (axios.isAxiosError(error) && error.response?.status === 429) {
-      freepikLogger.warn("Freepik API rate limit reached");
+      freepikLogger.warn("Freepik API rate limit reached (after retries)");
     } else {
       freepikLogger.error("Freepik photo search error", { 
         query: query.slice(0, 50), 
@@ -140,18 +153,23 @@ export async function searchFreepikVideos(
   try {
     const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
     
-    const response = await axios.get(`${FREEPIK_BASE_URL}/videos`, {
-      headers: {
-        "x-freepik-api-key": FREEPIK_API_KEY,
-        "Accept-Language": "en-US",
-      },
-      params: {
-        term: searchQuery,
-        limit: perPage,
-        order: "relevance",
-      },
-      timeout: 15000,
-    });
+    const response = await withRetry(
+      async () => axios.get(`${FREEPIK_BASE_URL}/videos`, {
+        headers: {
+          "x-freepik-api-key": FREEPIK_API_KEY,
+          "Accept-Language": "en-US",
+        },
+        params: {
+          term: searchQuery,
+          limit: perPage,
+          order: "relevance",
+        },
+        timeout: 15000,
+      }),
+      "Freepik video search",
+      STOCK_API_RETRY_OPTIONS,
+      "freepik"
+    );
 
     const allVideos = response.data?.data || [];
     
@@ -209,12 +227,17 @@ export async function getFreepikDownloadUrl(
       ? `${FREEPIK_BASE_URL}/videos/${resourceId}/download`
       : `${FREEPIK_BASE_URL}/resources/${resourceId}/download`;
     
-    const response = await axios.get<FreepikDownloadResponse>(endpoint, {
-      headers: {
-        "x-freepik-api-key": FREEPIK_API_KEY,
-      },
-      timeout: 15000,
-    });
+    const response = await withRetry(
+      async () => axios.get<FreepikDownloadResponse>(endpoint, {
+        headers: {
+          "x-freepik-api-key": FREEPIK_API_KEY,
+        },
+        timeout: 15000,
+      }),
+      "Freepik download URL",
+      STOCK_API_RETRY_OPTIONS,
+      "freepik"
+    );
 
     return response.data?.data?.url || response.data?.data?.signed_url || null;
   } catch (error) {

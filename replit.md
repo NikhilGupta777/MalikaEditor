@@ -65,6 +65,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Reliability Features**: Circuit breaker pattern for AI services, retry with exponential backoff, batch frame extraction, JSON parsing recovery for malformed AI responses, and feedback learning from user decisions.
 - **Processing Lock System**: Atomic lock acquisition prevents race conditions and ensures job integrity.
 - **AI Image Selection Priority**: Explicitly prioritizes AI-generated images over stock footage, with minimum usage requirements and guardrails to detect selection bias.
+- **Resumable Processing with Database Checkpoints**: Processing jobs persist across server restarts via database-persisted checkpoints. The `processingStage` field tracks pipeline progress (upload, transcription, analysis, planning, media_fetch, media_selection, review_ready). On server startup, `recoverInterruptedJobs` automatically detects interrupted projects and resumes from the last completed checkpoint without redoing work.
 
 ## External Dependencies
 

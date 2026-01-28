@@ -221,9 +221,27 @@ function getEditStyleGuidance(context?: VideoContext): string {
 - Cut only non-essential content`;
 }
 
-export function validateAndFixBrollActions(actions: EditAction[], duration: number): EditAction[] {
+export function validateAndFixBrollActions(
+  actions: EditAction[], 
+  duration: number,
+  transcript?: TranscriptSegment[]
+): EditAction[] {
   // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
   const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
+  
+  // Helper to find transcript text at a given timestamp
+  const findTranscriptText = (start: number, end: number): string | null => {
+    if (!transcript || transcript.length === 0) return null;
+    
+    // Find transcript segments that overlap with the given time range
+    const overlapping = transcript.filter(seg => 
+      seg.start < end && seg.end > start
+    );
+    
+    if (overlapping.length === 0) return null;
+    
+    return overlapping.map(seg => seg.text).join(' ').trim();
+  };
   
   // First, validate all actions for basic timestamp integrity
   const sanitizedActions: EditAction[] = [];
@@ -322,10 +340,29 @@ export function validateAndFixBrollActions(actions: EditAction[], duration: numb
         continue;
       }
       
+      // Ensure caption has text - use text, transcriptContext, or derive from transcript
+      let captionText = action.text || action.transcriptContext;
+      
+      // If no text provided, try to derive from transcript at this timestamp
+      if (!captionText && transcript) {
+        const derivedText = findTranscriptText(start, end);
+        if (derivedText) {
+          captionText = derivedText;
+          aiLogger.debug(`Derived caption text from transcript at ${start}s: "${derivedText.substring(0, 50)}..."`);
+        }
+      }
+      
+      if (!captionText) {
+        // Caption without text is useless - skip it
+        aiLogger.debug(`Skipping caption action at ${start}s: no text available`);
+        continue;
+      }
+      
       sanitizedActions.push({
         ...action,
         start,
         end,
+        text: captionText, // Ensure text field is populated
       });
     } else if (action.type === "add_text_overlay") {
       // Validate text overlay actions
@@ -641,7 +678,7 @@ Respond with a JSON object only (no markdown):
     actions.push(...keepActions);
   }
 
-  const validatedActions = validateAndFixBrollActions(actions, analysis.duration);
+  const validatedActions = validateAndFixBrollActions(actions, analysis.duration, transcript);
 
   return {
     actions: validatedActions,
@@ -739,7 +776,7 @@ export async function generateSmartEditPlan(
     };
   }
 
-  const validatedActions = validateAndFixBrollActions(reviewedPlan.actions, analysis.duration);
+  const validatedActions = validateAndFixBrollActions(reviewedPlan.actions, analysis.duration, transcript);
 
   const elapsedTime = Date.now() - startTime;
   aiLogger.info(`Multi-pass smart edit planning complete in ${elapsedTime}ms`);

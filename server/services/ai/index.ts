@@ -52,7 +52,10 @@ export {
   performPostRenderSelfReview,
   shouldAutoCorrect,
   generateCorrectionPlan,
+  applyCorrectionPlan,
+  shouldTriggerReRender,
   type SelfReviewResult,
   type SelfReviewIssue,
-  type CorrectionPlan
+  type CorrectionPlan,
+  type AppliedCorrections
 } from "./postRenderReview";

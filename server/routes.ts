@@ -65,6 +65,9 @@ import {
   performPreRenderReview,
   performPostRenderSelfReview,
   shouldAutoCorrect,
+  generateCorrectionPlan,
+  applyCorrectionPlan,
+  shouldTriggerReRender,
 } from "./services/aiService";
 import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, ReviewMediaItem, ReviewEditAction, ReviewTranscriptSegment, EditOptionsType } from "@shared/schema";
 import { editPlanSchema, reviewDataSchema } from "@shared/schema";
@@ -1170,15 +1173,156 @@ export async function registerRoutes(
             
             routesLogger.info(`[SelfReview] Completed: Score ${selfReviewResult.overallScore}/100, Approved: ${selfReviewResult.approved}, Issues: ${selfReviewResult.issues.length}`);
             
-            // Check if auto-correction is needed (Phase 3 preparation)
-            const correctionCheck = await shouldAutoCorrect(selfReviewResult);
-            if (correctionCheck.shouldCorrect) {
-              routesLogger.info(`[SelfReview] Auto-correction recommended: ${correctionCheck.reason}`);
-              // Phase 3 will implement the actual auto-correction loop
+            // PHASE 3: Iterative Correction Loop with Actual Re-Rendering
+            const MAX_ITERATIONS = 2;
+            let currentIteration = 1;
+            let currentOutputPath = outputPathForReview;
+            let currentEditPlan = finalEditPlan;
+            let currentStockMedia = stockMedia;
+            let lastSelfReview = selfReviewResult;
+            
+            while (currentIteration < MAX_ITERATIONS) {
+              const reRenderCheck = shouldTriggerReRender(lastSelfReview, currentIteration);
+              
+              if (!reRenderCheck.shouldReRender) {
+                routesLogger.info(`[SelfReview] No re-render needed: ${reRenderCheck.reason}`);
+                break;
+              }
+              
+              routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
+              routesLogger.info(`[SelfReview] AUTO-CORRECTION ITERATION ${currentIteration + 1}/${MAX_ITERATIONS}`);
+              routesLogger.info(`[SelfReview] Reason: ${reRenderCheck.reason}`);
+              routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
+              
+              try {
+                // Generate correction plan based on self-review issues
+                const correctionPlan = await generateCorrectionPlan(
+                  lastSelfReview,
+                  currentEditPlan,
+                  currentStockMedia
+                );
+                
+                if (correctionPlan.actions.length === 0) {
+                  routesLogger.info(`[SelfReview] No actionable corrections - stopping iteration`);
+                  break;
+                }
+                
+                // Apply corrections to edit plan and stock media
+                const appliedCorrections = applyCorrectionPlan(
+                  correctionPlan,
+                  currentEditPlan,
+                  currentStockMedia,
+                  lastSelfReview
+                );
+                
+                routesLogger.info(`[SelfReview] Applied ${appliedCorrections.appliedCount} corrections`);
+                
+                // Actually re-render with corrected data
+                routesLogger.info(`[SelfReview] Starting corrected re-render...`);
+                
+                const correctedEditResult = await applyEdits(
+                  videoPath,
+                  appliedCorrections.modifiedEditPlan,
+                  transcript,
+                  appliedCorrections.modifiedStockMedia,
+                  editOptions,
+                  undefined,
+                  semanticAnalysis
+                );
+                
+                routesLogger.info(`[SelfReview] Re-render complete: ${correctedEditResult.outputPath}`);
+                
+                // Update project with new output
+                const newPublicPath = `/output/${path.basename(correctedEditResult.outputPath)}`;
+                await storage.updateVideoProject(projectIdForReview, {
+                  outputPath: newPublicPath,
+                });
+                
+                // Run self-review on new output
+                routesLogger.info(`[SelfReview] Running self-review on corrected output...`);
+                
+                const newSelfReview = await performPostRenderSelfReview(
+                  correctedEditResult.outputPath,
+                  videoPath,
+                  appliedCorrections.modifiedEditPlan,
+                  transcript,
+                  reviewData,
+                  appliedCorrections.modifiedStockMedia,
+                  promptForReview,
+                  videoAnalysisForReview
+                );
+                
+                const improvement = newSelfReview.overallScore - lastSelfReview.overallScore;
+                routesLogger.info(`[SelfReview] Iteration ${currentIteration + 1} result: ${newSelfReview.overallScore}/100 (${improvement >= 0 ? "+" : ""}${improvement} points)`);
+                
+                // Update state for next iteration
+                currentOutputPath = correctedEditResult.outputPath;
+                currentEditPlan = appliedCorrections.modifiedEditPlan;
+                currentStockMedia = appliedCorrections.modifiedStockMedia;
+                lastSelfReview = newSelfReview;
+                currentIteration++;
+                
+                // Store iteration results
+                const existingAnalysis = (await storage.getVideoProject(projectIdForReview))?.analysis || {};
+                await storage.updateVideoProject(projectIdForReview, {
+                  analysis: {
+                    ...(typeof existingAnalysis === "object" ? existingAnalysis : {}),
+                    selfReviewIterations: {
+                      totalIterations: currentIteration,
+                      lastScore: newSelfReview.overallScore,
+                      improvement: improvement,
+                      completedAt: new Date().toISOString(),
+                    },
+                    selfReview: {
+                      overallScore: newSelfReview.overallScore,
+                      approved: newSelfReview.approved,
+                      watchedFullVideo: newSelfReview.watchedFullVideo,
+                      issueCount: newSelfReview.issues.length,
+                      qualityMetrics: newSelfReview.qualityMetrics,
+                      issues: newSelfReview.issues,
+                      recommendations: newSelfReview.recommendedActions,
+                      completedAt: new Date().toISOString(),
+                    },
+                  },
+                });
+                
+              } catch (correctionError) {
+                routesLogger.warn(`[SelfReview] Correction iteration failed: ${correctionError instanceof Error ? correctionError.message : String(correctionError)}`);
+                break;
+              }
             }
             
-            // Store self-review results for future reference (Phase 3 preparation)
-            // For now, just log the results. Full persistence will be added in Phase 3.
+            if (currentIteration >= MAX_ITERATIONS) {
+              routesLogger.info(`[SelfReview] Maximum iterations (${MAX_ITERATIONS}) reached`);
+            }
+            
+            routesLogger.info(`[SelfReview] Final score after ${currentIteration} iteration(s): ${lastSelfReview.overallScore}/100`);
+            routesLogger.info(`[SelfReview] Approved: ${lastSelfReview.approved}`);
+            routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
+            
+            // Persist self-review results to project for future reference and Phase 3 correction loop
+            try {
+              const existingAnalysis = (await storage.getVideoProject(projectIdForReview))?.analysis || {};
+              await storage.updateVideoProject(projectIdForReview, {
+                analysis: {
+                  ...(typeof existingAnalysis === "object" ? existingAnalysis : {}),
+                  selfReview: {
+                    overallScore: selfReviewResult.overallScore,
+                    approved: selfReviewResult.approved,
+                    watchedFullVideo: selfReviewResult.watchedFullVideo,
+                    issueCount: selfReviewResult.issues.length,
+                    qualityMetrics: selfReviewResult.qualityMetrics,
+                    issues: selfReviewResult.issues,
+                    recommendations: selfReviewResult.recommendedActions,
+                    completedAt: new Date().toISOString(),
+                  },
+                },
+              });
+              routesLogger.info(`[SelfReview] Persisted results to project ${projectIdForReview}`);
+            } catch (persistError) {
+              routesLogger.warn(`[SelfReview] Could not persist results: ${persistError}`);
+            }
+            
             routesLogger.info(`[SelfReview] Quality metrics: audioSync=${selfReviewResult.qualityMetrics.audioVideoSync}, visual=${selfReviewResult.qualityMetrics.visualQuality}, pacing=${selfReviewResult.qualityMetrics.pacingFlow}`);
             
           } catch (selfReviewError) {

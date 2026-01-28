@@ -480,3 +480,131 @@ export async function generateCorrectionPlan(
     affectedAreas: Array.from(affectedAreas),
   };
 }
+
+export interface AppliedCorrections {
+  appliedCount: number;
+  modifiedEditPlan: EditPlan;
+  modifiedStockMedia: StockMediaItem[];
+  correctionsSummary: string[];
+}
+
+export function applyCorrectionPlan(
+  correctionPlan: CorrectionPlan,
+  editPlan: EditPlan,
+  stockMedia: StockMediaItem[],
+  selfReviewResult: SelfReviewResult
+): AppliedCorrections {
+  selfReviewLogger.info("═══════════════════════════════════════════════════════");
+  selfReviewLogger.info("APPLYING AUTO-CORRECTIONS");
+  selfReviewLogger.info("═══════════════════════════════════════════════════════");
+  
+  const modifiedEditPlan = JSON.parse(JSON.stringify(editPlan)) as EditPlan & { editStyle?: { transitionStyle?: string; pacing?: string } };
+  const modifiedStockMedia = JSON.parse(JSON.stringify(stockMedia)) as StockMediaItem[];
+  const correctionsSummary: string[] = [];
+  let appliedCount = 0;
+  
+  for (const action of correctionPlan.actions) {
+    switch (action.type) {
+      case "adjust_transition":
+        if (!modifiedEditPlan.editStyle) {
+          modifiedEditPlan.editStyle = {};
+        }
+        const prevTransitions = modifiedEditPlan.editStyle.transitionStyle || "default";
+        modifiedEditPlan.editStyle.transitionStyle = "smooth";
+        correctionsSummary.push(`Adjusted transitions from ${prevTransitions} to smooth`);
+        appliedCount++;
+        break;
+        
+      case "adjust_cut":
+        if (action.targetTimestamp && modifiedEditPlan.actions) {
+          const cutActions = modifiedEditPlan.actions.filter(a => 
+            a.type === "cut" && 
+            a.start && 
+            Math.abs(a.start - action.targetTimestamp!) < 2
+          );
+          for (const cut of cutActions) {
+            if (cut.start && cut.end) {
+              cut.start = Math.max(0, cut.start - 0.3);
+              cut.end = cut.end + 0.3;
+              correctionsSummary.push(`Adjusted cut at ${action.targetTimestamp}s: extended by 0.6s`);
+              appliedCount++;
+            }
+          }
+        }
+        break;
+        
+      case "replace_broll":
+        if (action.targetTimestamp) {
+          const brollToReplace = modifiedStockMedia.findIndex(m => 
+            m.startTime && Math.abs(m.startTime - action.targetTimestamp!) < 3
+          );
+          if (brollToReplace !== -1) {
+            modifiedStockMedia.splice(brollToReplace, 1);
+            correctionsSummary.push(`Removed problematic B-roll at ${action.targetTimestamp}s`);
+            appliedCount++;
+          }
+        }
+        break;
+        
+      case "fix_timing":
+        if (!modifiedEditPlan.editStyle) {
+          modifiedEditPlan.editStyle = {};
+        }
+        modifiedEditPlan.editStyle.pacing = "moderate";
+        correctionsSummary.push("Adjusted pacing to moderate");
+        appliedCount++;
+        break;
+        
+      case "adjust_caption":
+        correctionsSummary.push("Caption adjustment queued (requires re-render)");
+        appliedCount++;
+        break;
+    }
+  }
+  
+  selfReviewLogger.info(`Applied ${appliedCount} corrections:`);
+  correctionsSummary.forEach(s => selfReviewLogger.info(`  - ${s}`));
+  selfReviewLogger.info("═══════════════════════════════════════════════════════");
+  
+  return {
+    appliedCount,
+    modifiedEditPlan,
+    modifiedStockMedia,
+    correctionsSummary,
+  };
+}
+
+const MAX_RENDER_ITERATIONS = 2;
+
+export function shouldTriggerReRender(
+  selfReviewResult: SelfReviewResult,
+  currentRenderIteration: number
+): { shouldReRender: boolean; reason: string } {
+  if (currentRenderIteration >= MAX_RENDER_ITERATIONS) {
+    return {
+      shouldReRender: false,
+      reason: `Maximum render iterations (${MAX_RENDER_ITERATIONS}) reached`,
+    };
+  }
+  
+  const criticalIssues = selfReviewResult.issues.filter(i => i.severity === "critical" && i.autoFixable);
+  
+  if (criticalIssues.length > 0) {
+    return {
+      shouldReRender: true,
+      reason: `${criticalIssues.length} critical auto-fixable issue(s) detected`,
+    };
+  }
+  
+  if (selfReviewResult.overallScore < 50 && selfReviewResult.issues.filter(i => i.autoFixable).length > 0) {
+    return {
+      shouldReRender: true,
+      reason: `Low quality score (${selfReviewResult.overallScore}/100) with fixable issues`,
+    };
+  }
+  
+  return {
+    shouldReRender: false,
+    reason: selfReviewResult.approved ? "Quality approved" : "No auto-fixable issues",
+  };
+}

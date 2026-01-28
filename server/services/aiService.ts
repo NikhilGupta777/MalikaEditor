@@ -44,7 +44,10 @@ export {
   performPostRenderSelfReview,
   shouldAutoCorrect,
   generateCorrectionPlan,
+  applyCorrectionPlan,
+  shouldTriggerReRender,
   type SelfReviewResult,
   type SelfReviewIssue,
   type CorrectionPlan,
+  type AppliedCorrections,
 } from "./ai";

@@ -40,6 +40,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Iterative Correction Loop**: AI generates correction plans for auto-fixable issues (transitions, cuts, B-roll, timing, captions). Maximum 2 render iterations with automatic re-render triggers for critical issues or low scores. Actually re-renders with corrected edit plan and stock media.
 - **Self-Review Persistence**: Results stored with project for learning and future reference.
 - **AI Learning System**: Stores successful editing patterns from user-approved edits and high-scoring renders. Retrieves relevant patterns for new projects based on video genre/tone similarity. Applies learned preferences to future edit plan generation. In-memory pattern storage with bounded capacity and age-based pruning.
+- **AI Chat Companion**: Real-time conversational guide that provides explanations throughout the video editing pipeline. Sends automatic updates at each processing stage (upload, transcription, analysis, planning, media fetching, review ready, rendering, self-review, corrections, completion). Users can ask questions about the current state, AI decisions, and get contextual guidance. Uses Gemini AI for intelligent question answering with full project context. Non-blocking design doesn't interfere with autonomous processing.
 
 ### Video Processing Pipeline
 1.  **Upload & Analysis**: Video stored, analyzed by AI (Gemini Vision) for motion, transitions, and pacing.

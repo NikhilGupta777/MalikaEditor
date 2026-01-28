@@ -16,6 +16,7 @@ import { TranscriptEditor } from "@/components/TranscriptEditor";
 import { ActivityLog } from "@/components/ActivityLog";
 import { ReviewPanel } from "@/components/ReviewPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { ChatCompanion } from "@/components/ChatCompanion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -1111,6 +1112,11 @@ export default function Editor() {
               {/* AI Activity Log */}
               {(isProcessing || isRendering || activities.length > 0) && project?.status !== "completed" && project?.status !== "awaiting_review" && (
                 <ActivityLog activities={activities} isProcessing={isProcessing || isRendering} />
+              )}
+              
+              {/* AI Chat Companion - Shows during processing */}
+              {project?.id && project?.status !== "pending" && project?.status !== "uploading" && (
+                <ChatCompanion projectId={project.id} />
               )}
 
               {/* Review Panel - User approval step */}

@@ -5,6 +5,18 @@ import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants, type StockMediaVariants } from "./pexelsService";
 import { fetchFreepikMediaWithVariants, isFreepikConfigured } from "./freepikService";
 import { selectBestMediaForWindows, convertSelectionsToStockMediaItems } from "./ai/mediaSelector";
+import {
+  initializeProjectChat,
+  updateProjectContext,
+  sendUploadUpdate,
+  sendTranscriptionUpdate,
+  sendAnalysisUpdate,
+  sendEditPlanningUpdate,
+  sendMediaFetchingUpdate,
+  sendMediaSelectionUpdate,
+  sendReviewReadyUpdate,
+  sendErrorUpdate,
+} from "./chatCompanion";
 import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
 import path from "path";
 import os from "os";
@@ -273,6 +285,10 @@ async function runProcessingPipeline(
 
     await storage.updateVideoProject(projectId, { prompt });
 
+    // Initialize chat companion for this project
+    initializeProjectChat(projectId, project.fileName || "Untitled Video");
+    updateProjectContext(projectId, { prompt, status: "analyzing", title: project.fileName });
+
     await updateStatus("analyzing");
     addActivity(projectId, "Reading video metadata...");
     const metadata = await getVideoMetadata(videoPath);
@@ -283,6 +299,10 @@ async function runProcessingPipeline(
     }
     
     addActivity(projectId, `Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width || 0}x${metadata.height || 0}`);
+    
+    // Send upload update to chat companion
+    sendUploadUpdate(projectId, project.fileName || "video", Math.round(metadata.duration));
+    updateProjectContext(projectId, { duration: Math.round(metadata.duration) });
 
     // PARALLEL PHASE 1: Extract frames, audio, and detect silence simultaneously
     // These operations are all independent reads from the video file
@@ -358,6 +378,10 @@ async function runProcessingPipeline(
         entities: transcriptResult.entities,
       }
     });
+    
+    // Send transcription update to chat companion
+    sendTranscriptionUpdate(projectId, transcript.length, transcriptResult.detectedLanguage);
+    updateProjectContext(projectId, { transcript, status: "transcribing" });
 
     addActivity(projectId, "Performing deep video analysis (AI watching full video)...");
     const analysis = await analyzeVideoDeep(
@@ -403,6 +427,10 @@ async function runProcessingPipeline(
         recommendations: [],
       },
     });
+    
+    // Send analysis update to chat companion
+    sendAnalysisUpdate(projectId, sanitizedAnalysis);
+    updateProjectContext(projectId, { videoAnalysis: sanitizedAnalysis, status: "planning" });
 
     await updateStatus("planning");
     addActivity(projectId, "Creating intelligent edit plan...");
@@ -420,8 +448,20 @@ async function runProcessingPipeline(
 
     await storage.updateVideoProject(projectId, { editPlan });
     notifySubscribers(projectId, "editPlan", { editPlan });
+    
+    // Send edit planning update to chat companion
+    const cuts = (editPlan.actions || []).filter((a: any) => a.type === "cut").length;
+    const keeps = (editPlan.actions || []).filter((a: any) => a.type === "keep").length;
+    const broll = (editPlan.actions || []).filter((a: any) => a.type === "add_broll" || a.type === "insert_stock" || a.type === "insert_ai_image").length;
+    sendEditPlanningUpdate(projectId, { cuts, keeps, broll });
+    updateProjectContext(projectId, { editPlan, status: "fetching_stock" });
 
     await updateStatus("fetching_stock");
+    
+    // Send media fetching update to chat companion
+    sendMediaFetchingUpdate(projectId);
+    updateProjectContext(projectId, { status: "fetching_stock" });
+    
     let stockMedia: StockMediaItem[] = [];
     let aiImageCount = 0;
     
@@ -608,6 +648,11 @@ async function runProcessingPipeline(
 
     await storage.updateVideoProject(projectId, { stockMedia });
     notifySubscribers(projectId, "stockMedia", { stockMedia });
+    
+    // Send media selection update to chat companion
+    const stockCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
+    const aiCount = stockMedia.filter(m => m.type === 'ai_generated').length;
+    sendMediaSelectionUpdate(projectId, { stockCount, aiCount });
 
     const reviewData: ReviewData = {
       transcript: transcript.map((t, i) => ({
@@ -655,6 +700,16 @@ async function runProcessingPipeline(
 
     notifySubscribers(projectId, "reviewReady", { reviewData });
     notifySubscribers(projectId, "status", { status: "awaiting_review" });
+    
+    // Send review ready update to chat companion
+    sendReviewReadyUpdate(projectId, {
+      totalCuts: reviewData.summary.totalCuts,
+      totalKeeps: reviewData.summary.totalKeeps,
+      totalBroll: reviewData.summary.totalBroll,
+      totalAiImages: reviewData.summary.totalAiImages,
+      estimatedDuration: reviewData.summary.estimatedFinalDuration,
+    });
+    updateProjectContext(projectId, { status: "awaiting_review", reviewData: reviewData.summary });
 
     // Clean up temp files except the final output
     for (const file of tempFiles) {
@@ -680,6 +735,10 @@ async function runProcessingPipeline(
     
     job.status = "failed";
     addActivity(projectId, `Processing failed: ${errorMessage}`);
+    
+    // Send error update to chat companion
+    sendErrorUpdate(projectId, errorMessage);
+    updateProjectContext(projectId, { status: "failed", error: errorMessage });
     
     await storage.updateVideoProject(projectId, {
       status: "failed",

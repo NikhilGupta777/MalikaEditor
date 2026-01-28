@@ -75,6 +75,25 @@ import { editPlanSchema, reviewDataSchema } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
 import { registerAuthRoutes } from "./routes/auth";
+import {
+  initializeProjectChat,
+  updateProjectContext,
+  getProjectMessages,
+  addUserMessage,
+  answerUserQuestion,
+  sendUploadUpdate,
+  sendTranscriptionUpdate,
+  sendAnalysisUpdate,
+  sendEditPlanningUpdate,
+  sendMediaFetchingUpdate,
+  sendMediaSelectionUpdate,
+  sendReviewReadyUpdate,
+  sendRenderingUpdate,
+  sendSelfReviewUpdate,
+  sendCorrectionUpdate,
+  sendCompletionUpdate,
+  sendErrorUpdate,
+} from "./services/chatCompanion";
 import { 
   startProcessingJob as startBackgroundProcessing, 
   subscribeToJob, 
@@ -1099,6 +1118,12 @@ export async function registerRoutes(
       sendEvent("status", { status: "rendering" });
       sendActivity("Starting FFmpeg rendering engine...");
       sendActivity("Cutting segments, adding overlays, and encoding video...");
+      
+      // Send rendering update to chat companion
+      const brollCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
+      const aiImageCount = stockMedia.filter(m => m.type === 'ai_generated').length;
+      sendRenderingUpdate(id, { brollCount, aiImageCount });
+      updateProjectContext(id, { status: "rendering" });
 
       // Get original editOptions from review data, or use defaults
       const storedOptions: Partial<EditOptionsType> = reviewData?.editOptions || {};
@@ -1174,6 +1199,13 @@ export async function registerRoutes(
             
             routesLogger.info(`[SelfReview] Completed: Score ${selfReviewResult.overallScore}/100, Approved: ${selfReviewResult.approved}, Issues: ${selfReviewResult.issues.length}`);
             
+            // Send self-review update to chat companion
+            sendSelfReviewUpdate(projectIdForReview, {
+              score: selfReviewResult.overallScore,
+              approved: selfReviewResult.approved,
+              issues: selfReviewResult.issues.length,
+            });
+            
             // PHASE 3: Iterative Correction Loop with Actual Re-Rendering
             const MAX_ITERATIONS = 2;
             let currentIteration = 1;
@@ -1194,6 +1226,12 @@ export async function registerRoutes(
               routesLogger.info(`[SelfReview] AUTO-CORRECTION ITERATION ${currentIteration + 1}/${MAX_ITERATIONS}`);
               routesLogger.info(`[SelfReview] Reason: ${reRenderCheck.reason}`);
               routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
+              
+              // Send correction update to chat companion
+              sendCorrectionUpdate(projectIdForReview, {
+                iteration: currentIteration + 1,
+                reason: reRenderCheck.reason,
+              });
               
               try {
                 // Generate correction plan based on self-review issues
@@ -1372,6 +1410,10 @@ export async function registerRoutes(
           skipped: editResult.aiImagesSkipped,
         } : undefined,
       });
+      
+      // Send completion update to chat companion
+      sendCompletionUpdate(id, { duration: Math.round(outputMetadata.duration) });
+      updateProjectContext(id, { status: "completed" });
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Rendering failed";
@@ -1695,6 +1737,52 @@ export async function registerRoutes(
       }
     } catch (error) {
       res.status(500).json({ error: "Cache lookup failed" });
+    }
+  });
+
+  // ============================================================================
+  // AI CHAT COMPANION ROUTES
+  // ============================================================================
+
+  // Get chat messages for a project
+  app.get("/api/videos/:id/chat", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      const messages = getProjectMessages(id);
+      res.json({ messages });
+    } catch (error) {
+      routesLogger.error("Failed to get chat messages:", error);
+      res.status(500).json({ error: "Failed to get chat messages" });
+    }
+  });
+
+  // Send a message to the AI companion
+  app.post("/api/videos/:id/chat", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = idParamSchema.parse(req.params);
+      const { message } = req.body;
+      
+      if (!message || typeof message !== "string") {
+        return res.status(400).json({ error: "Message is required" });
+      }
+      
+      const project = await storage.getVideoProject(id);
+      if (!project) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+      
+      // Add user message
+      addUserMessage(id, message);
+      
+      // Get AI response
+      const answerMessage = await answerUserQuestion(id, message);
+      
+      // Return the new messages
+      const recentMessages = getProjectMessages(id, 2);
+      res.json({ messages: recentMessages });
+    } catch (error) {
+      routesLogger.error("Failed to process chat message:", error);
+      res.status(500).json({ error: "Failed to process chat message" });
     }
   });
 

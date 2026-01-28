@@ -787,8 +787,15 @@ export async function registerRoutes(
     // Check if this is a reconnection request
     const reconnect = req.query.reconnect === "true";
     
+    // GUARD: If project is already rendering (from background render or previous call),
+    // automatically treat this as a reconnect to prevent duplicate renders
+    if (project.status === "rendering") {
+      routesLogger.info(`Render endpoint called for project ${id} already in rendering status - treating as reconnection`);
+      // Fall through to reconnection logic
+    }
+    
     // Allow reconnection if project is mid-render
-    if (project.status === "rendering" && reconnect) {
+    if (project.status === "rendering") {
       routesLogger.info(`Render reconnection for project ${id} (status: rendering)`);
       
       // Set up SSE for status updates

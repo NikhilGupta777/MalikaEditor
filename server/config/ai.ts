@@ -7,8 +7,11 @@ export const AI_CONFIG = {
       secondary: "gpt-4o-mini-transcribe",
       fallback: "gemini-2.5-flash",
     },
-    analysis: "gemini-flash-latest", // Video analysis model (uses user's API key)
+    // Video analysis uses user's own API key with gemini-flash-latest
+    videoAnalysis: "gemini-flash-latest", // Uses GEMINI_VIDEO_ANALYSIS_API_KEY
     fullVideoWatch: "gemini-flash-latest", // Full video file upload and analysis (uses user's API key)
+    // Semantic analysis uses Replit integration - must use supported model
+    analysis: "gemini-2.5-flash", // For semantic analysis, translation - uses Replit Gemini
     selfReview: "gemini-2.5-flash", // AI reviews its own rendered output
     editPlanning: "gemini-2.5-flash",
     imageGeneration: "gemini-2.5-flash-image",

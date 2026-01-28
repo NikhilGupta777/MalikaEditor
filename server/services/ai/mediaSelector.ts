@@ -127,7 +127,12 @@ export async function selectBestMediaForWindows(
   const totalSelected = selections.reduce((sum, s) => sum + s.selectedMedia.length, 0);
   const totalAiAvailable = aiImages.length;
   
-  selectorLogger.info(`Media selection complete: ${totalSelected} clips selected (${aiImagesUsed} AI, ${stockVideosUsed} stock videos, ${stockImagesUsed} stock images)`);
+  // Count provider-specific selections
+  const allSelected = selections.flatMap(s => s.selectedMedia);
+  const pexelsUsed = allSelected.filter(m => m.provider === 'pexels').length;
+  const freepikUsed = allSelected.filter(m => m.provider === 'freepik').length;
+  
+  selectorLogger.info(`Media selection complete: ${totalSelected} clips selected (${aiImagesUsed} AI, ${stockVideosUsed} stock videos [${pexelsUsed} Pexels, ${freepikUsed} Freepik], ${stockImagesUsed} stock images)`);
   
   // Guardrail: Warn when AI images were generated but not used
   if (totalAiAvailable > 0 && aiImagesUsed === 0) {
@@ -433,7 +438,7 @@ RESPOND WITH JSON ONLY:
           allowMultipleClips: selectedMedia.length > 1,
         });
         
-        selectorLogger.debug(`Window ${windowIndex}: Selected ${selectedMedia.length} clips - ${selectedMedia.map(m => `${m.source}:${m.type}`).join(", ")}`);
+        selectorLogger.debug(`Window ${windowIndex}: Selected ${selectedMedia.length} clips - ${selectedMedia.map(m => m.provider ? `${m.provider}:${m.type}` : `${m.source}:${m.type}`).join(", ")}`);
       }
     }
 

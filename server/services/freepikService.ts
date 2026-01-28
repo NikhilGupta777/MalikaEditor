@@ -153,7 +153,10 @@ export async function searchFreepikVideos(
       timeout: 15000,
     });
 
-    const videos = response.data?.data || [];
+    const allVideos = response.data?.data || [];
+    
+    // Freepik API may return more than requested, so slice to respect limit
+    const videos = allVideos.slice(0, perPage);
     
     if (videos.length === 0) {
       freepikLogger.debug(`No Freepik videos found for query: "${searchQuery.slice(0, 50)}..."`);

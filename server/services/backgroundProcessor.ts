@@ -1,6 +1,7 @@
 import { storage } from "../storage";
-import { getVideoMetadata, extractFrames, extractAudio, detectSilence } from "./videoProcessor";
+import { getVideoMetadata, extractFrames, extractAudio, detectSilence, applyEdits } from "./videoProcessor";
 import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudioEnhanced } from "./ai";
+import { performPostRenderSelfReview } from "./ai/postRenderReview";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants, type StockMediaVariants } from "./pexelsService";
 import { fetchFreepikMediaWithVariants, isFreepikConfigured } from "./freepikService";
@@ -28,6 +29,7 @@ interface EditOptionsType {
   removeSilence: boolean;
   generateAiImages: boolean;
   addTransitions: boolean;
+  autonomousMode?: boolean; // If true, skip user review and auto-render
 }
 
 let onJobCompleteCallback: ((projectId: number) => void) | null = null;
@@ -989,9 +991,117 @@ async function runProcessingPipeline(
         originalDuration: metadata.duration,
         estimatedFinalDuration: editPlan.estimatedDuration || metadata.duration,
       },
-      userApproved: false,
+      userApproved: editOptions.autonomousMode === true, // Auto-approve in autonomous mode
     };
 
+    // AUTONOMOUS MODE: Continue directly to rendering without stopping for user review
+    if (editOptions.autonomousMode) {
+      processorLogger.info(`[AUTONOMOUS] Auto-approving all edits and proceeding to render for project ${projectId}`);
+      addActivity(projectId, "Autonomous mode: Auto-approving all edits and proceeding to render...");
+      
+      await storage.updateVideoProject(projectId, {
+        status: "rendering" as ProcessingStatus,
+        reviewData,
+      });
+      notifySubscribers(projectId, "status", { status: "rendering" });
+      
+      // Perform autonomous rendering
+      await updateStatus("rendering");
+      addActivity(projectId, "Starting autonomous rendering...");
+      
+      const finalEditPlan = {
+        ...editPlan,
+        actions: editPlan.actions || [],
+      };
+      
+      const renderEditOptions = {
+        addCaptions: editOptions.addCaptions,
+        addBroll: stockMedia.length > 0,
+        removeSilence: editOptions.removeSilence,
+        generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
+        addTransitions: editOptions.addTransitions,
+      };
+      
+      const editResult = await applyEdits(
+        videoPath,
+        finalEditPlan,
+        transcript,
+        stockMedia,
+        renderEditOptions,
+        undefined,
+        analysis.semanticAnalysis
+      );
+      
+      addActivity(projectId, "Autonomous rendering complete!");
+      
+      // Get output metadata
+      const outputMetadata = await getVideoMetadata(editResult.outputPath);
+      const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
+      
+      addActivity(projectId, `Final video: ${Math.round(outputMetadata.duration)}s`);
+      
+      // Perform AI self-review in background
+      processorLogger.info(`[AUTONOMOUS] Starting self-review for project ${projectId}`);
+      addActivity(projectId, "AI is reviewing the rendered video...");
+      
+      try {
+        const selfReviewResult = await performPostRenderSelfReview(
+          editResult.outputPath,
+          videoPath,
+          finalEditPlan,
+          transcript,
+          reviewData,
+          stockMedia,
+          prompt,
+          (project.analysis as { videoAnalysis?: unknown })?.videoAnalysis as import("@shared/schema").VideoAnalysis | undefined
+        );
+        
+        processorLogger.info(`[AUTONOMOUS] Self-review complete: score=${selfReviewResult.overallScore}, issues=${selfReviewResult.issues?.length || 0}`);
+        addActivity(projectId, `Self-review complete: Quality score ${selfReviewResult.overallScore}/100`);
+        
+        // Log self-review results (stored in project analysis for reference)
+        processorLogger.info(`[AUTONOMOUS] Self-review stored for project ${projectId}`);
+      } catch (reviewErr) {
+        processorLogger.warn(`[AUTONOMOUS] Self-review failed (non-critical):`, reviewErr);
+        addActivity(projectId, "Self-review skipped - continuing to completion");
+      }
+      
+      // Mark as completed
+      await storage.updateVideoProject(projectId, {
+        status: "completed" as ProcessingStatus,
+        outputPath: publicOutputPath,
+      });
+      
+      notifySubscribers(projectId, "completed", { 
+        outputPath: publicOutputPath,
+        duration: outputMetadata.duration,
+      });
+      notifySubscribers(projectId, "status", { status: "completed" });
+      
+      await updateProcessingStage(projectId, "complete");
+      addActivity(projectId, "Autonomous processing complete! Video ready for download.");
+      
+      job.status = "completed";
+      processorLogger.info(`[AUTONOMOUS] Full autonomous pipeline completed for project ${projectId}`);
+      
+      // Clean up temp files
+      for (const file of tempFiles) {
+        try {
+          const stat = await fs.stat(file);
+          if (stat.isDirectory()) {
+            await fs.rm(file, { recursive: true });
+          } else {
+            await fs.unlink(file);
+          }
+        } catch (cleanupErr) {
+          // File may already be deleted or doesn't exist - ignore
+        }
+      }
+      
+      return; // Exit pipeline - we're done
+    }
+    
+    // NON-AUTONOMOUS MODE: Stop at review stage and wait for user approval
     await storage.updateVideoProject(projectId, {
       status: "awaiting_review",
       reviewData,

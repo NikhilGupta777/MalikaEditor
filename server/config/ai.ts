@@ -8,6 +8,8 @@ export const AI_CONFIG = {
       fallback: "gemini-2.5-flash",
     },
     analysis: "gemini-2.5-flash",
+    fullVideoWatch: "gemini-2.5-flash", // Full video file upload and analysis
+    selfReview: "gemini-2.5-flash", // AI reviews its own rendered output
     editPlanning: "gemini-2.5-flash",
     imageGeneration: "gemini-2.5-flash-image",
     mediaSelection: "gemini-2.5-flash",

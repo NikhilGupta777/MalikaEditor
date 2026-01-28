@@ -1,9 +1,11 @@
 import { promises as fs } from "fs";
+import * as path from "path";
 import { z } from "zod";
 import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
 import { AI_CONFIG } from "../../config/ai";
+import { createUserContent, createPartFromUri } from "@google/genai";
 import {
   normalizePriority,
   normalizeEnergyLevel,
@@ -279,6 +281,481 @@ type VideoAnalysisResponse = z.infer<typeof VideoAnalysisResponseSchema>;
 
 async function encodeImageToBase64(imagePath: string): Promise<string> {
   return fs.readFile(imagePath, { encoding: "base64" });
+}
+
+// ============================================================================
+// FULL VIDEO WATCHING - AI actually watches the entire video file
+// ============================================================================
+
+const MAX_VIDEO_SIZE_MB = 500; // Max size for video upload (Gemini supports up to 2GB)
+const VIDEO_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes max wait for processing
+const VIDEO_PROCESSING_POLL_MS = 2000; // Poll every 2 seconds
+
+interface FullVideoAnalysisResult extends VideoAnalysis {
+  analysisMethod: "full_video_watch" | "frame_extraction";
+  motionAnalysis?: {
+    hasSignificantMotion: boolean;
+    motionIntensity: "low" | "medium" | "high";
+    actionSequences: { start: number; end: number; description: string }[];
+  };
+  transitionAnalysis?: {
+    detectedTransitions: { timestamp: number; type: string; description: string }[];
+    suggestedTransitionPoints: number[];
+  };
+  audioVisualSync?: {
+    syncQuality: "excellent" | "good" | "fair" | "poor";
+    outOfSyncMoments: { timestamp: number; issue: string }[];
+  };
+  pacingAnalysis?: {
+    overallPacing: "slow" | "moderate" | "fast" | "dynamic";
+    pacingVariation: number; // 0-100
+    suggestedPacingAdjustments: { timestamp: number; suggestion: string }[];
+  };
+}
+
+async function waitForFileProcessing(
+  fileName: string,
+  timeoutMs: number = VIDEO_PROCESSING_TIMEOUT_MS
+): Promise<{ uri: string; mimeType: string; state: string }> {
+  const gemini = getGeminiClient();
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < timeoutMs) {
+    const fileInfo = await gemini.files.get({ name: fileName });
+    
+    if (fileInfo.state === "ACTIVE") {
+      aiLogger.info(`Video file processing complete: ${fileName}`);
+      return {
+        uri: fileInfo.uri || "",
+        mimeType: fileInfo.mimeType || "video/mp4",
+        state: fileInfo.state,
+      };
+    }
+    
+    if (fileInfo.state === "FAILED") {
+      throw new Error(`Video file processing failed: ${fileName}`);
+    }
+    
+    aiLogger.debug(`Video file still processing: ${fileName} (state: ${fileInfo.state})`);
+    await new Promise(resolve => setTimeout(resolve, VIDEO_PROCESSING_POLL_MS));
+  }
+  
+  throw new Error(`Video file processing timed out after ${timeoutMs}ms`);
+}
+
+function getMimeType(videoPath: string): string {
+  const ext = path.extname(videoPath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    ".mp4": "video/mp4",
+    ".mov": "video/mov",
+    ".avi": "video/avi",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".flv": "video/x-flv",
+    ".wmv": "video/x-ms-wmv",
+    ".3gp": "video/3gpp",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+  };
+  return mimeTypes[ext] || "video/mp4";
+}
+
+async function getFileSizeMB(filePath: string): Promise<number> {
+  const stats = await fs.stat(filePath);
+  return stats.size / (1024 * 1024);
+}
+
+const FULL_VIDEO_ANALYSIS_PROMPT = `You are an expert video analyst and professional video editor with the ability to WATCH ENTIRE VIDEOS.
+
+Unlike frame-by-frame analysis, you can see:
+- ACTUAL MOTION and actions as they happen
+- REAL TRANSITIONS between scenes
+- PACING and rhythm of content delivery
+- SPEAKER GESTURES and body language in motion
+- AUDIO-VISUAL SYNCHRONIZATION
+- EMOTIONAL FLOW as it naturally develops
+
+PERFORM AN ULTRA-COMPREHENSIVE DEEP ANALYSIS:
+
+1. VIDEO CONTEXT CLASSIFICATION
+- Genre: tutorial, vlog, interview, presentation, documentary, spiritual, educational, entertainment, tech, lifestyle, gaming, music, news, review, motivational, advertisement, promotional, finance, business, cooking, fitness, travel, comedy, drama, or other
+- Tone: serious, casual, professional, humorous, inspirational, dramatic, or calm
+- Pacing: slow, moderate, fast, or dynamic
+- Visual style description
+- Target audience
+- Language detected
+
+2. MOTION ANALYSIS (NEW - Only possible with full video)
+Analyze actual movement patterns:
+- Overall motion intensity (low/medium/high)
+- Action sequences with timestamps
+- Camera movements (pan, zoom, static, handheld)
+- Subject movements and gestures
+
+3. SCENE DETECTION (Enhanced with motion awareness)
+Identify scenes based on:
+- Location/background changes
+- Topic/activity shifts  
+- Speaker changes
+- Visual mood/lighting changes
+- Motion pattern changes
+
+For each scene:
+- Start/end timestamps (MM:SS format for precision)
+- Scene type: talking_head, demonstration, b_roll, text_slide, transition, intro, outro, action_sequence
+- Visual description including motion
+- Emotional tone
+- Speaker ID if visible
+- Visual Importance: HIGH (must see), MEDIUM (adds value), LOW (can overlay B-roll)
+
+4. TRANSITION ANALYSIS (NEW - Only possible with full video)
+Detect and analyze transitions:
+- Cut points and their effectiveness
+- Natural transition moments between topics
+- Suggested transition points for editing
+- Transition types used (cut, fade, dissolve, etc.)
+
+5. EMOTION FLOW TRACKING (Enhanced)
+Track emotional energy changes with motion context:
+- Timestamp, emotion, intensity (0-100)
+- Note when emotional shifts are emphasized by motion/gestures
+
+6. PACING ANALYSIS (NEW - Only possible with full video)
+Analyze the rhythm and flow:
+- Overall pacing assessment
+- Pacing variation score (0-100, higher = more dynamic)
+- Sections that feel too slow
+- Sections that feel too rushed
+- Suggested pacing adjustments
+
+7. AUDIO-VISUAL SYNC QUALITY (NEW - Only possible with full video)
+Assess synchronization:
+- Overall sync quality: excellent, good, fair, poor
+- Out-of-sync moments if any
+
+8. SPEAKER DETECTION
+Identify speakers with their visual presence:
+- Speaker ID, start/end times
+- Labels if identifiable (host, guest, narrator)
+- Speaking style observations
+
+9. KEY MOMENTS IDENTIFICATION
+Identify crucial editing moments:
+- HOOKS (first 3-10 seconds): Score 0-100
+- CLIMAXES: Peak engagement moments
+- CALL-TO-ACTIONS: When speaker asks for action
+- KEY POINTS: Important statements/demonstrations  
+- TRANSITIONS: Natural break points
+
+10. NARRATIVE STRUCTURE
+- Introduction boundaries
+- Main content boundaries
+- Outro/conclusion section
+- Peak moments of engagement
+
+11. B-ROLL OPPORTUNITIES (Enhanced with motion awareness)
+Identify where stock footage would enhance:
+- Exact timestamp ranges
+- Optimal duration
+- ULTRA-SPECIFIC search queries
+- Priority (high/medium/low)
+- Reason for B-roll
+- Note if motion-based content would be better than static images
+
+Respond in JSON format only (no markdown):
+{
+  "frames": [
+    {
+      "timestamp": number (seconds),
+      "description": "detailed description including motion",
+      "keyMoment": boolean,
+      "suggestedStockQuery": "specific search query or null",
+      "energyLevel": "low|medium|high",
+      "speakingPace": "slow|normal|fast"
+    }
+  ],
+  "summary": "comprehensive summary of video content, purpose, and style",
+  "context": {
+    "genre": "string",
+    "subGenre": "string or null",
+    "targetAudience": "string",
+    "tone": "serious|casual|professional|humorous|inspirational|dramatic|calm",
+    "pacing": "slow|moderate|fast|dynamic",
+    "visualStyle": "description",
+    "suggestedEditStyle": "minimal|moderate|dynamic|cinematic|fast-paced",
+    "regionalContext": "string or null",
+    "languageDetected": "string"
+  },
+  "motionAnalysis": {
+    "hasSignificantMotion": boolean,
+    "motionIntensity": "low|medium|high",
+    "actionSequences": [
+      {"start": number, "end": number, "description": "what's happening"}
+    ]
+  },
+  "transitionAnalysis": {
+    "detectedTransitions": [
+      {"timestamp": number, "type": "cut|fade|dissolve|other", "description": "string"}
+    ],
+    "suggestedTransitionPoints": [number array of timestamps]
+  },
+  "pacingAnalysis": {
+    "overallPacing": "slow|moderate|fast|dynamic",
+    "pacingVariation": number (0-100),
+    "suggestedPacingAdjustments": [
+      {"timestamp": number, "suggestion": "speed up|slow down|add pause|add emphasis"}
+    ]
+  },
+  "audioVisualSync": {
+    "syncQuality": "excellent|good|fair|poor",
+    "outOfSyncMoments": [{"timestamp": number, "issue": "description"}]
+  },
+  "scenes": [
+    {
+      "start": number,
+      "end": number,
+      "sceneType": "talking_head|demonstration|b_roll|text_slide|transition|intro|outro|action_sequence",
+      "visualDescription": "what the scene shows including motion",
+      "emotionalTone": "calm|excited|serious|thoughtful|humorous|inspirational|tense|relaxed",
+      "speakerId": "speaker_1|speaker_2|etc or null",
+      "visualImportance": "high|medium|low"
+    }
+  ],
+  "emotionFlow": [
+    {"timestamp": number, "emotion": "string", "intensity": number (0-100)}
+  ],
+  "speakers": [
+    {"start": number, "end": number, "speakerId": "string", "speakerLabel": "string or null"}
+  ],
+  "keyMoments": [
+    {
+      "timestamp": number,
+      "type": "hook|climax|callToAction|keyPoint|transition",
+      "description": "what makes this moment special",
+      "importance": "high|medium|low",
+      "hookScore": number (0-100, only for type=hook)
+    }
+  ],
+  "topicSegments": [
+    {"start": number, "end": number, "topic": "string", "importance": "low|medium|high", "suggestedBrollWindow": boolean}
+  ],
+  "narrativeStructure": {
+    "hasIntro": boolean,
+    "introEnd": number or null,
+    "hasOutro": boolean,
+    "outroStart": number or null,
+    "mainContentStart": number,
+    "mainContentEnd": number,
+    "peakMoments": [numbers]
+  },
+  "brollOpportunities": [
+    {
+      "start": number,
+      "end": number,
+      "suggestedDuration": number (2-6),
+      "query": "ULTRA-SPECIFIC search query",
+      "priority": "high|medium|low",
+      "reason": "why B-roll would help",
+      "preferVideo": boolean (true if motion-based content preferred)
+    }
+  ]
+}`;
+
+export async function watchFullVideo(
+  videoPath: string,
+  duration: number,
+  silentSegments: { start: number; end: number }[] = []
+): Promise<FullVideoAnalysisResult> {
+  const gemini = getGeminiClient();
+  
+  // Check file size
+  const fileSizeMB = await getFileSizeMB(videoPath);
+  aiLogger.info(`Full video watching: ${path.basename(videoPath)} (${fileSizeMB.toFixed(1)}MB)`);
+  
+  if (fileSizeMB > MAX_VIDEO_SIZE_MB) {
+    aiLogger.warn(`Video too large for full watching (${fileSizeMB.toFixed(1)}MB > ${MAX_VIDEO_SIZE_MB}MB), falling back to frame extraction`);
+    throw new Error(`Video file too large: ${fileSizeMB.toFixed(1)}MB exceeds ${MAX_VIDEO_SIZE_MB}MB limit`);
+  }
+  
+  const mimeType = getMimeType(videoPath);
+  
+  aiLogger.info("Uploading video to Gemini for full analysis...");
+  const uploadStartTime = Date.now();
+  
+  // Upload the video file
+  const uploadResponse = await gemini.files.upload({
+    file: videoPath,
+    config: { mimeType },
+  });
+  
+  const uploadTime = ((Date.now() - uploadStartTime) / 1000).toFixed(1);
+  aiLogger.info(`Video uploaded in ${uploadTime}s, waiting for processing...`);
+  
+  // Wait for processing to complete
+  const fileInfo = await waitForFileProcessing(uploadResponse.name || "");
+  
+  aiLogger.info("Video processed, AI is now WATCHING the full video...");
+  const analysisStartTime = Date.now();
+  
+  // Build the prompt with context
+  const promptWithContext = `${FULL_VIDEO_ANALYSIS_PROMPT}
+
+VIDEO METADATA:
+- Duration: ${duration.toFixed(1)} seconds
+- Silent segments detected: ${JSON.stringify(silentSegments)}
+
+Watch this video carefully and provide your comprehensive analysis:`;
+  
+  // Generate content with the video file
+  const response = await withRetry(
+    () => gemini.models.generateContent({
+      model: AI_CONFIG.models.fullVideoWatch,
+      contents: createUserContent([
+        createPartFromUri(fileInfo.uri, fileInfo.mimeType),
+        promptWithContext,
+      ]),
+    }),
+    "watchFullVideo",
+    { ...AI_RETRY_OPTIONS, maxRetries: 2 } // Fewer retries for video analysis
+  );
+  
+  const analysisTime = ((Date.now() - analysisStartTime) / 1000).toFixed(1);
+  aiLogger.info(`Full video analysis complete in ${analysisTime}s`);
+  
+  // Clean up uploaded file (async, don't wait)
+  gemini.files.delete({ name: uploadResponse.name || "" }).catch(err => {
+    aiLogger.debug(`Failed to delete uploaded video file: ${err.message}`);
+  });
+  
+  const text = response.text || "";
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  
+  if (!jsonMatch) {
+    aiLogger.warn("No JSON found in full video analysis response");
+    throw new Error("Failed to parse full video analysis response");
+  }
+  
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch (parseError) {
+    aiLogger.warn("JSON parse error in full video analysis:", parseError);
+    throw new Error("Failed to parse full video analysis JSON");
+  }
+  
+  // Build the result with all the enhanced analysis
+  const result: FullVideoAnalysisResult = {
+    analysisMethod: "full_video_watch",
+    frames: (parsed.frames || []).map((f: any, index: number) => ({
+      timestamp: f.timestamp ?? (duration / 10) * (index + 1),
+      description: f.description ?? "",
+      keyMoment: f.keyMoment ?? false,
+      suggestedStockQuery: f.suggestedStockQuery ?? undefined,
+      energyLevel: normalizeEnergyLevel(f.energyLevel ?? "medium"),
+      speakingPace: normalizeSpeakingPace(f.speakingPace ?? "normal"),
+    })),
+    summary: parsed.summary || "Full video analysis completed",
+    context: parsed.context ? {
+      genre: normalizeGenre(parsed.context.genre ?? "other"),
+      subGenre: parsed.context.subGenre ?? undefined,
+      targetAudience: parsed.context.targetAudience ?? undefined,
+      tone: normalizeTone(parsed.context.tone ?? "casual"),
+      pacing: normalizePacing(parsed.context.pacing ?? "moderate"),
+      visualStyle: parsed.context.visualStyle ?? undefined,
+      suggestedEditStyle: parsed.context.suggestedEditStyle ?? "moderate",
+      regionalContext: parsed.context.regionalContext ?? undefined,
+      languageDetected: parsed.context.languageDetected ?? undefined,
+    } : undefined,
+    motionAnalysis: parsed.motionAnalysis ? {
+      hasSignificantMotion: parsed.motionAnalysis.hasSignificantMotion ?? false,
+      motionIntensity: parsed.motionAnalysis.motionIntensity ?? "low",
+      actionSequences: (parsed.motionAnalysis.actionSequences || []).map((a: any) => ({
+        start: a.start ?? 0,
+        end: a.end ?? 0,
+        description: a.description ?? "",
+      })),
+    } : undefined,
+    transitionAnalysis: parsed.transitionAnalysis ? {
+      detectedTransitions: (parsed.transitionAnalysis.detectedTransitions || []).map((t: any) => ({
+        timestamp: t.timestamp ?? 0,
+        type: t.type ?? "cut",
+        description: t.description ?? "",
+      })),
+      suggestedTransitionPoints: parsed.transitionAnalysis.suggestedTransitionPoints || [],
+    } : undefined,
+    audioVisualSync: parsed.audioVisualSync ? {
+      syncQuality: parsed.audioVisualSync.syncQuality ?? "good",
+      outOfSyncMoments: (parsed.audioVisualSync.outOfSyncMoments || []).map((m: any) => ({
+        timestamp: m.timestamp ?? 0,
+        issue: m.issue ?? "",
+      })),
+    } : undefined,
+    pacingAnalysis: parsed.pacingAnalysis ? {
+      overallPacing: parsed.pacingAnalysis.overallPacing ?? "moderate",
+      pacingVariation: Math.min(100, Math.max(0, parsed.pacingAnalysis.pacingVariation ?? 50)),
+      suggestedPacingAdjustments: (parsed.pacingAnalysis.suggestedPacingAdjustments || []).map((p: any) => ({
+        timestamp: p.timestamp ?? 0,
+        suggestion: p.suggestion ?? "",
+      })),
+    } : undefined,
+    scenes: (parsed.scenes || []).map((s: any) => ({
+      start: s.start ?? 0,
+      end: s.end ?? duration,
+      sceneType: s.sceneType ?? "talking_head",
+      visualDescription: s.visualDescription ?? "",
+      emotionalTone: s.emotionalTone ?? "calm",
+      speakerId: s.speakerId ?? undefined,
+      visualImportance: normalizeVisualImportance(s.visualImportance ?? "medium"),
+    })),
+    emotionFlow: (parsed.emotionFlow || []).map((e: any) => ({
+      timestamp: e.timestamp ?? 0,
+      emotion: e.emotion ?? "neutral",
+      intensity: Math.min(100, Math.max(0, e.intensity ?? 50)),
+    })),
+    speakers: (parsed.speakers || []).map((s: any) => ({
+      start: s.start ?? 0,
+      end: s.end ?? duration,
+      speakerId: s.speakerId ?? "speaker_1",
+      speakerLabel: s.speakerLabel ?? undefined,
+    })),
+    keyMoments: (parsed.keyMoments || []).map((k: any) => ({
+      timestamp: k.timestamp ?? 0,
+      type: normalizeKeyMomentType(k.type ?? "keyPoint"),
+      description: k.description ?? "",
+      importance: normalizePriority(k.importance ?? "medium"),
+      hookScore: k.hookScore ?? undefined,
+    })),
+    topicSegments: (parsed.topicSegments || []).map((t: any) => ({
+      start: t.start ?? 0,
+      end: t.end ?? duration,
+      topic: t.topic ?? "Unknown",
+      importance: normalizePriority(t.importance ?? "medium"),
+      suggestedBrollWindow: t.suggestedBrollWindow ?? false,
+    })),
+    narrativeStructure: parsed.narrativeStructure ? {
+      introEnd: parsed.narrativeStructure.introEnd ?? undefined,
+      outroStart: parsed.narrativeStructure.outroStart ?? undefined,
+      hasIntro: parsed.narrativeStructure.hasIntro ?? undefined,
+      hasOutro: parsed.narrativeStructure.hasOutro ?? undefined,
+      mainContentStart: parsed.narrativeStructure.mainContentStart ?? undefined,
+      mainContentEnd: parsed.narrativeStructure.mainContentEnd ?? undefined,
+      peakMoments: parsed.narrativeStructure.peakMoments ?? undefined,
+    } : undefined,
+    silentSegments,
+    brollOpportunities: (parsed.brollOpportunities || []).map((b: any) => ({
+      start: b.start ?? 0,
+      end: b.end ?? 0,
+      suggestedDuration: b.suggestedDuration ?? 3,
+      query: b.query ?? "",
+      priority: normalizePriority(b.priority ?? "medium"),
+      reason: b.reason ?? "",
+    })),
+    duration,
+  };
+  
+  aiLogger.info(`Full video watch complete: ${result.scenes?.length || 0} scenes, ${result.keyMoments?.length || 0} key moments, motion: ${result.motionAnalysis?.motionIntensity || "unknown"}`);
+  
+  return result;
 }
 
 export async function analyzeVideoFrames(
@@ -732,13 +1209,8 @@ function computeQualityInsights(
   };
 }
 
-export async function analyzeVideoDeep(
-  framePaths: string[],
-  duration: number,
-  silentSegments: { start: number; end: number }[],
-  transcript: TranscriptSegment[]
-): Promise<{
-  videoAnalysis: VideoAnalysis;
+export interface DeepAnalysisResult {
+  videoAnalysis: VideoAnalysis & { analysisMethod?: "full_video_watch" | "frame_extraction" };
   semanticAnalysis: SemanticAnalysis;
   fillerSegments: { start: number; end: number; word: string }[];
   qualityInsights: {
@@ -747,15 +1219,80 @@ export async function analyzeVideoDeep(
     engagementPrediction: number;
     recommendations: string[];
   };
-}> {
+  enhancedAnalysis?: {
+    motionAnalysis?: FullVideoAnalysisResult["motionAnalysis"];
+    transitionAnalysis?: FullVideoAnalysisResult["transitionAnalysis"];
+    audioVisualSync?: FullVideoAnalysisResult["audioVisualSync"];
+    pacingAnalysis?: FullVideoAnalysisResult["pacingAnalysis"];
+  };
+}
+
+export async function analyzeVideoDeep(
+  framePaths: string[],
+  duration: number,
+  silentSegments: { start: number; end: number }[],
+  transcript: TranscriptSegment[],
+  videoPath?: string // Optional: if provided, try full video watching first
+): Promise<DeepAnalysisResult> {
   const { analyzeTranscriptSemantics, detectFillerWords } = await import("./semanticAnalysis");
   
   aiLogger.info("Starting deep video analysis...");
   
-  // First analyze video frames to get context
-  const videoAnalysis = await analyzeVideoFrames(framePaths, duration, silentSegments);
+  let videoAnalysis: VideoAnalysis & { analysisMethod?: "full_video_watch" | "frame_extraction" };
+  let enhancedAnalysis: DeepAnalysisResult["enhancedAnalysis"];
   
-  // Then run semantic analysis with context if available (avoids duplicate call)
+  // TRY FULL VIDEO WATCHING FIRST (if video path provided)
+  if (videoPath) {
+    try {
+      aiLogger.info("═══════════════════════════════════════════════════════");
+      aiLogger.info("ATTEMPTING FULL VIDEO WATCHING (AI will watch entire video)");
+      aiLogger.info("═══════════════════════════════════════════════════════");
+      
+      const fullAnalysis = await watchFullVideo(videoPath, duration, silentSegments);
+      
+      aiLogger.info("═══════════════════════════════════════════════════════");
+      aiLogger.info("FULL VIDEO WATCHING SUCCESS");
+      aiLogger.info(`Motion: ${fullAnalysis.motionAnalysis?.motionIntensity || "N/A"}`);
+      aiLogger.info(`Scenes: ${fullAnalysis.scenes?.length || 0}`);
+      aiLogger.info(`Key Moments: ${fullAnalysis.keyMoments?.length || 0}`);
+      aiLogger.info(`Transitions: ${fullAnalysis.transitionAnalysis?.detectedTransitions?.length || 0}`);
+      aiLogger.info("═══════════════════════════════════════════════════════");
+      
+      videoAnalysis = {
+        ...fullAnalysis,
+        analysisMethod: "full_video_watch",
+      };
+      
+      // Store the enhanced analysis data
+      enhancedAnalysis = {
+        motionAnalysis: fullAnalysis.motionAnalysis,
+        transitionAnalysis: fullAnalysis.transitionAnalysis,
+        audioVisualSync: fullAnalysis.audioVisualSync,
+        pacingAnalysis: fullAnalysis.pacingAnalysis,
+      };
+      
+    } catch (fullVideoError) {
+      aiLogger.warn(`Full video watching failed: ${fullVideoError instanceof Error ? fullVideoError.message : "Unknown error"}`);
+      aiLogger.info("Falling back to frame extraction analysis...");
+      
+      // Fall back to frame extraction
+      const frameAnalysis = await analyzeVideoFrames(framePaths, duration, silentSegments);
+      videoAnalysis = {
+        ...frameAnalysis,
+        analysisMethod: "frame_extraction",
+      };
+    }
+  } else {
+    // No video path provided, use frame extraction
+    aiLogger.info("No video path provided, using frame extraction analysis...");
+    const frameAnalysis = await analyzeVideoFrames(framePaths, duration, silentSegments);
+    videoAnalysis = {
+      ...frameAnalysis,
+      analysisMethod: "frame_extraction",
+    };
+  }
+  
+  // Run semantic analysis with context if available
   const semanticAnalysis = await analyzeTranscriptSemantics(
     transcript,
     videoAnalysis.context,
@@ -772,12 +1309,14 @@ export async function analyzeVideoDeep(
     duration
   );
   
-  aiLogger.info(`Deep analysis complete: ${videoAnalysis.scenes?.length || 0} scenes, ${semanticAnalysis.topicFlow?.length || 0} topics, ${fillerSegments.length} fillers detected`);
+  const method = videoAnalysis.analysisMethod || "frame_extraction";
+  aiLogger.info(`Deep analysis complete (${method}): ${videoAnalysis.scenes?.length || 0} scenes, ${semanticAnalysis.topicFlow?.length || 0} topics, ${fillerSegments.length} fillers detected`);
   
   return {
     videoAnalysis,
     semanticAnalysis,
     fillerSegments,
     qualityInsights,
+    enhancedAnalysis,
   };
 }

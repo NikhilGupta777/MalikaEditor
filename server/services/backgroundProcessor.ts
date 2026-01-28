@@ -359,12 +359,13 @@ async function runProcessingPipeline(
       }
     });
 
-    addActivity(projectId, "Performing deep video analysis...");
+    addActivity(projectId, "Performing deep video analysis (AI watching full video)...");
     const analysis = await analyzeVideoDeep(
       framePaths,
       metadata.duration,
       silentSegments,
-      transcript
+      transcript,
+      videoPath // Pass video path for full video watching
     );
 
     const brollWindowCount = analysis.semanticAnalysis?.brollWindows?.length || 0;

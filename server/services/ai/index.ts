@@ -13,7 +13,9 @@ export {
 
 export { 
   analyzeVideoFrames,
-  analyzeVideoDeep 
+  analyzeVideoDeep,
+  watchFullVideo,
+  type DeepAnalysisResult
 } from "./videoAnalysis";
 
 export { 

@@ -704,6 +704,66 @@ RESPOND WITH JSON ONLY:
     throw parseError;
   }
 
+  // POST-SELECTION ENFORCEMENT: Ensure AI images are actually used when available
+  // This fixes the issue where AI may ignore instructions to prioritize AI images
+  const aiCandidates = availableCandidates.filter(c => c.source === 'ai');
+  const selectedAiCount = [...usedInThisBatch].filter(id => id.startsWith('ai_')).length;
+  const minAiRequired = aiCandidates.length > 0 ? Math.max(1, Math.ceil(aiCandidates.length * 0.5)) : 0;
+  
+  if (aiCandidates.length > 0 && selectedAiCount < minAiRequired) {
+    selectorLogger.warn(`AI selection bias detected: ${selectedAiCount}/${minAiRequired} required AI images used. Enforcing AI image usage.`);
+    
+    // Find unused AI images
+    const unusedAiImages = aiCandidates.filter(c => !usedInThisBatch.has(c.id));
+    
+    // Find windows that could accept an AI image replacement
+    const windowsToEnhance = selections
+      .filter(s => s.selectedMedia.some(m => m.source !== 'ai')) // Has non-AI media
+      .sort((a, b) => {
+        // Prefer high-priority windows
+        const aPriority = a.window.priority === 'high' ? 3 : a.window.priority === 'medium' ? 2 : 1;
+        const bPriority = b.window.priority === 'high' ? 3 : b.window.priority === 'medium' ? 2 : 1;
+        return bPriority - aPriority;
+      });
+    
+    let aiInjected = 0;
+    const targetInjections = minAiRequired - selectedAiCount;
+    
+    for (const windowSelection of windowsToEnhance) {
+      if (aiInjected >= targetInjections || unusedAiImages.length === 0) break;
+      
+      // Find best AI image for this window using semantic matching
+      let bestAi: MediaCandidate | null = null;
+      let bestScore = -1;
+      
+      for (const ai of unusedAiImages) {
+        const score = computeSemanticScore(windowSelection.window.suggestedQuery, ai.query);
+        if (score > bestScore) {
+          bestScore = score;
+          bestAi = ai;
+        }
+      }
+      
+      if (bestAi) {
+        // Replace the first non-AI media with the AI image
+        const nonAiIndex = windowSelection.selectedMedia.findIndex(m => m.source !== 'ai');
+        if (nonAiIndex >= 0) {
+          const replaced = windowSelection.selectedMedia[nonAiIndex];
+          windowSelection.selectedMedia[nonAiIndex] = bestAi;
+          usedInThisBatch.add(bestAi.id);
+          usedInThisBatch.delete(replaced.id);
+          unusedAiImages.splice(unusedAiImages.indexOf(bestAi), 1);
+          aiInjected++;
+          selectorLogger.info(`Enforced AI image in window ${windowSelection.windowIndex}: replaced ${replaced.provider || replaced.source}:${replaced.type} with AI image`);
+        }
+      }
+    }
+    
+    if (aiInjected > 0) {
+      selectorLogger.info(`AI image enforcement complete: injected ${aiInjected} AI images`);
+    }
+  }
+
   return selections;
 }
 

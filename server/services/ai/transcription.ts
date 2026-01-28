@@ -1,10 +1,19 @@
 import { toFile } from "openai";
 import { promises as fs } from "fs";
+import * as fsSync from "fs";
 import { spawn } from "child_process";
 import { createLogger } from "../../utils/logger";
 import { getOpenAIClient, getGeminiClient } from "./clients";
 import { AI_CONFIG } from "../../config/ai";
+import { withRetry } from "../../utils/retry";
 import type { TranscriptSegment } from "@shared/schema";
+
+const ASSEMBLYAI_RETRY_OPTIONS = {
+  maxRetries: 3,
+  initialDelayMs: 2000,
+  maxDelayMs: 15000,
+  backoffMultiplier: 2,
+};
 
 const aiLogger = createLogger("ai-service");
 
@@ -127,26 +136,60 @@ async function transcribeWithAssemblyAI(
   aiLogger.info(`Using AssemblyAI ${AI_CONFIG.models.transcription.primary} for transcription...`);
 
   try {
-    // Step 1: Upload audio file to AssemblyAI
+    // Step 1: Upload audio file to AssemblyAI with retry and memory-safe streaming for large files
     aiLogger.debug("Uploading audio to AssemblyAI...");
-    const audioBuffer = await fs.readFile(audioPath);
     
-    const uploadResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/upload`, {
-      method: "POST",
-      headers: {
-        "Authorization": apiKey,
-        "Content-Type": "application/octet-stream",
+    const stats = await fs.stat(audioPath);
+    const fileSizeMB = stats.size / (1024 * 1024);
+    aiLogger.debug(`Audio file size: ${fileSizeMB.toFixed(2)}MB`);
+    
+    // Use streaming for large files (>50MB) to avoid memory pressure
+    const LARGE_FILE_THRESHOLD_MB = 50;
+    
+    const audioUrl = await withRetry(
+      async () => {
+        let uploadResponse: Response;
+        
+        if (fileSizeMB > LARGE_FILE_THRESHOLD_MB) {
+          aiLogger.debug(`Large file detected (${fileSizeMB.toFixed(1)}MB), using streaming upload`);
+          const stream = fsSync.createReadStream(audioPath);
+          
+          uploadResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/upload`, {
+            method: "POST",
+            headers: {
+              "Authorization": apiKey,
+              "Content-Type": "application/octet-stream",
+              "Transfer-Encoding": "chunked",
+            },
+            body: stream as unknown as BodyInit,
+            // @ts-ignore - Node.js stream support
+            duplex: "half",
+          });
+        } else {
+          const audioBuffer = await fs.readFile(audioPath);
+          uploadResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/upload`, {
+            method: "POST",
+            headers: {
+              "Authorization": apiKey,
+              "Content-Type": "application/octet-stream",
+            },
+            body: audioBuffer,
+          });
+        }
+
+        if (!uploadResponse.ok) {
+          const errorText = await uploadResponse.text();
+          throw new Error(`Upload failed: ${uploadResponse.status} - ${errorText}`);
+        }
+
+        const uploadResult = await uploadResponse.json() as { upload_url: string };
+        return uploadResult.upload_url;
       },
-      body: audioBuffer,
-    });
-
-    if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      throw new Error(`Upload failed: ${uploadResponse.status} - ${errorText}`);
-    }
-
-    const uploadResult = await uploadResponse.json() as { upload_url: string };
-    const audioUrl = uploadResult.upload_url;
+      "AssemblyAI audio upload",
+      ASSEMBLYAI_RETRY_OPTIONS,
+      "assemblyai"
+    );
+    
     aiLogger.debug("Audio uploaded successfully");
 
     // Step 2: Submit transcription request with enhanced AI features
@@ -167,41 +210,67 @@ async function transcribeWithAssemblyAI(
       transcriptionConfig.language_code = languageHint;
     }
 
-    const submitResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/transcript`, {
-      method: "POST",
-      headers: {
-        "Authorization": apiKey,
-        "Content-Type": "application/json",
+    // Submit transcription request with retry
+    const transcriptId = await withRetry(
+      async () => {
+        const submitResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/transcript`, {
+          method: "POST",
+          headers: {
+            "Authorization": apiKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(transcriptionConfig),
+        });
+
+        if (!submitResponse.ok) {
+          const errorText = await submitResponse.text();
+          throw new Error(`Submit failed: ${submitResponse.status} - ${errorText}`);
+        }
+
+        const submitResult = await submitResponse.json() as AssemblyAITranscript;
+        return submitResult.id;
       },
-      body: JSON.stringify(transcriptionConfig),
-    });
-
-    if (!submitResponse.ok) {
-      const errorText = await submitResponse.text();
-      throw new Error(`Submit failed: ${submitResponse.status} - ${errorText}`);
-    }
-
-    const submitResult = await submitResponse.json() as AssemblyAITranscript;
-    const transcriptId = submitResult.id;
+      "AssemblyAI transcription submit",
+      ASSEMBLYAI_RETRY_OPTIONS,
+      "assemblyai"
+    );
+    
     aiLogger.debug(`Transcription submitted, ID: ${transcriptId}`);
 
-    // Step 3: Poll for completion
+    // Step 3: Poll for completion with resilience against transient errors
     const maxWaitMs = 5 * 60 * 1000; // 5 minutes max
     const pollIntervalMs = 3000; // Poll every 3 seconds
     const startTime = Date.now();
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 3;
 
     while (Date.now() - startTime < maxWaitMs) {
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
 
-      const pollResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/transcript/${transcriptId}`, {
-        headers: { "Authorization": apiKey },
-      });
+      let transcript: AssemblyAITranscript;
+      try {
+        const pollResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/transcript/${transcriptId}`, {
+          headers: { "Authorization": apiKey },
+        });
 
-      if (!pollResponse.ok) {
-        throw new Error(`Poll failed: ${pollResponse.status}`);
+        if (!pollResponse.ok) {
+          throw new Error(`Poll failed: ${pollResponse.status}`);
+        }
+
+        transcript = await pollResponse.json() as AssemblyAITranscript;
+        consecutiveErrors = 0; // Reset on success
+      } catch (pollError) {
+        consecutiveErrors++;
+        aiLogger.warn(`AssemblyAI poll error (${consecutiveErrors}/${maxConsecutiveErrors}): ${pollError instanceof Error ? pollError.message : String(pollError)}`);
+        
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+          throw new Error(`AssemblyAI polling failed after ${maxConsecutiveErrors} consecutive errors`);
+        }
+        
+        // Wait longer before retrying on error
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs * 2));
+        continue;
       }
-
-      const transcript = await pollResponse.json() as AssemblyAITranscript;
 
       if (transcript.status === "completed") {
         aiLogger.info(`AssemblyAI transcription completed${transcript.language_code ? ` (detected: ${transcript.language_code})` : ""}`);

@@ -37,8 +37,9 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **AI Self-Learning System**: Before rendering, AI (Gemini 1.5 Flash) reviews the edit plan, provides confidence scores, quality assessments, and issue detection. User feedback is stored for continuous learning.
 - **Full Video Watching (Advanced Analysis)**: AI uploads and analyzes entire videos (not just frames) for motion, transition, audio-visual sync, and pacing analysis. Graceful fallback to frame extraction if video upload fails.
 - **AI Self-Review System (Post-Render)**: AI watches rendered video to evaluate quality metrics, detect issues with timestamps, and provide a quality score.
-- **Iterative Correction Loop**: AI generates correction plans for auto-fixable issues (transitions, cuts, B-roll, timing, captions). Maximum 2 render iterations with automatic re-render triggers for critical issues or low scores.
+- **Iterative Correction Loop**: AI generates correction plans for auto-fixable issues (transitions, cuts, B-roll, timing, captions). Maximum 2 render iterations with automatic re-render triggers for critical issues or low scores. Actually re-renders with corrected edit plan and stock media.
 - **Self-Review Persistence**: Results stored with project for learning and future reference.
+- **AI Learning System**: Stores successful editing patterns from user-approved edits and high-scoring renders. Retrieves relevant patterns for new projects based on video genre/tone similarity. Applies learned preferences to future edit plan generation. In-memory pattern storage with bounded capacity and age-based pruning.
 
 ### Video Processing Pipeline
 1.  **Upload & Analysis**: Video stored, analyzed by AI (Gemini Vision) for motion, transitions, and pacing.

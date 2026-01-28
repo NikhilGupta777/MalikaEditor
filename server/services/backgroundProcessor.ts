@@ -701,11 +701,15 @@ async function runProcessingPipeline(
       : (metadata.duration || transcriptEnd || 60);
     
     // Flatten analysis to match videoAnalysisSchema - spread videoAnalysis props at top level
+    // Include enhancedAnalysis (motion, transitions, pacing, sync) for downstream use
     const sanitizedAnalysis = {
       ...analysis.videoAnalysis,
       duration: validDuration,
       frames: analysis.videoAnalysis?.frames || [],
       semanticAnalysis: analysis.semanticAnalysis,
+      // Store enhancedAnalysis for edit planning and media selection
+      enhancedAnalysis: analysis.enhancedAnalysis || null,
+      qualityInsights: analysis.qualityInsights || null,
     };
     
     await storage.updateVideoProject(projectId, {
@@ -871,15 +875,31 @@ async function runProcessingPipeline(
       await updateProcessingStage(projectId, "media_fetch");
       
       addActivity(projectId, "AI selecting best media for each B-roll window...");
+      
+      // Extract enhancedAnalysis for intelligent media selection
+      const enhancedAnalysis = (analysis as any).enhancedAnalysis;
+      const motionAnalysis = enhancedAnalysis?.motionAnalysis;
+      const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
+      
+      if (motionAnalysis) {
+        processorLogger.info(`[Media Selection] Using motion analysis: intensity=${motionAnalysis.motionIntensity}, ${motionAnalysis.actionSequences?.length || 0} action sequences`);
+      }
+      if (pacingAnalysis) {
+        processorLogger.info(`[Media Selection] Using pacing analysis: ${pacingAnalysis.overallPacing}, ${pacingAnalysis.suggestedPacingAdjustments?.length || 0} adjustments`);
+      }
+      
       const selectionResult = await selectBestMediaForWindows(
         brollWindows as { start: number; end: number; suggestedQuery: string; priority: "high" | "medium" | "low"; context?: string }[],
         stockVariants,
         generatedAiImages,
         {
           duration: metadata.duration,
-          genre: analysis.semanticAnalysis?.overallTone || "general",
-          tone: analysis.semanticAnalysis?.overallTone || "professional",
+          genre: (analysis as any).context?.genre || analysis.semanticAnalysis?.overallTone || "general",
+          tone: (analysis as any).context?.tone || analysis.semanticAnalysis?.overallTone || "professional",
           topic: analysis.semanticAnalysis?.mainTopics?.[0] || "various",
+          // Pass enhanced analysis for intelligent selection
+          motionAnalysis,
+          pacingAnalysis,
         }
       );
       

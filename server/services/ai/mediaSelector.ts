@@ -273,16 +273,104 @@ async function analyzeMediaThumbnails(
   return results;
 }
 
+// Enhanced context with motion/pacing analysis for intelligent media selection
+interface EnhancedVideoContext {
+  duration: number;
+  genre?: string;
+  tone?: string;
+  topic?: string;
+  // From enhancedAnalysis - motion data influences video vs image preference
+  motionAnalysis?: {
+    hasSignificantMotion: boolean;
+    motionIntensity: "low" | "medium" | "high";
+    actionSequences?: { start: number; end: number; description: string }[];
+  };
+  // From enhancedAnalysis - pacing data influences B-roll duration
+  pacingAnalysis?: {
+    overallPacing: "slow" | "moderate" | "fast" | "dynamic";
+    pacingVariation: number;
+    suggestedPacingAdjustments?: { start: number; end: number; adjustment: string; reason: string }[];
+  };
+}
+
+// Determine optimal B-roll duration based on pacing analysis
+function getOptimalBrollDuration(
+  windowStart: number,
+  windowEnd: number,
+  pacingAnalysis?: EnhancedVideoContext["pacingAnalysis"]
+): number {
+  const requestedDuration = windowEnd - windowStart;
+  
+  if (!pacingAnalysis) {
+    // Default: cap at 5 seconds
+    return Math.min(requestedDuration, 5);
+  }
+  
+  // Adjust based on overall pacing
+  let maxDuration: number;
+  switch (pacingAnalysis.overallPacing) {
+    case "fast":
+    case "dynamic":
+      maxDuration = 3; // Quick cuts for fast-paced content
+      break;
+    case "slow":
+      maxDuration = 6; // Longer B-roll for slow content
+      break;
+    case "moderate":
+    default:
+      maxDuration = 4;
+  }
+  
+  // Check if this window overlaps with a pacing adjustment zone
+  const adjustments = pacingAnalysis.suggestedPacingAdjustments || [];
+  for (const adj of adjustments) {
+    if (windowStart >= adj.start && windowStart < adj.end) {
+      // Adjust duration based on pacing recommendation
+      if (adj.adjustment.toLowerCase().includes("speed up") || adj.adjustment.toLowerCase().includes("faster")) {
+        maxDuration = Math.max(2, maxDuration - 1);
+      } else if (adj.adjustment.toLowerCase().includes("slow down") || adj.adjustment.toLowerCase().includes("slower")) {
+        maxDuration = Math.min(6, maxDuration + 1);
+      }
+      break;
+    }
+  }
+  
+  return Math.min(requestedDuration, maxDuration);
+}
+
+// Determine if video should be preferred over image based on motion analysis
+function shouldPreferVideo(
+  windowStart: number,
+  windowEnd: number,
+  motionAnalysis?: EnhancedVideoContext["motionAnalysis"]
+): boolean {
+  if (!motionAnalysis) {
+    return false; // Default: no strong preference
+  }
+  
+  // High motion intensity = prefer video
+  if (motionAnalysis.motionIntensity === "high") {
+    return true;
+  }
+  
+  // Check if window overlaps with action sequence
+  const actionSequences = motionAnalysis.actionSequences || [];
+  for (const action of actionSequences) {
+    const overlaps = windowStart < action.end && windowEnd > action.start;
+    if (overlaps) {
+      selectorLogger.debug(`Window ${windowStart.toFixed(1)}s overlaps action sequence: ${action.description}`);
+      return true; // Prefer video during action
+    }
+  }
+  
+  return false;
+}
+
 export async function selectBestMediaForWindows(
   brollWindows: BrollWindow[],
   stockVariants: StockMediaVariants[],
   aiImages: GeneratedAiImage[],
-  videoContext: {
-    duration: number;
-    genre?: string;
-    tone?: string;
-    topic?: string;
-  }
+  videoContext: EnhancedVideoContext
 ): Promise<MediaSelectionResult> {
   // OPTIMIZATION: Early exit if no B-roll windows - skip expensive Vision API calls
   if (brollWindows.length === 0) {
@@ -489,7 +577,7 @@ function buildAllCandidates(
 async function selectMediaForAllWindowsWithAI(
   windows: BrollWindow[],
   allCandidates: MediaCandidate[],
-  videoContext: { duration: number; genre?: string; tone?: string; topic?: string },
+  videoContext: EnhancedVideoContext,
   alreadyUsed: Set<string>
 ): Promise<SelectedMedia[]> {
   const gemini = getGeminiClient();
@@ -515,15 +603,34 @@ async function selectMediaForAllWindowsWithAI(
     return `  ${idx + 1}. [${typeLabel}] Query: "${c.query.slice(0, 50)}"${durationInfo}${visualInfo}`;
   }).join("\n");
 
+  // Build window descriptions with motion/pacing hints
   const windowDescriptions = windows.map((w, idx) => {
     const duration = (w.end - w.start).toFixed(1);
-    return `  ${idx}: ${w.start.toFixed(1)}s-${w.end.toFixed(1)}s (${duration}s) - "${w.suggestedQuery}" [${w.priority} priority]${w.context ? ` Context: ${w.context}` : ''}`;
+    const preferVideo = shouldPreferVideo(w.start, w.end, videoContext.motionAnalysis);
+    const optimalDuration = getOptimalBrollDuration(w.start, w.end, videoContext.pacingAnalysis);
+    const motionHint = preferVideo ? " [MOTION: prefer VIDEO]" : "";
+    const pacingHint = optimalDuration !== (w.end - w.start) ? ` [Optimal: ${optimalDuration.toFixed(1)}s]` : "";
+    return `  ${idx}: ${w.start.toFixed(1)}s-${w.end.toFixed(1)}s (${duration}s) - "${w.suggestedQuery}" [${w.priority} priority]${motionHint}${pacingHint}${w.context ? ` Context: ${w.context}` : ''}`;
   }).join("\n");
 
   const aiImageCount = availableCandidates.filter(c => c.source === 'ai').length;
   const pexelsCount = availableCandidates.filter(c => c.provider === 'pexels').length;
   const freepikCount = availableCandidates.filter(c => c.provider === 'freepik').length;
-  // Note: We no longer enforce minimum AI usage - let the AI make smart decisions based on content type
+  
+  // Build motion context for AI prompt
+  const motionContext = videoContext.motionAnalysis ? `
+MOTION ANALYSIS:
+- Overall Motion Intensity: ${videoContext.motionAnalysis.motionIntensity}
+- Has Significant Motion: ${videoContext.motionAnalysis.hasSignificantMotion ? "YES" : "NO"}
+${videoContext.motionAnalysis.actionSequences?.length ? `- Action Sequences: ${videoContext.motionAnalysis.actionSequences.length} detected` : ""}
+MOTION GUIDANCE: For windows marked "[MOTION: prefer VIDEO]", prioritize stock VIDEOS over static images to match the dynamic content.` : "";
+
+  // Build pacing context for AI prompt
+  const pacingContext = videoContext.pacingAnalysis ? `
+PACING ANALYSIS:
+- Overall Pacing: ${videoContext.pacingAnalysis.overallPacing}
+- Pacing Variation: ${videoContext.pacingAnalysis.pacingVariation}%
+PACING GUIDANCE: ${videoContext.pacingAnalysis.overallPacing === "fast" ? "Use shorter B-roll clips (2-3s) for fast-paced content" : videoContext.pacingAnalysis.overallPacing === "slow" ? "Can use longer B-roll clips (4-6s) for slower pacing" : "Use moderate B-roll durations (3-4s)"}` : "";
   
   const prompt = `You are a professional video editor selecting B-roll media for a video.
 
@@ -532,6 +639,8 @@ VIDEO CONTEXT:
 - Genre: ${videoContext.genre || "general"}
 - Tone: ${videoContext.tone || "professional"}
 - Topic: ${videoContext.topic || "various"}
+${motionContext}
+${pacingContext}
 
 B-ROLL WINDOWS (windowIndex: timing - content needed):
 ${windowDescriptions}

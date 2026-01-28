@@ -29,6 +29,11 @@ export interface EditingPattern {
     videoTone?: string;
     videoDuration?: number;
     promptKeywords?: string[];
+    // Enhanced analysis data for better pattern matching
+    motionIntensity?: "low" | "medium" | "high";
+    overallPacing?: "slow" | "moderate" | "fast" | "dynamic";
+    hasActionSequences?: boolean;
+    syncQuality?: "excellent" | "good" | "fair" | "poor";
   };
 }
 
@@ -151,11 +156,23 @@ export function storePattern(
   
   const storedPatterns: EditingPattern[] = [];
   const promptKeywords = extractKeywords(userPrompt);
+  
+  // Extract enhancedAnalysis for pattern context
+  const enhancedAnalysis = (videoAnalysis as any)?.enhancedAnalysis;
+  const motionAnalysis = enhancedAnalysis?.motionAnalysis;
+  const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
+  const audioVisualSync = enhancedAnalysis?.audioVisualSync;
+  
   const context = {
     videoGenre: videoAnalysis?.context?.genre,
     videoTone: videoAnalysis?.context?.tone,
     videoDuration: videoAnalysis?.duration,
     promptKeywords,
+    // Enhanced analysis for better pattern matching
+    motionIntensity: motionAnalysis?.motionIntensity,
+    overallPacing: pacingAnalysis?.overallPacing,
+    hasActionSequences: (motionAnalysis?.actionSequences?.length || 0) > 0,
+    syncQuality: audioVisualSync?.syncQuality,
   };
   
   if (reviewData.editPlan?.actions) {
@@ -329,18 +346,33 @@ export function retrievePatterns(
   const targetGenre = videoAnalysis?.context?.genre;
   const targetTone = videoAnalysis?.context?.tone;
   
+  // Extract enhancedAnalysis for better pattern matching
+  const enhancedAnalysis = (videoAnalysis as any)?.enhancedAnalysis;
+  const targetMotion = enhancedAnalysis?.motionAnalysis?.motionIntensity;
+  const targetPacing = enhancedAnalysis?.pacingAnalysis?.overallPacing;
+  
   const suggestions: PatternSuggestion[] = [];
   
   for (const type of patternTypes) {
     const patterns = patternStore.get(type) || [];
     
     for (const pattern of patterns) {
-      const relevanceScore = calculateRelevanceScore(
+      let relevanceScore = calculateRelevanceScore(
         pattern,
         targetGenre,
         targetTone,
         userPrompt
       );
+      
+      // Boost score for matching motion intensity
+      if (targetMotion && pattern.context?.motionIntensity === targetMotion) {
+        relevanceScore += 10;
+      }
+      
+      // Boost score for matching pacing
+      if (targetPacing && pattern.context?.overallPacing === targetPacing) {
+        relevanceScore += 10;
+      }
       
       if (relevanceScore >= 30) {
         suggestions.push({

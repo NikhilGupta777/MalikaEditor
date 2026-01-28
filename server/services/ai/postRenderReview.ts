@@ -162,6 +162,21 @@ export async function performPostRenderSelfReview(
       `[${t.start.toFixed(1)}s]: ${t.text}`
     ).join("\n");
     
+    // Extract enhancedAnalysis for comparison with rendered output
+    const enhancedAnalysis = (videoAnalysis as any)?.enhancedAnalysis;
+    const motionAnalysis = enhancedAnalysis?.motionAnalysis;
+    const transitionAnalysis = enhancedAnalysis?.transitionAnalysis;
+    const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
+    const audioVisualSync = enhancedAnalysis?.audioVisualSync;
+    
+    // Build enhanced analysis context for self-review
+    const enhancedContext = [
+      motionAnalysis ? `ORIGINAL MOTION PROFILE: Intensity=${motionAnalysis.motionIntensity}, ${motionAnalysis.actionSequences?.length || 0} action sequences detected` : "",
+      pacingAnalysis ? `EXPECTED PACING: ${pacingAnalysis.overallPacing} (variation: ${pacingAnalysis.pacingVariation}%)` : "",
+      transitionAnalysis ? `NATURAL TRANSITIONS: ${transitionAnalysis.detectedTransitions?.length || 0} detected, ${transitionAnalysis.suggestedTransitionPoints?.length || 0} suggested cut points` : "",
+      audioVisualSync ? `ORIGINAL SYNC QUALITY: ${audioVisualSync.syncQuality}` : "",
+    ].filter(Boolean).join("\n");
+    
     const prompt = `You are an expert video editor AI performing a SELF-REVIEW of your own rendered output.
 
 CRITICAL TASK: Watch this rendered video from start to finish and evaluate its quality.
@@ -181,6 +196,7 @@ ORIGINAL VIDEO CONTEXT:
 - Target duration reduction: ${reviewData.summary?.originalDuration && reviewData.summary?.estimatedFinalDuration 
     ? ((1 - reviewData.summary.estimatedFinalDuration / reviewData.summary.originalDuration) * 100).toFixed(0) + "%" 
     : "unknown"}
+${enhancedContext ? `\nDEEP ANALYSIS (compare rendered output against these):\n${enhancedContext}` : ""}
 
 TRANSCRIPT (sample):
 ${transcriptSummary}

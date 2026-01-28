@@ -673,6 +673,13 @@ export async function executeConsolidatedAnalysis(
   const genre = analysis.context?.genre || "general";
   const tone = analysis.context?.tone || "casual";
   
+  // Extract enhancedAnalysis data for intelligent editing decisions
+  const enhancedAnalysis = (analysis as any).enhancedAnalysis;
+  const motionAnalysis = enhancedAnalysis?.motionAnalysis;
+  const transitionAnalysis = enhancedAnalysis?.transitionAnalysis;
+  const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
+  const audioVisualSync = enhancedAnalysis?.audioVisualSync;
+  
   const transcriptText = transcript.slice(0, 40).map(t => 
     `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
   ).join("\n");
@@ -686,6 +693,41 @@ export async function executeConsolidatedAnalysis(
     `[${safeFixed(b.start)}s-${safeFixed(b.end)}s] "${b.suggestedQuery}" - ${b.context}`
   ).join("\n");
 
+  // Build motion analysis context for AI
+  const motionContext = motionAnalysis ? `
+MOTION ANALYSIS (from full video watching):
+- Overall Motion Intensity: ${motionAnalysis.motionIntensity || "unknown"}
+- Has Significant Motion: ${motionAnalysis.hasSignificantMotion ? "YES" : "NO"}
+${motionAnalysis.actionSequences?.length > 0 ? `- Action Sequences:\n${motionAnalysis.actionSequences.slice(0, 5).map((a: any) => `  [${safeFixed(a.start)}s-${safeFixed(a.end)}s]: ${a.description}`).join("\n")}` : ""}
+MOTION EDITING GUIDANCE:
+- For HIGH motion segments: Use shorter B-roll (2-3s), prefer VIDEO over images
+- For LOW motion segments: Can use longer B-roll (4-6s), images work well
+- Place B-roll during action sequences to enhance visual interest` : "";
+
+  // Build transition analysis context for AI
+  const transitionContext = transitionAnalysis ? `
+DETECTED NATURAL TRANSITIONS:
+${transitionAnalysis.detectedTransitions?.slice(0, 8).map((t: any) => `  [${safeFixed(t.timestamp)}s]: ${t.type} - ${t.description}`).join("\n") || "None detected"}
+${transitionAnalysis.suggestedTransitionPoints?.length > 0 ? `SUGGESTED CUT POINTS: ${transitionAnalysis.suggestedTransitionPoints.slice(0, 10).map((t: number) => `${safeFixed(t)}s`).join(", ")}` : ""}
+TRANSITION GUIDANCE: Use these natural transition points for cuts and B-roll insertions` : "";
+
+  // Build pacing analysis context for AI  
+  const pacingContext = pacingAnalysis ? `
+PACING ANALYSIS:
+- Overall Pacing: ${pacingAnalysis.overallPacing || "moderate"}
+- Pacing Variation: ${pacingAnalysis.pacingVariation || 50}%
+${pacingAnalysis.suggestedPacingAdjustments?.length > 0 ? `PACING ADJUSTMENTS NEEDED:\n${pacingAnalysis.suggestedPacingAdjustments.slice(0, 5).map((p: any) => `  [${safeFixed(p.start)}s-${safeFixed(p.end)}s]: ${p.adjustment} - ${p.reason}`).join("\n")}` : ""}
+PACING GUIDANCE:
+- SLOW pacing: Add more B-roll, use quick cuts to increase energy
+- FAST pacing: Use minimal B-roll, let content breathe
+- Match B-roll duration to pacing: fast=2-3s, moderate=3-4s, slow=4-5s` : "";
+
+  // Build sync quality context
+  const syncContext = audioVisualSync ? `
+AUDIO-VISUAL SYNC:
+- Sync Quality: ${audioVisualSync.syncQuality || "good"}
+${audioVisualSync.outOfSyncMoments?.length > 0 ? `- Sync Issues:\n${audioVisualSync.outOfSyncMoments.slice(0, 5).map((m: any) => `  [${safeFixed(m.timestamp)}s]: ${m.issue}`).join("\n")}` : ""}` : "";
+
   const prompt = `You are an expert video editor. Perform a COMPREHENSIVE analysis of this video in a single pass.
 
 VIDEO METADATA:
@@ -693,6 +735,10 @@ VIDEO METADATA:
 - Genre: ${genre}
 - Tone: ${tone}
 - Existing narrative hints: ${JSON.stringify(analysis.narrativeStructure || {})}
+${motionContext}
+${transitionContext}
+${pacingContext}
+${syncContext}
 
 SEMANTIC ANALYSIS:
 - Main topics: ${semanticAnalysis.mainTopics.join(", ")}

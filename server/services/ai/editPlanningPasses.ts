@@ -673,8 +673,8 @@ export async function executeConsolidatedAnalysis(
   const genre = analysis.context?.genre || "general";
   const tone = analysis.context?.tone || "casual";
   
-  // Extract enhancedAnalysis data for intelligent editing decisions
-  const enhancedAnalysis = (analysis as any).enhancedAnalysis;
+  // Extract enhancedAnalysis data for intelligent editing decisions (now properly typed in VideoAnalysis)
+  const enhancedAnalysis = analysis.enhancedAnalysis;
   const motionAnalysis = enhancedAnalysis?.motionAnalysis;
   const transitionAnalysis = enhancedAnalysis?.transitionAnalysis;
   const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
@@ -698,7 +698,7 @@ export async function executeConsolidatedAnalysis(
 MOTION ANALYSIS (from full video watching):
 - Overall Motion Intensity: ${motionAnalysis.motionIntensity || "unknown"}
 - Has Significant Motion: ${motionAnalysis.hasSignificantMotion ? "YES" : "NO"}
-${motionAnalysis.actionSequences?.length > 0 ? `- Action Sequences:\n${motionAnalysis.actionSequences.slice(0, 5).map((a: any) => `  [${safeFixed(a.start)}s-${safeFixed(a.end)}s]: ${a.description}`).join("\n")}` : ""}
+${(motionAnalysis.actionSequences?.length || 0) > 0 ? `- Action Sequences:\n${motionAnalysis.actionSequences!.slice(0, 5).map((a) => `  [${safeFixed(a.start)}s-${safeFixed(a.end)}s]: ${a.description}`).join("\n")}` : ""}
 MOTION EDITING GUIDANCE:
 - For HIGH motion segments: Use shorter B-roll (2-3s), prefer VIDEO over images
 - For LOW motion segments: Can use longer B-roll (4-6s), images work well
@@ -707,8 +707,8 @@ MOTION EDITING GUIDANCE:
   // Build transition analysis context for AI
   const transitionContext = transitionAnalysis ? `
 DETECTED NATURAL TRANSITIONS:
-${transitionAnalysis.detectedTransitions?.slice(0, 8).map((t: any) => `  [${safeFixed(t.timestamp)}s]: ${t.type} - ${t.description}`).join("\n") || "None detected"}
-${transitionAnalysis.suggestedTransitionPoints?.length > 0 ? `SUGGESTED CUT POINTS: ${transitionAnalysis.suggestedTransitionPoints.slice(0, 10).map((t: number) => `${safeFixed(t)}s`).join(", ")}` : ""}
+${transitionAnalysis.detectedTransitions?.slice(0, 8).map((t) => `  [${safeFixed(t.timestamp)}s]: ${t.type} - ${t.description}`).join("\n") || "None detected"}
+${(transitionAnalysis.suggestedTransitionPoints?.length || 0) > 0 ? `SUGGESTED CUT POINTS: ${transitionAnalysis.suggestedTransitionPoints!.slice(0, 10).map((t: number) => `${safeFixed(t)}s`).join(", ")}` : ""}
 TRANSITION GUIDANCE: Use these natural transition points for cuts and B-roll insertions` : "";
 
   // Build pacing analysis context for AI  
@@ -716,7 +716,7 @@ TRANSITION GUIDANCE: Use these natural transition points for cuts and B-roll ins
 PACING ANALYSIS:
 - Overall Pacing: ${pacingAnalysis.overallPacing || "moderate"}
 - Pacing Variation: ${pacingAnalysis.pacingVariation || 50}%
-${pacingAnalysis.suggestedPacingAdjustments?.length > 0 ? `PACING ADJUSTMENTS NEEDED:\n${pacingAnalysis.suggestedPacingAdjustments.slice(0, 5).map((p: any) => `  [${safeFixed(p.start)}s-${safeFixed(p.end)}s]: ${p.adjustment} - ${p.reason}`).join("\n")}` : ""}
+${(pacingAnalysis.suggestedPacingAdjustments?.length || 0) > 0 ? `PACING ADJUSTMENTS NEEDED:\n${pacingAnalysis.suggestedPacingAdjustments!.slice(0, 5).map((p) => `  [${safeFixed(p.timestamp)}s]: ${p.suggestion}`).join("\n")}` : ""}
 PACING GUIDANCE:
 - SLOW pacing: Add more B-roll, use quick cuts to increase energy
 - FAST pacing: Use minimal B-roll, let content breathe
@@ -726,7 +726,7 @@ PACING GUIDANCE:
   const syncContext = audioVisualSync ? `
 AUDIO-VISUAL SYNC:
 - Sync Quality: ${audioVisualSync.syncQuality || "good"}
-${audioVisualSync.outOfSyncMoments?.length > 0 ? `- Sync Issues:\n${audioVisualSync.outOfSyncMoments.slice(0, 5).map((m: any) => `  [${safeFixed(m.timestamp)}s]: ${m.issue}`).join("\n")}` : ""}` : "";
+${(audioVisualSync.outOfSyncMoments?.length || 0) > 0 ? `- Sync Issues:\n${audioVisualSync.outOfSyncMoments!.slice(0, 5).map((m) => `  [${safeFixed(m.timestamp)}s]: ${m.issue}`).join("\n")}` : ""}` : "";
 
   const prompt = `You are an expert video editor. Perform a COMPREHENSIVE analysis of this video in a single pass.
 

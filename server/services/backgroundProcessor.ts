@@ -707,9 +707,9 @@ async function runProcessingPipeline(
       duration: validDuration,
       frames: analysis.videoAnalysis?.frames || [],
       semanticAnalysis: analysis.semanticAnalysis,
-      // Store enhancedAnalysis for edit planning and media selection
-      enhancedAnalysis: analysis.enhancedAnalysis || null,
-      qualityInsights: analysis.qualityInsights || null,
+      // Store enhancedAnalysis for edit planning and media selection (use undefined for optional)
+      enhancedAnalysis: analysis.enhancedAnalysis || undefined,
+      qualityInsights: analysis.qualityInsights || undefined,
     };
     
     await storage.updateVideoProject(projectId, {
@@ -876,8 +876,8 @@ async function runProcessingPipeline(
       
       addActivity(projectId, "AI selecting best media for each B-roll window...");
       
-      // Extract enhancedAnalysis for intelligent media selection
-      const enhancedAnalysis = (analysis as any).enhancedAnalysis;
+      // Extract enhancedAnalysis for intelligent media selection (now properly typed in VideoAnalysis)
+      const enhancedAnalysis = sanitizedAnalysis.enhancedAnalysis;
       const motionAnalysis = enhancedAnalysis?.motionAnalysis;
       const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
       

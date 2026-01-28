@@ -558,6 +558,49 @@ export const videoContextSchema = z.object({
 
 export type VideoContext = z.infer<typeof videoContextSchema>;
 
+// Enhanced analysis schema for deep video understanding
+export const enhancedAnalysisSchema = z.object({
+  motionAnalysis: z.object({
+    hasSignificantMotion: z.boolean(),
+    motionIntensity: z.enum(["low", "medium", "high"]),
+    actionSequences: z.array(z.object({
+      start: coercedNumber(),
+      end: coercedNumber(),
+      description: z.string(),
+    })).optional(),
+  }).optional(),
+  transitionAnalysis: z.object({
+    detectedTransitions: z.array(z.object({
+      timestamp: coercedNumber(),
+      type: z.string(),
+      description: z.string(),
+    })).optional(),
+    suggestedTransitionPoints: z.array(coercedNumber()).optional(),
+  }).optional(),
+  pacingAnalysis: z.object({
+    overallPacing: z.enum(["slow", "moderate", "fast", "dynamic"]),
+    pacingVariation: coercedNumber(),
+    suggestedPacingAdjustments: z.array(z.object({
+      timestamp: coercedNumber(),
+      suggestion: z.string(),
+      // Optional extended fields for future expansion
+      start: coercedNumber().optional(),
+      end: coercedNumber().optional(),
+      adjustment: z.string().optional(),
+      reason: z.string().optional(),
+    })).optional(),
+  }).optional(),
+  audioVisualSync: z.object({
+    syncQuality: z.enum(["excellent", "good", "fair", "poor"]),
+    outOfSyncMoments: z.array(z.object({
+      timestamp: coercedNumber(),
+      issue: z.string(),
+    })).optional(),
+  }).optional(),
+}).optional();
+
+export type EnhancedAnalysis = z.infer<typeof enhancedAnalysisSchema>;
+
 export const videoAnalysisSchema = z.object({
   duration: coercedNumber(),
   fps: coercedNumber().optional(),
@@ -595,6 +638,8 @@ export const videoAnalysisSchema = z.object({
   emotionFlow: z.array(emotionFlowPointSchema).optional(),
   speakers: z.array(speakerSegmentSchema).optional(),
   keyMoments: z.array(keyMomentSchema).optional(),
+  // Deep video analysis (motion, transitions, pacing, sync)
+  enhancedAnalysis: enhancedAnalysisSchema,
 });
 
 export type VideoAnalysis = z.infer<typeof videoAnalysisSchema>;

@@ -289,7 +289,7 @@ interface EnhancedVideoContext {
   pacingAnalysis?: {
     overallPacing: "slow" | "moderate" | "fast" | "dynamic";
     pacingVariation: number;
-    suggestedPacingAdjustments?: { start: number; end: number; adjustment: string; reason: string }[];
+    suggestedPacingAdjustments?: { timestamp: number; suggestion: string }[];
   };
 }
 
@@ -321,14 +321,20 @@ function getOptimalBrollDuration(
       maxDuration = 4;
   }
   
-  // Check if this window overlaps with a pacing adjustment zone
+  // Check if this window is near a pacing adjustment point
+  // Supports both new format (timestamp/suggestion) and legacy format (start/end/adjustment)
   const adjustments = pacingAnalysis.suggestedPacingAdjustments || [];
   for (const adj of adjustments) {
-    if (windowStart >= adj.start && windowStart < adj.end) {
-      // Adjust duration based on pacing recommendation
-      if (adj.adjustment.toLowerCase().includes("speed up") || adj.adjustment.toLowerCase().includes("faster")) {
+    // Support both new (timestamp) and legacy (start/end) formats
+    const adjTimestamp = adj.timestamp ?? ((adj as any).start ?? 0);
+    const isNearWindow = adjTimestamp >= windowStart - 2 && adjTimestamp <= windowEnd + 2;
+    
+    if (isNearWindow) {
+      // Adjust duration based on pacing recommendation (support both formats)
+      const suggestionText = (adj.suggestion || (adj as any).adjustment || "").toLowerCase();
+      if (suggestionText.includes("speed up") || suggestionText.includes("faster")) {
         maxDuration = Math.max(2, maxDuration - 1);
-      } else if (adj.adjustment.toLowerCase().includes("slow down") || adj.adjustment.toLowerCase().includes("slower")) {
+      } else if (suggestionText.includes("slow down") || suggestionText.includes("slower") || suggestionText.includes("add pause")) {
         maxDuration = Math.min(6, maxDuration + 1);
       }
       break;

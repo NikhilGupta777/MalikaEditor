@@ -220,7 +220,10 @@ async function transcribeWithAssemblyAI(
         if (enhanced.sentiments && enhanced.sentiments.length > 0) {
           const positive = enhanced.sentiments.filter(s => s.sentiment === "positive").length;
           const negative = enhanced.sentiments.filter(s => s.sentiment === "negative").length;
-          aiLogger.info(`Sentiment analysis: ${positive} positive, ${negative} negative segments`);
+          const neutral = enhanced.sentiments.filter(s => s.sentiment === "neutral").length;
+          aiLogger.info(`Sentiment analysis: ${enhanced.sentiments.length} total (${positive} positive, ${negative} negative, ${neutral} neutral)`);
+        } else {
+          aiLogger.debug(`Sentiment analysis: no sentiment data returned from AssemblyAI`);
         }
         if (enhanced.entities && enhanced.entities.length > 0) {
           aiLogger.info(`Entity detection: ${enhanced.entities.length} entities found`);

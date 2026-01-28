@@ -167,6 +167,32 @@ export async function selectBestMediaForWindows(
     topic?: string;
   }
 ): Promise<MediaSelectionResult> {
+  // OPTIMIZATION: Early exit if no B-roll windows - skip expensive Vision API calls
+  if (brollWindows.length === 0) {
+    selectorLogger.info("Visual analysis SKIPPED - no B-roll windows defined, nothing to select");
+    return {
+      selections: [],
+      totalSelected: 0,
+      aiImagesUsed: 0,
+      stockVideosUsed: 0,
+      stockImagesUsed: 0,
+    };
+  }
+
+  const allCandidates = buildAllCandidates(stockVariants, aiImages);
+  
+  // OPTIMIZATION: Early exit if no candidates - skip expensive Vision API calls
+  if (allCandidates.length === 0) {
+    selectorLogger.info("Visual analysis SKIPPED - no media candidates available");
+    return {
+      selections: [],
+      totalSelected: 0,
+      aiImagesUsed: 0,
+      stockVideosUsed: 0,
+      stockImagesUsed: 0,
+    };
+  }
+
   let geminiAvailable = true;
   try {
     getGeminiClient();
@@ -185,8 +211,6 @@ export async function selectBestMediaForWindows(
   let stockVideosUsed = 0;
   let stockImagesUsed = 0;
   const usedMediaIds = new Set<string>();
-
-  const allCandidates = buildAllCandidates(stockVariants, aiImages);
   
   const aiCount = allCandidates.filter(c => c.source === 'ai').length;
   const pexelsVideoCount = allCandidates.filter(c => c.provider === 'pexels' && c.type === 'video').length;

@@ -13,6 +13,7 @@ const selectorLogger = createLogger("media-selector");
 const visualAnalysisCache = new Map<string, string>();
 const VISUAL_ANALYSIS_CONCURRENCY = 5; // Analyze 5 thumbnails at a time
 const VISUAL_ANALYSIS_TIMEOUT = 8000; // 8 second timeout per thumbnail
+const MAX_VISION_CANDIDATES = 30; // Maximum candidates to analyze with Vision API (cost optimization)
 
 interface BrollWindow {
   start: number;
@@ -120,15 +121,93 @@ Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
   }
 }
 
+// Pre-filter candidates using metadata before expensive Vision API calls
+function preFilterCandidatesByMetadata(
+  candidates: MediaCandidate[],
+  brollWindows: BrollWindow[],
+  maxCandidates: number
+): MediaCandidate[] {
+  if (candidates.length <= maxCandidates) {
+    return candidates; // No filtering needed
+  }
+  
+  // Build a set of all B-roll queries for relevance matching
+  const targetQueries = brollWindows.map(w => w.suggestedQuery.toLowerCase());
+  const targetKeywords = new Set<string>();
+  for (const query of targetQueries) {
+    query.split(/\s+/).filter(w => w.length > 2).forEach(w => targetKeywords.add(w));
+  }
+  
+  // Score each candidate based on metadata
+  const scoredCandidates = candidates.map(candidate => {
+    let score = 0;
+    const candidateQuery = candidate.query.toLowerCase();
+    
+    // 1. Query keyword match (0-30 points)
+    const candidateWords = candidateQuery.split(/\s+/).filter(w => w.length > 2);
+    const matchingWords = candidateWords.filter(w => targetKeywords.has(w));
+    score += Math.min(30, matchingWords.length * 10);
+    
+    // 2. Source priority: AI images > videos > photos (0-20 points)
+    if (candidate.source === "ai") {
+      score += 20; // AI images always get priority
+    } else if (candidate.type === "video") {
+      score += 15; // Videos preferred for B-roll
+    } else {
+      score += 10; // Photos as fallback
+    }
+    
+    // 3. Duration appropriateness for videos (0-15 points)
+    if (candidate.type === "video" && candidate.duration) {
+      // Ideal B-roll duration is 3-8 seconds
+      if (candidate.duration >= 3 && candidate.duration <= 8) {
+        score += 15;
+      } else if (candidate.duration >= 2 && candidate.duration <= 12) {
+        score += 10;
+      } else {
+        score += 5;
+      }
+    }
+    
+    // 4. Provider preference: Freepik (premium) > Pexels (0-10 points)
+    if (candidate.provider === "freepik") {
+      score += 10;
+    } else if (candidate.provider === "pexels") {
+      score += 5;
+    }
+    
+    // 5. Already cached in visual analysis (0-25 points) - saves API calls
+    if (candidate.thumbnailUrl && visualAnalysisCache.has(candidate.thumbnailUrl)) {
+      score += 25;
+    }
+    
+    return { candidate, score };
+  });
+  
+  // Sort by score descending and take top N
+  scoredCandidates.sort((a, b) => b.score - a.score);
+  const filtered = scoredCandidates.slice(0, maxCandidates).map(s => s.candidate);
+  
+  selectorLogger.info(`Pre-filtered ${candidates.length} candidates to ${filtered.length} using metadata scoring (saved ${candidates.length - filtered.length} Vision API calls)`);
+  
+  return filtered;
+}
+
 // Batch analyze thumbnails with concurrency control
 async function analyzeMediaThumbnails(
-  candidates: MediaCandidate[]
+  candidates: MediaCandidate[],
+  brollWindows?: BrollWindow[]
 ): Promise<Map<string, string>> {
   const results = new Map<string, string>();
-  const stockCandidates = candidates.filter(c => c.source === "stock" && c.thumbnailUrl);
+  let stockCandidates = candidates.filter(c => c.source === "stock" && c.thumbnailUrl);
   
   if (stockCandidates.length === 0) {
     return results;
+  }
+  
+  // Apply metadata-based pre-filtering to reduce Vision API calls
+  if (brollWindows && stockCandidates.length > MAX_VISION_CANDIDATES) {
+    stockCandidates = preFilterCandidatesByMetadata(stockCandidates, brollWindows, MAX_VISION_CANDIDATES);
   }
   
   selectorLogger.info(`Analyzing ${stockCandidates.length} stock media thumbnails with Gemini Vision...`);
@@ -221,7 +300,8 @@ export async function selectBestMediaForWindows(
   selectorLogger.info(`Built ${allCandidates.length} media candidates: ${aiCount} AI, Pexels(${pexelsVideoCount} videos, ${pexelsPhotoCount} photos), Freepik(${freepikVideoCount} videos, ${freepikPhotoCount} photos)`);
 
   // Run visual analysis on stock media thumbnails (AI actually SEES the content)
-  const visualDescriptions = await analyzeMediaThumbnails(allCandidates);
+  // Pre-filters to top candidates based on metadata to reduce Vision API costs
+  const visualDescriptions = await analyzeMediaThumbnails(allCandidates, brollWindows);
   
   // Apply visual descriptions to candidates
   for (const candidate of allCandidates) {

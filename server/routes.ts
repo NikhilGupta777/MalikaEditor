@@ -99,6 +99,7 @@ import {
   subscribeToJob, 
   getJobActivities, 
   isJobActive,
+  isRenderActive,
   setOnJobComplete,
   canStartNewJob,
   getActiveJobCount,
@@ -881,6 +882,16 @@ export async function registerRoutes(
       }
       if (!reviewData.userApproved) {
         return res.status(409).json({ error: "Please approve the review before rendering." });
+      }
+      
+      // RACE CONDITION GUARD: If userApproved is true and a background render is active,
+      // the background render was already triggered by approve-review endpoint.
+      // Redirect to SSE status updates instead of starting a duplicate render.
+      if (isRenderActive(id)) {
+        routesLogger.info(`[Render] Background render already active for project ${id} - switching to SSE polling`);
+        // Force this request to use the rendering reconnection logic
+        // by updating the project reference status (used in the check below)
+        (project as any).status = "rendering";
       }
     }
 

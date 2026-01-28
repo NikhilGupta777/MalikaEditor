@@ -38,6 +38,13 @@ export function setOnJobComplete(callback: (projectId: number) => void) {
   onJobCompleteCallback = callback;
 }
 
+// Track active render jobs to prevent duplicate renders
+const activeRenderJobs = new Set<number>();
+
+export function isRenderActive(projectId: number): boolean {
+  return activeRenderJobs.has(projectId);
+}
+
 const processorLogger = {
   info: (...args: unknown[]) => console.log(`${new Date().toLocaleTimeString()} [INFO] [background-processor]`, ...args),
   warn: (...args: unknown[]) => console.warn(`${new Date().toLocaleTimeString()} [WARN] [background-processor]`, ...args),
@@ -1207,6 +1214,12 @@ export function isJobActive(projectId: number): boolean {
 export async function startBackgroundRender(projectId: number): Promise<void> {
   processorLogger.info(`[Background Render] Starting fire-and-forget render for project ${projectId}`);
   
+  // DUPLICATE RENDER PREVENTION: Check if render is already active
+  if (activeRenderJobs.has(projectId)) {
+    processorLogger.warn(`[Background Render] Render already active for project ${projectId}, skipping duplicate`);
+    return;
+  }
+  
   const project = await storage.getVideoProject(projectId);
   if (!project) {
     processorLogger.error(`[Background Render] Project ${projectId} not found`);
@@ -1225,6 +1238,10 @@ export async function startBackgroundRender(projectId: number): Promise<void> {
     return;
   }
   
+  // Mark render as active BEFORE starting (prevents race conditions)
+  activeRenderJobs.add(projectId);
+  processorLogger.info(`[Background Render] Render job registered for project ${projectId}`);
+  
   // Update status to rendering (may already be rendering if recovering)
   if (project.status !== "rendering") {
     await storage.updateVideoProject(projectId, { status: "rendering" as ProcessingStatus });
@@ -1237,6 +1254,10 @@ export async function startBackgroundRender(projectId: number): Promise<void> {
       status: "failed" as ProcessingStatus,
       errorMessage: `Rendering failed: ${err instanceof Error ? err.message : String(err)}`,
     });
+  }).finally(() => {
+    // Always clean up the render lock
+    activeRenderJobs.delete(projectId);
+    processorLogger.info(`[Background Render] Render job completed/cleared for project ${projectId}`);
   });
 }
 

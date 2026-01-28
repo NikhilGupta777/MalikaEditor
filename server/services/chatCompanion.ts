@@ -301,10 +301,14 @@ export function sendMediaSelectionUpdate(projectId: number, selectedCount: numbe
   );
 }
 
-export function sendReviewReadyUpdate(projectId: number): void {
+export function sendReviewReadyUpdate(projectId: number, summary?: { totalCuts: number; totalKeeps: number; totalBroll: number; totalAiImages: number }): void {
+  const summaryText = summary 
+    ? ` I've planned ${summary.totalCuts} cuts, ${summary.totalKeeps} segments to keep, and ${summary.totalBroll + summary.totalAiImages} B-roll insertions.`
+    : "";
   addCompanionMessage(projectId, "milestone",
-    `Everything is ready for your review! Take a look at the transcript and my edit suggestions. You can approve, reject, or modify any of my decisions. I'll explain my reasoning if you click on any edit action.`,
-    "review_ready"
+    `Everything is ready for your review!${summaryText} Take a look at the transcript and my edit suggestions. You can approve, reject, or modify any of my decisions. I'll explain my reasoning if you click on any edit action.`,
+    "review_ready",
+    summary
   );
 }
 

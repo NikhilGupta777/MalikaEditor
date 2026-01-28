@@ -459,7 +459,8 @@ async function runProcessingPipeline(
     await updateStatus("fetching_stock");
     
     // Send media fetching update to chat companion
-    sendMediaFetchingUpdate(projectId);
+    const stockQueryCount = editPlan.stockQueries?.length || broll;
+    sendMediaFetchingUpdate(projectId, stockQueryCount);
     updateProjectContext(projectId, { status: "fetching_stock" });
     
     let stockMedia: StockMediaItem[] = [];
@@ -652,7 +653,7 @@ async function runProcessingPipeline(
     // Send media selection update to chat companion
     const stockCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
     const aiCount = stockMedia.filter(m => m.type === 'ai_generated').length;
-    sendMediaSelectionUpdate(projectId, { stockCount, aiCount });
+    sendMediaSelectionUpdate(projectId, stockCount, aiCount);
 
     const reviewData: ReviewData = {
       transcript: transcript.map((t, i) => ({
@@ -701,15 +702,14 @@ async function runProcessingPipeline(
     notifySubscribers(projectId, "reviewReady", { reviewData });
     notifySubscribers(projectId, "status", { status: "awaiting_review" });
     
-    // Send review ready update to chat companion
+    // Send review ready update to chat companion with summary
     sendReviewReadyUpdate(projectId, {
       totalCuts: reviewData.summary.totalCuts,
       totalKeeps: reviewData.summary.totalKeeps,
       totalBroll: reviewData.summary.totalBroll,
       totalAiImages: reviewData.summary.totalAiImages,
-      estimatedDuration: reviewData.summary.estimatedFinalDuration,
     });
-    updateProjectContext(projectId, { status: "awaiting_review", reviewData: reviewData.summary });
+    updateProjectContext(projectId, { status: "awaiting_review" });
 
     // Clean up temp files except the final output
     for (const file of tempFiles) {
@@ -737,8 +737,8 @@ async function runProcessingPipeline(
     addActivity(projectId, `Processing failed: ${errorMessage}`);
     
     // Send error update to chat companion
-    sendErrorUpdate(projectId, errorMessage);
-    updateProjectContext(projectId, { status: "failed", error: errorMessage });
+    sendErrorUpdate(projectId, "processing", errorMessage);
+    updateProjectContext(projectId, { status: "failed" });
     
     await storage.updateVideoProject(projectId, {
       status: "failed",

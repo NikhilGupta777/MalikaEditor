@@ -1120,9 +1120,7 @@ export async function registerRoutes(
       sendActivity("Cutting segments, adding overlays, and encoding video...");
       
       // Send rendering update to chat companion
-      const brollCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
-      const aiImageCount = stockMedia.filter(m => m.type === 'ai_generated').length;
-      sendRenderingUpdate(id, { brollCount, aiImageCount });
+      sendRenderingUpdate(id);
       updateProjectContext(id, { status: "rendering" });
 
       // Get original editOptions from review data, or use defaults
@@ -1200,11 +1198,7 @@ export async function registerRoutes(
             routesLogger.info(`[SelfReview] Completed: Score ${selfReviewResult.overallScore}/100, Approved: ${selfReviewResult.approved}, Issues: ${selfReviewResult.issues.length}`);
             
             // Send self-review update to chat companion
-            sendSelfReviewUpdate(projectIdForReview, {
-              score: selfReviewResult.overallScore,
-              approved: selfReviewResult.approved,
-              issues: selfReviewResult.issues.length,
-            });
+            sendSelfReviewUpdate(projectIdForReview, selfReviewResult.overallScore, selfReviewResult.issues.length);
             
             // PHASE 3: Iterative Correction Loop with Actual Re-Rendering
             const MAX_ITERATIONS = 2;
@@ -1227,12 +1221,6 @@ export async function registerRoutes(
               routesLogger.info(`[SelfReview] Reason: ${reRenderCheck.reason}`);
               routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
               
-              // Send correction update to chat companion
-              sendCorrectionUpdate(projectIdForReview, {
-                iteration: currentIteration + 1,
-                reason: reRenderCheck.reason,
-              });
-              
               try {
                 // Generate correction plan based on self-review issues
                 const correctionPlan = await generateCorrectionPlan(
@@ -1253,6 +1241,9 @@ export async function registerRoutes(
                   currentStockMedia,
                   lastSelfReview
                 );
+                
+                // Send correction update to chat companion with actual correction count
+                sendCorrectionUpdate(projectIdForReview, currentIteration + 1, appliedCorrections.appliedCount);
                 
                 routesLogger.info(`[SelfReview] Applied ${appliedCorrections.appliedCount} corrections`);
                 
@@ -1412,7 +1403,7 @@ export async function registerRoutes(
       });
       
       // Send completion update to chat companion
-      sendCompletionUpdate(id, { duration: Math.round(outputMetadata.duration) });
+      sendCompletionUpdate(id);
       updateProjectContext(id, { status: "completed" });
 
     } catch (error) {

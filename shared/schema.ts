@@ -224,6 +224,20 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
+// Processing stages for resumable processing
+export const processingStageEnum = z.enum([
+  "upload",           // Initial upload complete
+  "transcription",    // Audio transcription
+  "analysis",         // Video analysis
+  "planning",         // Edit plan generation
+  "media_fetch",      // Stock media fetching
+  "media_selection",  // AI media selection
+  "review_ready",     // Ready for user review
+  "rendering",        // Final rendering
+  "complete",         // Processing complete
+]);
+export type ProcessingStage = z.infer<typeof processingStageEnum>;
+
 export const videoProjects = pgTable("video_projects", {
   id: serial("id").primaryKey(),
   fileName: text("file_name").notNull(),
@@ -231,6 +245,7 @@ export const videoProjects = pgTable("video_projects", {
   outputPath: text("output_path"),
   prompt: text("prompt"),
   status: projectStatusEnum("status").notNull().default("pending"),
+  processingStage: text("processing_stage"), // Track where processing was interrupted for resumption
   duration: integer("duration"),
   analysis: jsonb("analysis"),
   editPlan: jsonb("edit_plan"),

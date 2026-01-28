@@ -7,6 +7,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { createLogger } from "./utils/logger";
 import { cleanupStaleTempFiles } from "./services/videoProcessor";
+import { recoverInterruptedJobs } from "./services/backgroundProcessor";
 import { logTranscriptionConfig } from "./services/aiService";
 import { storage } from "./storage";
 import { AI_CONFIG } from "./config/ai";
@@ -235,6 +236,13 @@ async function runStartupTasks() {
 
   // Log transcription system configuration at startup
   logTranscriptionConfig();
+
+  // Recover any interrupted processing jobs from previous server run
+  try {
+    await recoverInterruptedJobs();
+  } catch (e) {
+    expressLogger.warn("Failed to recover interrupted jobs on startup:", e);
+  }
 
   // Create default admin user from environment variables if not exists
   try {

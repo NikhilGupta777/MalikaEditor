@@ -17,7 +17,7 @@ import {
   sendReviewReadyUpdate,
   sendErrorUpdate,
 } from "./chatCompanion";
-import type { ProcessingStatus, ReviewData, StockMediaItem } from "@shared/schema";
+import type { ProcessingStatus, ReviewData, StockMediaItem, ProcessingStage } from "@shared/schema";
 import path from "path";
 import os from "os";
 import fs from "fs/promises";
@@ -55,7 +55,8 @@ const STALE_JOB_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 function cleanupAllJobsOnExit(): void {
   processorLogger.info(`Process exit: cleaning up ${processingLocks.size} locks and ${activeJobs.size} active jobs`);
   
-  for (const [projectId, job] of activeJobs.entries()) {
+  // Use Array.from() for Map iteration compatibility
+  for (const [projectId, job] of Array.from(activeJobs.entries())) {
     if (job.status === "processing") {
       job.status = "failed";
       processorLogger.warn(`Marking job ${projectId} as failed due to process exit`);
@@ -88,8 +89,8 @@ function startStaleJobCleanup(): void {
     const now = Date.now();
     let cleanedCount = 0;
     
-    // First: Clean up stale locks
-    for (const [projectId, lock] of processingLocks.entries()) {
+    // First: Clean up stale locks (use Array.from for compatibility)
+    for (const [projectId, lock] of Array.from(processingLocks.entries())) {
       if (lock.acquired && now - lock.timestamp > LOCK_TIMEOUT_MS) {
         const job = activeJobs.get(projectId);
         
@@ -116,8 +117,8 @@ function startStaleJobCleanup(): void {
       }
     }
     
-    // Second: Clean up zombie jobs (processing without a lock)
-    for (const [projectId, job] of activeJobs.entries()) {
+    // Second: Clean up zombie jobs (use Array.from for compatibility)
+    for (const [projectId, job] of Array.from(activeJobs.entries())) {
       if (job.status === "processing") {
         const lock = processingLocks.get(projectId);
         
@@ -156,6 +157,150 @@ function startStaleJobCleanup(): void {
 
 // Start the cleanup interval
 startStaleJobCleanup();
+
+// Helper function to update processing stage in database
+async function updateProcessingStage(projectId: number, stage: ProcessingStage): Promise<void> {
+  try {
+    await storage.updateVideoProject(projectId, { processingStage: stage });
+    processorLogger.debug(`Updated processing stage for project ${projectId}: ${stage}`);
+  } catch (err) {
+    processorLogger.error(`Failed to update processing stage for project ${projectId}:`, err);
+  }
+}
+
+// Recover interrupted jobs on server startup
+export async function recoverInterruptedJobs(): Promise<void> {
+  processorLogger.info("Checking for interrupted processing jobs to recover...");
+  
+  try {
+    // Find all projects in processing states (not pending, not completed, not failed)
+    const allProjects = await storage.getAllVideoProjects();
+    const interruptedProjects = allProjects.filter(p => 
+      p.status === "analyzing" || 
+      p.status === "transcribing" || 
+      p.status === "planning" ||
+      (p.processingStage && p.processingStage !== "complete" && p.processingStage !== "review_ready" && p.status !== "failed")
+    );
+    
+    if (interruptedProjects.length === 0) {
+      processorLogger.info("No interrupted jobs found to recover");
+      return;
+    }
+    
+    processorLogger.info(`Found ${interruptedProjects.length} interrupted job(s) to recover`);
+    
+    for (const project of interruptedProjects) {
+      // Check if the video file still exists
+      const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
+      let videoExists = false;
+      
+      try {
+        await fs.access(videoPath);
+        videoExists = true;
+      } catch {
+        videoExists = false;
+      }
+      
+      if (!videoExists) {
+        processorLogger.warn(`Cannot recover project ${project.id}: video file missing at ${videoPath}`);
+        await storage.updateVideoProject(project.id, {
+          status: "failed",
+          errorMessage: "Video file not found after server restart. Please re-upload your video.",
+        });
+        continue;
+      }
+      
+      // Determine resume stage based on what data already exists
+      const stage = determineResumeStage(project);
+      processorLogger.info(`Recovering project ${project.id} from stage: ${stage}`);
+      
+      // Queue the job for resumption (with a small delay to allow server to fully start)
+      setTimeout(() => {
+        resumeProcessing(project.id, project.prompt || "", stage);
+      }, 3000);
+    }
+  } catch (err) {
+    processorLogger.error("Failed to recover interrupted jobs:", err);
+  }
+}
+
+// Determine which stage to resume from based on existing data
+function determineResumeStage(project: any): ProcessingStage {
+  // If we have review data, we're at review_ready
+  if (project.reviewData && project.stockMedia) {
+    return "review_ready";
+  }
+  // If we have stock media but no review data, we need media selection
+  if (project.stockMedia) {
+    return "media_selection";
+  }
+  // If we have edit plan, we need to fetch media
+  if (project.editPlan) {
+    return "media_fetch";
+  }
+  // If we have analysis, we need planning
+  if (project.analysis) {
+    return "planning";
+  }
+  // If we have transcript, we need analysis
+  if (project.transcript) {
+    return "analysis";
+  }
+  // Start from the beginning
+  return "upload";
+}
+
+// Resume processing from a specific stage
+async function resumeProcessing(projectId: number, prompt: string, resumeFromStage: ProcessingStage): Promise<void> {
+  if (!canStartNewJob()) {
+    processorLogger.warn(`Cannot resume project ${projectId}: max concurrent jobs reached, will retry later`);
+    // Retry in 30 seconds
+    setTimeout(() => resumeProcessing(projectId, prompt, resumeFromStage), 30000);
+    return;
+  }
+  
+  if (!acquireProcessingLock(projectId)) {
+    processorLogger.warn(`Cannot resume project ${projectId}: failed to acquire lock`);
+    return;
+  }
+  
+  const job: ProcessingJob = {
+    projectId,
+    status: "processing",
+    activities: [],
+    eventHistory: [],
+    lastEventId: 0,
+    slotReserved: true,
+    startTime: new Date(),
+  };
+  activeJobs.set(projectId, job);
+  
+  processorLogger.info(`Resuming background processing for project ${projectId} from stage: ${resumeFromStage}`);
+  addActivity(projectId, `Resuming processing from ${resumeFromStage}...`);
+  
+  // Get project and determine edit options from existing data
+  const project = await storage.getVideoProject(projectId);
+  if (!project) {
+    processorLogger.error(`Cannot resume project ${projectId}: project not found in storage`);
+    releaseProcessingLock(projectId);
+    activeJobs.delete(projectId);
+    return;
+  }
+  
+  // Infer edit options from existing data or use defaults
+  const editOptions: EditOptionsType = {
+    addCaptions: true,
+    addBroll: true,
+    removeSilence: true,
+    generateAiImages: true,
+    addTransitions: true,
+  };
+  
+  // Run the pipeline with the resume stage
+  runProcessingPipeline(projectId, prompt, editOptions, resumeFromStage).catch((error: Error) => {
+    processorLogger.error(`Resumed processing failed for project ${projectId}:`, error);
+  });
+}
 
 function acquireProcessingLock(projectId: number): boolean {
   const existing = processingLocks.get(projectId);
@@ -364,7 +509,8 @@ export async function startProcessingJob(
 async function runProcessingPipeline(
   projectId: number,
   prompt: string,
-  editOptions: EditOptionsType
+  editOptions: EditOptionsType,
+  resumeFromStage?: ProcessingStage
 ): Promise<void> {
   const job = activeJobs.get(projectId);
   if (!job) return;
@@ -372,6 +518,15 @@ async function runProcessingPipeline(
   const updateStatus = async (status: ProcessingStatus) => {
     await storage.updateVideoProject(projectId, { status });
     notifySubscribers(projectId, "status", { status });
+  };
+
+  // Helper to check if we should skip a stage (already completed during previous run)
+  const shouldSkipStage = (stage: ProcessingStage): boolean => {
+    if (!resumeFromStage) return false;
+    const stageOrder: ProcessingStage[] = ["upload", "transcription", "analysis", "planning", "media_fetch", "media_selection", "review_ready", "rendering", "complete"];
+    const resumeIndex = stageOrder.indexOf(resumeFromStage);
+    const currentIndex = stageOrder.indexOf(stage);
+    return currentIndex < resumeIndex;
   };
 
   const tempFiles: string[] = [];
@@ -489,6 +644,9 @@ async function runProcessingPipeline(
     // Send transcription update to chat companion
     sendTranscriptionUpdate(projectId, transcript.length, transcriptResult.detectedLanguage);
     updateProjectContext(projectId, { transcript, status: "transcribing" });
+    
+    // Save checkpoint: transcription complete
+    await updateProcessingStage(projectId, "transcription");
 
     addActivity(projectId, "Performing deep video analysis (AI watching full video)...");
     const analysis = await analyzeVideoDeep(
@@ -538,6 +696,9 @@ async function runProcessingPipeline(
     // Send analysis update to chat companion
     sendAnalysisUpdate(projectId, sanitizedAnalysis);
     updateProjectContext(projectId, { videoAnalysis: sanitizedAnalysis, status: "planning" });
+    
+    // Save checkpoint: analysis complete
+    await updateProcessingStage(projectId, "analysis");
 
     await updateStatus("planning");
     addActivity(projectId, "Creating intelligent edit plan...");
@@ -562,6 +723,9 @@ async function runProcessingPipeline(
     const broll = (editPlan.actions || []).filter((a: any) => a.type === "add_broll" || a.type === "insert_stock" || a.type === "insert_ai_image").length;
     sendEditPlanningUpdate(projectId, { cuts, keeps, broll });
     updateProjectContext(projectId, { editPlan, status: "fetching_stock" });
+    
+    // Save checkpoint: planning complete
+    await updateProcessingStage(projectId, "planning");
 
     await updateStatus("fetching_stock");
     
@@ -761,6 +925,9 @@ async function runProcessingPipeline(
     const stockCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
     const aiCount = stockMedia.filter(m => m.type === 'ai_generated').length;
     sendMediaSelectionUpdate(projectId, stockCount, aiCount);
+    
+    // Save checkpoint: media selection complete
+    await updateProcessingStage(projectId, "media_selection");
 
     const reviewData: ReviewData = {
       transcript: transcript.map((t, i) => ({
@@ -817,6 +984,9 @@ async function runProcessingPipeline(
       totalAiImages: reviewData.summary?.totalAiImages ?? 0,
     });
     updateProjectContext(projectId, { status: "awaiting_review" });
+    
+    // Save checkpoint: review ready (processing complete, waiting for user)
+    await updateProcessingStage(projectId, "review_ready");
 
     // Clean up temp files except the final output
     for (const file of tempFiles) {

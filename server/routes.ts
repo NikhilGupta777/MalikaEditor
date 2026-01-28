@@ -899,8 +899,9 @@ export async function registerRoutes(
 
     req.on("close", () => {
       connectionClosed = true;
-      abortController.abort();
-      routesLogger.info(`Client disconnected during render (project ${id}), SSE stream closed but rendering continues in background`);
+      // DO NOT abort rendering on client disconnect - rendering must continue in background
+      // abortController is only used for cleanup, not for stopping the render
+      routesLogger.info(`Client disconnected during render (project ${id}), SSE stream closed - rendering continues in background`);
     });
 
     const sendEvent = (type: string, data: Record<string, unknown>) => {
@@ -1430,24 +1431,13 @@ export async function registerRoutes(
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Rendering failed";
-      const isAborted = abortController.signal.aborted || 
-                        (error instanceof Error && error.message.includes("ABORTED"));
       
-      if (isAborted) {
-        // Client disconnected - only mark as cancelled if not already completed
-        routesLogger.info(`Render aborted for project ${id} due to client disconnect. Cleaning up resources...`);
-        
-        // Check current project status - don't overwrite if already succeeded
-        const currentProject = await storage.getVideoProject(id);
-        if (currentProject && currentProject.status !== "completed") {
-          await storage.updateVideoProject(id, {
-            status: "cancelled" as ProcessingStatus,
-            errorMessage: "Rendering cancelled: client disconnected",
-          });
-        } else {
-          routesLogger.info(`Project ${id} already completed, not marking as cancelled`);
-        }
-        // Don't send error event since client is gone
+      // Client disconnect should NOT cancel rendering - it continues in background
+      // Only treat as actual error if it's not a disconnect-related issue
+      if (connectionClosed) {
+        // Client disconnected - rendering continues in background, don't mark as failed
+        routesLogger.info(`Client disconnected during render for project ${id}. Rendering continues in background.`);
+        // Don't update status - let the background render complete normally
       } else {
         // Actual rendering error
         routesLogger.error("Render error:", error);

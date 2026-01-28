@@ -10,10 +10,26 @@ import axios from "axios";
 const selectorLogger = createLogger("media-selector");
 
 // Visual analysis cache to avoid re-analyzing the same thumbnails
+// Uses LRU-style eviction to prevent memory leaks
+const MAX_CACHE_SIZE = 500; // Maximum cached thumbnail descriptions
 const visualAnalysisCache = new Map<string, string>();
 const VISUAL_ANALYSIS_CONCURRENCY = 5; // Analyze 5 thumbnails at a time
 const VISUAL_ANALYSIS_TIMEOUT = 8000; // 8 second timeout per thumbnail
 const MAX_VISION_CANDIDATES = 30; // Maximum candidates to analyze with Vision API (cost optimization)
+
+// LRU cache eviction - removes oldest entries when cache exceeds max size
+function addToCacheWithEviction(key: string, value: string): void {
+  // If cache is full, remove oldest entries (first 20% of entries)
+  if (visualAnalysisCache.size >= MAX_CACHE_SIZE) {
+    const keysToRemove = Math.ceil(MAX_CACHE_SIZE * 0.2);
+    const keysArray = Array.from(visualAnalysisCache.keys());
+    for (let i = 0; i < keysToRemove && i < keysArray.length; i++) {
+      visualAnalysisCache.delete(keysArray[i]);
+    }
+    selectorLogger.debug(`Cache eviction: removed ${keysToRemove} old entries`);
+  }
+  visualAnalysisCache.set(key, value);
+}
 
 // Keywords that indicate motion/action content where VIDEO is preferred over static images
 const MOTION_KEYWORDS = [
@@ -128,8 +144,8 @@ Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
     
     const description = result.text?.trim() || "Visual content analyzed";
     
-    // Cache the result
-    visualAnalysisCache.set(thumbnailUrl, description);
+    // Cache the result with LRU eviction
+    addToCacheWithEviction(thumbnailUrl, description);
     
     return description;
   } catch (error) {

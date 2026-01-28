@@ -672,6 +672,8 @@ export async function registerRoutes(
             ["awaiting_review", "completed", "failed"].includes(event.data.status as string)) {
           setTimeout(() => {
             if (!connectionClosed) {
+              connectionClosed = true; // Mark as closed BEFORE ending
+              unsubscribe(); // Unsubscribe to prevent further callbacks
               clearInterval(heartbeatInterval);
               res.end();
             }

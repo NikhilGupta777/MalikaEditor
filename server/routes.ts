@@ -509,7 +509,6 @@ export async function registerRoutes(
       removeSilence,
       generateAiImages,
       addTransitions,
-      autonomousMode: true, // Run full pipeline from upload to render without waiting for user review
     };
 
     const project = await storage.getVideoProject(id);

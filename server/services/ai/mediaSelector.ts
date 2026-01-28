@@ -20,6 +20,7 @@ export interface MediaCandidate {
   id: string;
   type: "image" | "video" | "ai_generated";
   source: "stock" | "ai";
+  provider?: "pexels" | "freepik" | "ai"; // Stock media provider
   query: string;
   url: string;
   thumbnailUrl?: string;
@@ -75,7 +76,13 @@ export async function selectBestMediaForWindows(
 
   const allCandidates = buildAllCandidates(stockVariants, aiImages);
   
-  selectorLogger.info(`Built ${allCandidates.length} total media candidates (${allCandidates.filter(c => c.source === 'ai').length} AI, ${allCandidates.filter(c => c.type === 'video').length} videos, ${allCandidates.filter(c => c.source === 'stock' && c.type === 'image').length} photos)`);
+  const aiCount = allCandidates.filter(c => c.source === 'ai').length;
+  const pexelsVideoCount = allCandidates.filter(c => c.provider === 'pexels' && c.type === 'video').length;
+  const pexelsPhotoCount = allCandidates.filter(c => c.provider === 'pexels' && c.type === 'image').length;
+  const freepikVideoCount = allCandidates.filter(c => c.provider === 'freepik' && c.type === 'video').length;
+  const freepikPhotoCount = allCandidates.filter(c => c.provider === 'freepik' && c.type === 'image').length;
+  
+  selectorLogger.info(`Built ${allCandidates.length} media candidates: ${aiCount} AI, Pexels(${pexelsVideoCount} videos, ${pexelsPhotoCount} photos), Freepik(${freepikVideoCount} videos, ${freepikPhotoCount} photos)`);
 
   try {
     const batchSelection = await selectMediaForAllWindowsWithAI(
@@ -165,15 +172,19 @@ function buildAllCandidates(
       if (seenUrls.has(video.url)) continue;
       seenUrls.add(video.url);
       
+      const provider = video.source || "pexels";
+      const providerLabel = provider === "freepik" ? "Freepik" : "Pexels";
+      
       candidates.push({
-        id: `stock_video_${variant.query.slice(0, 10)}_${i}_${video.url.slice(-15)}`,
+        id: `stock_video_${provider}_${variant.query.slice(0, 10)}_${i}_${video.url.slice(-15)}`,
         type: "video",
         source: "stock",
+        provider: provider as "pexels" | "freepik",
         query: variant.query,
         url: video.url,
         thumbnailUrl: video.thumbnailUrl,
         duration: video.duration,
-        description: `Stock video about "${variant.query}" (${video.duration}s duration)`,
+        description: `${providerLabel} video about "${variant.query}" (${video.duration}s duration)`,
       });
     }
     
@@ -182,14 +193,18 @@ function buildAllCandidates(
       if (seenUrls.has(photo.url)) continue;
       seenUrls.add(photo.url);
       
+      const provider = photo.source || "pexels";
+      const providerLabel = provider === "freepik" ? "Freepik" : "Pexels";
+      
       candidates.push({
-        id: `stock_photo_${variant.query.slice(0, 10)}_${i}_${photo.url.slice(-15)}`,
+        id: `stock_photo_${provider}_${variant.query.slice(0, 10)}_${i}_${photo.url.slice(-15)}`,
         type: "image",
         source: "stock",
+        provider: provider as "pexels" | "freepik",
         query: variant.query,
         url: photo.url,
         thumbnailUrl: photo.thumbnailUrl,
-        description: `Stock photo about "${variant.query}"`,
+        description: `${providerLabel} photo about "${variant.query}"`,
       });
     }
   }
@@ -208,8 +223,14 @@ async function selectMediaForAllWindowsWithAI(
   const availableCandidates = allCandidates.filter(c => !alreadyUsed.has(c.id));
   
   const candidateDescriptions = availableCandidates.map((c, idx) => {
-    const typeLabel = c.source === "ai" ? "AI-IMAGE" : 
-                      c.type === "video" ? "VIDEO" : "PHOTO";
+    let typeLabel: string;
+    if (c.source === "ai") {
+      typeLabel = "AI-IMAGE";
+    } else if (c.type === "video") {
+      typeLabel = c.provider === "freepik" ? "FREEPIK-VIDEO" : "PEXELS-VIDEO";
+    } else {
+      typeLabel = c.provider === "freepik" ? "FREEPIK-PHOTO" : "PEXELS-PHOTO";
+    }
     const durationInfo = c.duration ? ` [${c.duration}s]` : "";
     return `  ${idx + 1}. [${typeLabel}] ${c.description}${durationInfo}`;
   }).join("\n");
@@ -220,6 +241,8 @@ async function selectMediaForAllWindowsWithAI(
   }).join("\n");
 
   const aiImageCount = availableCandidates.filter(c => c.source === 'ai').length;
+  const pexelsCount = availableCandidates.filter(c => c.provider === 'pexels').length;
+  const freepikCount = availableCandidates.filter(c => c.provider === 'freepik').length;
   const minAiToUse = aiImageCount > 0 ? Math.max(1, Math.ceil(aiImageCount * 0.5)) : 0;
   
   const prompt = `You are a professional video editor selecting B-roll media for a video.
@@ -233,30 +256,35 @@ VIDEO CONTEXT:
 B-ROLL WINDOWS (windowIndex: timing - content needed):
 ${windowDescriptions}
 
-AVAILABLE MEDIA (use the number to select):
+AVAILABLE MEDIA FROM MULTIPLE SOURCES (use the number to select):
 ${candidateDescriptions}
 
-SELECTION TASK:
-For each window, pick the BEST media based on:
-1. CONTENT MATCH - does the media represent what's being discussed?
-2. VISUAL QUALITY - AI images are custom-made for this exact video and often have the best content match
-3. VISUAL VARIETY - use DIFFERENT media for each window, mix AI images with stock footage
-4. VIEWER EXPERIENCE - what looks best and enhances understanding?
+MEDIA SOURCES AVAILABLE:
+- AI-IMAGE (${aiImageCount} available): Custom-generated specifically for this video's exact content
+- PEXELS (${pexelsCount} available): Large stock library with diverse professional footage  
+- FREEPIK (${freepikCount} available): Premium stock library with high-quality creative assets
 
-MEDIA TYPES EXPLAINED (in order of preference for content match):
-- AI-IMAGE: **PREFERRED** - Custom-generated specifically for this video's exact content. Use these for concepts that are hard to find in stock. ${aiImageCount > 0 ? `YOU MUST USE AT LEAST ${minAiToUse} AI-IMAGE(s) from the available ${aiImageCount}.` : ''}
-- VIDEO: Stock footage with motion - good for generic scenes and action shots
-- PHOTO: Stock images - acceptable fallback when AI images or videos don't fit
+SELECTION CRITERIA (evaluate ALL sources fairly):
+1. CONTENT RELEVANCE - How well does the media match what's being discussed? Consider the specific context.
+2. VISUAL QUALITY - Is the media visually appealing and professionally produced?
+3. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
+4. NARRATIVE FLOW - Does this media enhance the story and viewer comprehension?
+5. SOURCE DIVERSITY - Mix assets from different sources for visual variety
 
-IMPORTANT: AI images were generated specifically for this video. They are NOT generic stock - they match the exact content being discussed. Prioritize using them.
+SELECTION GUIDELINES:
+- AI-IMAGE: ${aiImageCount > 0 ? `**PRIORITIZE** - Custom-made for this video. YOU MUST USE AT LEAST ${minAiToUse} AI-IMAGE(s).` : 'None available'}
+- PEXELS-VIDEO/PHOTO: Professional stock footage with broad coverage
+- FREEPIK-VIDEO/PHOTO: Premium creative assets, often with unique artistic styles
+
+IMPORTANT: Genuinely evaluate ALL fetched assets from both Pexels and Freepik. Choose the BEST option for each window based on relevance to the content, not just source preference. AI images take priority for specific concepts, but stock footage may be better for generic scenes.
 
 For windows >6 seconds, you may select 2-3 numbers that will be staggered.
 
 RESPOND WITH JSON ONLY:
 {
   "windowSelections": [
-    {"windowIndex": 0, "selectedNumbers": [1], "reasoning": "explanation"},
-    {"windowIndex": 1, "selectedNumbers": [5], "reasoning": "explanation"}
+    {"windowIndex": 0, "selectedNumbers": [1], "reasoning": "explanation of why this specific asset was chosen over alternatives"},
+    {"windowIndex": 1, "selectedNumbers": [5], "reasoning": "explanation of why this specific asset was chosen over alternatives"}
   ]
 }`;
 

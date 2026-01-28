@@ -17,6 +17,7 @@ const StockMediaItemSchema = z.object({
   thumbnailUrl: z.string().optional(),
   photographer: z.string().optional(),
   duration: z.number().optional(),
+  source: z.enum(["pexels", "freepik", "ai"]).optional(),
 });
 
 function validateStockMediaItem(item: unknown): StockMediaItem | null {
@@ -92,6 +93,7 @@ export async function searchPhotos(
           url: photo.src.large,
           thumbnailUrl: photo.src.small,
           photographer: photo.photographer,
+          source: "pexels" as const,
         };
         return validateStockMediaItem(item);
       })
@@ -147,6 +149,7 @@ export async function searchVideos(
           thumbnailUrl: video.video_pictures[0]?.picture || "",
           duration: video.duration,
           photographer: video.user.name,
+          source: "pexels" as const,
         };
         return item.url ? validateStockMediaItem(item) : null;
       })

@@ -638,6 +638,11 @@ export const stockMediaItemSchema = z.object({
   thumbnailUrl: z.string().optional(),
   duration: coercedNumber().optional(),
   photographer: z.string().optional(),
+  // Source provider (pexels, freepik, ai)
+  source: z.enum(["pexels", "freepik", "ai"]).optional(),
+  // Freepik-specific metadata
+  freepikId: z.number().optional(),
+  freepikPremium: z.boolean().optional(),
   // AI generation metadata
   aiPrompt: z.string().optional(),
   generatedAt: coercedNumber().optional(),

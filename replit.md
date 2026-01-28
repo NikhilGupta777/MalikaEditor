@@ -60,7 +60,7 @@ The AI services are modularized for transcription, video analysis, semantic anal
 2.  **Analysis**: Frames extracted, analyzed with Gemini Vision.
 3.  **Transcription**: Audio extracted and transcribed (AssemblyAI Universal with native word-level timestamps preferred; OpenAI gpt-4o-mini-transcribe with synthesized timing as secondary; Gemini fallback for reliability).
 4.  **Planning**: AI generates edit plan using multi-pass system.
-5.  **Stock Media**: Fetches media from Pexels.
+5.  **Stock Media**: Fetches media from both Pexels and Freepik libraries in parallel.
 6.  **AI Images**: Generates custom AI images.
 7.  **User Review**: Processing pauses, user can review and edit transcript, approve/reject individual edit actions, select stock media/AI images. Includes a 2-minute auto-accept timer.
 8.  **Rendering**: FFmpeg applies approved edits and outputs the final video.
@@ -135,7 +135,9 @@ The AI services are modularized for transcription, video analysis, semantic anal
 -   **OpenAI API**: For audio transcription and text-to-speech.
 
 ### Media Services
--   **Pexels API**: For fetching stock photos and videos.
+-   **Pexels API**: Primary stock library for photos and videos with broad coverage.
+-   **Freepik API**: Premium stock library for high-quality creative assets (photos and videos).
+-   **Multi-Source AI Selection**: The AI media selector evaluates assets from both Pexels and Freepik, along with AI-generated images, to choose the best B-roll for each window based on relevance, visual quality, timing, and narrative fit.
 -   **FFmpeg**: System dependency for all video and audio processing.
 
 ### Database

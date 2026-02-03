@@ -1471,6 +1471,96 @@ const ENCODING_PRESETS = {
 
 type EncodingQuality = keyof typeof ENCODING_PRESETS;
 
+// Low-memory sequential overlay processing (fallback for OOM)
+async function applyOverlaysSequentially(
+  baseVideoPath: string,
+  overlays: BrollOverlay[],
+  outputVideoPath: string,
+  width: number,
+  height: number,
+  tempFiles: string[]
+): Promise<void> {
+  videoLogger.info(`Starting sequential overlay application for ${overlays.length} items (low memory mode)`);
+
+  let currentInputPath = baseVideoPath;
+  let isFirstIteration = true;
+
+  for (let i = 0; i < overlays.length; i++) {
+    const overlay = overlays[i];
+    const isLast = i === overlays.length - 1;
+    const stepOutputPath = isLast ? outputVideoPath : path.join(OUTPUT_DIR, `seq_step_${uuidv4()}_${i}.mp4`);
+
+    // Normalize overlay timing
+    const duration = Math.min(overlay.duration, 5); // Cap duration just in case
+
+    // Prepare filter for this single overlay
+    let overlayFilter = "";
+    if (overlay.type === "video") {
+      overlayFilter = `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black[ov];[0:v][ov]overlay=enable='between(t,${overlay.startTime},${overlay.startTime + duration})':eof_action=pass[v]`;
+    } else {
+      // Image overlay with simple zoompan
+      const fps = 30;
+      const totalFrames = Math.ceil(duration * fps);
+      // Simplify simple zoom for sequential mode to reduce filter graph complexity
+      const zoompan = `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      overlayFilter = `[1:v]${zoompan}[ov];[0:v][ov]overlay=enable='between(t,${overlay.startTime},${overlay.startTime + duration})':eof_action=pass[v]`;
+    }
+
+    try {
+      videoLogger.debug(`Applying overlay ${i + 1}/${overlays.length} (${overlay.type}) at ${overlay.startTime.toFixed(2)}s`);
+
+      const cmd = ffmpeg()
+        .input(currentInputPath)
+        .input(overlay.localPath);
+
+      if (overlay.type !== "video") {
+        cmd.inputOptions(["-loop", "1"]);
+      }
+
+      cmd.complexFilter([overlayFilter])
+        .outputOptions([
+          "-map", "[v]",
+          "-map", "0:a?", // Keep audio from base video if exists
+          "-c:v", "libx264",
+          "-preset", "superfast", // Use superfast for intermediate steps
+          "-crf", "26", // Slightly lower quality for intermediates
+          "-c:a", "copy",
+          "-threads", "1" // STRICTLY LIMIT THREADS TO REDUCE MEMORY
+        ])
+        .output(stepOutputPath);
+
+      await runFfmpegWithTimeout(cmd, FFMPEG_LONG_TIMEOUT_MS, [stepOutputPath]);
+
+      // Track temp file for cleanup
+      if (!isLast) {
+        tempFiles.push(stepOutputPath);
+      }
+
+      // Cleanup previous step file if it wasn't the base video
+      if (!isFirstIteration && currentInputPath !== baseVideoPath) {
+        // We can safely try to delete it immediately to save disk space
+        await fs.unlink(currentInputPath).catch(() => { });
+      }
+
+      currentInputPath = stepOutputPath;
+      isFirstIteration = false;
+
+    } catch (error) {
+      videoLogger.error(`Failed to apply overlay ${i + 1} in sequential mode:`, error);
+      // Ensure we don't break the whole chain, just skip this overlay if it fails
+      videoLogger.warn(`Skipping overlay ${i + 1} and continuing with previous state.`);
+    }
+  }
+
+  // If loop finished but somehow we didn't write to outputVideoPath (e.g. all failed), copy last good state
+  if (currentInputPath !== outputVideoPath && currentInputPath !== baseVideoPath) {
+    await fs.copyFile(currentInputPath, outputVideoPath);
+  } else if (currentInputPath === baseVideoPath) {
+    // If absolutely nothing happened
+    await fs.copyFile(baseVideoPath, outputVideoPath);
+  }
+}
+
 // OPTIMIZED: Apply all overlays in a single FFmpeg pass using complex filter chain
 // This is 10-15x faster than applying overlays one at a time
 async function applyAllBrollOverlays(
@@ -2528,8 +2618,23 @@ async function applyEditsInternal(
       tempFiles.push(overlayedPath);
       videoLogger.info(`Applied ${brollOverlays.length} B-roll overlays successfully (quality: ${quality})`);
     } catch (err) {
-      videoLogger.error("Failed to apply overlays, using base video:", err);
-      overlayedPath = baseVideoPath;
+      videoLogger.warn("Failed to apply overlays in single pass (likely OOM), switching to sequential processing:", err);
+
+      try {
+        await applyOverlaysSequentially(
+          baseVideoPath,
+          brollOverlays,
+          overlayedPath,
+          metadata.width,
+          metadata.height,
+          tempFiles
+        );
+        tempFiles.push(overlayedPath);
+        videoLogger.info(`Applied ${brollOverlays.length} B-roll overlays successfully via sequential fallback`);
+      } catch (seqErr) {
+        videoLogger.error("Failed to apply overlays even with sequential fallback, using base video:", seqErr);
+        overlayedPath = baseVideoPath;
+      }
     }
   } else {
     overlayedPath = baseVideoPath;
@@ -2537,6 +2642,10 @@ async function applyEditsInternal(
 
   // STEP 4: Build and apply captions with word-level timing for karaoke effect
   const adjustedCaptions: CaptionWithWords[] = [];
+
+  videoLogger.info(`[Captions Debug] Options.addCaptions=${options.addCaptions}`);
+  videoLogger.info(`[Captions Debug] Transcript segments: ${transcript.length}`);
+  videoLogger.info(`[Captions Debug] Output mappings: ${outputTimeMapping.length}`);
 
   if (options.addCaptions) {
     // Include word-level timing from transcript segments
@@ -2623,7 +2732,9 @@ async function applyEditsInternal(
       }
     }
 
-    videoLogger.info(`Mapped ${adjustedCaptions.length} captions to output timeline`);
+    videoLogger.info(`Mapped ${adjustedCaptions.length} captions to output timeline (from ${transcript.length} + ${captionActions.length} sources)`);
+  } else {
+    videoLogger.info(`Captions disabled or skipped. addCaptions=${options.addCaptions}`);
   }
 
   // Apply captions if any - use ASS format for karaoke-style highlighting

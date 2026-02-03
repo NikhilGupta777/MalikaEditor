@@ -163,30 +163,7 @@ function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<V
   return normalized;
 }
 
-export class MemStorage {
-  private users: Map<string, User>;
 
-  constructor() {
-    this.users = new Map();
-  }
-
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
-  }
-
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username
-    );
-  }
-
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
-  }
-}
 
 export class DatabaseStorage {
   async createVideoProject(project: InsertVideoProject): Promise<VideoProject> {
@@ -685,7 +662,7 @@ export class DatabaseStorage {
   }
 }
 
-const memStorage = new MemStorage(); // Kept for backwards compatibility, but unused
+
 const dbStorage = new DatabaseStorage();
 
 export const storage: IStorage = {

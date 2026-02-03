@@ -1,0 +1,15 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "./Dockerfile"
+
+[deploy]
+startCommand = "npx tsx server/index.ts"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# Railway environment
+[variables]
+NODE_ENV = "production"
+PORT = "5000"

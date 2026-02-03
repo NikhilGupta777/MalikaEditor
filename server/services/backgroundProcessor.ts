@@ -1,6 +1,6 @@
 import { storage } from "../storage";
 import { getVideoMetadata, extractFrames, extractAudio, detectSilence, applyEdits } from "./videoProcessor";
-import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudioEnhanced } from "./ai";
+import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudioEnhanced, detectFillerWords } from "./ai";
 import { performPostRenderSelfReview } from "./ai/postRenderReview";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
 import { fetchStockMediaWithVariants, type StockMediaVariants } from "./pexelsService";
@@ -20,8 +20,8 @@ import {
 } from "./chatCompanion";
 import type { ProcessingStatus, ReviewData, StockMediaItem, ProcessingStage } from "@shared/schema";
 import path from "path";
-import os from "os";
 import fs from "fs/promises";
+import { UPLOADS_DIR as UPLOADS_DIR_CONFIG, OUTPUT_DIR as OUTPUT_DIR_CONFIG } from "../config/paths";
 
 interface EditOptionsType {
   addCaptions: boolean;
@@ -52,9 +52,9 @@ const processorLogger = {
   debug: (...args: unknown[]) => console.log(`${new Date().toLocaleTimeString()} [DEBUG] [background-processor]`, ...args),
 };
 
-const TEMP_DIR = os.tmpdir();
-const UPLOADS_DIR = path.join(TEMP_DIR, "malika_uploads");
-const OUTPUT_DIR = path.join(TEMP_DIR, "malika_output");
+// Use centralized paths (respects UPLOADS_PATH env)
+const UPLOADS_DIR = UPLOADS_DIR_CONFIG;
+const OUTPUT_DIR = OUTPUT_DIR_CONFIG;
 
 const processingLocks = new Map<number, { acquired: boolean; timestamp: number }>();
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000;
@@ -172,20 +172,23 @@ export async function recoverInterruptedJobs(): Promise<void> {
   
   try {
     // Find all projects in any processing state (not completed, not awaiting_review, not failed)
-    // This includes: processing, uploading, transcribing, analyzing, planning, rendering, etc.
+    // Use actual projectStatusEnum values (no "processing" - we use analyzing/transcribing/planning/etc.)
     const allProjects = await storage.getAllVideoProjects();
-    const inProgressStatuses = ["processing", "uploading", "transcribing", "analyzing", "planning", "rendering"];
-    const interruptedProjects = allProjects.filter(p => 
-      // Check if status indicates in-progress work
-      inProgressStatuses.includes(p.status) ||
-      // Or if we have a processing stage that isn't complete/review_ready
-      (p.processingStage && 
-       p.processingStage !== "complete" && 
-       p.processingStage !== "review_ready" && 
-       p.status !== "failed" &&
-       p.status !== "awaiting_review" &&
-       p.status !== "completed")
-    );
+    const inProgressStatuses = [
+      "uploading", "analyzing", "transcribing", "planning",
+      "fetching_stock", "generating_ai_images", "editing", "rendering",
+    ];
+    const interruptedProjects = allProjects.filter(p => {
+      if (["awaiting_review", "completed", "failed", "cancelled"].includes(p.status)) return false;
+      if (p.processingStage === "review_ready" || p.processingStage === "complete") return false;
+      return (
+        inProgressStatuses.includes(p.status) ||
+        (p.processingStage &&
+          p.processingStage !== "complete" &&
+          p.processingStage !== "review_ready" &&
+          p.status !== "failed")
+      );
+    });
     
     if (interruptedProjects.length === 0) {
       processorLogger.info("No interrupted jobs found to recover");
@@ -231,8 +234,12 @@ export async function recoverInterruptedJobs(): Promise<void> {
       
       // Determine resume stage based on what data already exists
       const stage = determineResumeStage(project);
+      if (stage === "review_ready" || stage === "complete") {
+        processorLogger.info(`Project ${project.id} at ${stage} - skipping resume (user action required)`);
+        continue;
+      }
       processorLogger.info(`Recovering project ${project.id} from stage: ${stage}`);
-      
+
       // Queue the job for resumption (with a small delay to allow server to fully start)
       setTimeout(() => {
         resumeProcessing(project.id, project.prompt || "", stage);
@@ -249,10 +256,12 @@ function determineResumeStage(project: any): ProcessingStage {
   // This is the most reliable source as it was saved at the exact point processing stopped
   if (project.processingStage) {
     const stage = project.processingStage as ProcessingStage;
-    // If we completed a stage, we should resume from the NEXT stage
-    const stageOrder: ProcessingStage[] = ["upload", "transcription", "analysis", "planning", "media_fetch", "media_selection", "review_ready", "complete"];
+    const stageOrder: ProcessingStage[] = ["upload", "transcription", "analysis", "planning", "media_fetch", "media_selection", "review_ready", "rendering", "complete"];
+    if (stage === "review_ready" || stage === "rendering" || stage === "complete") {
+      processorLogger.debug(`Project at ${stage} - not resuming pipeline`);
+      return stage;
+    }
     const currentIdx = stageOrder.indexOf(stage);
-    // Resume from the next stage after the completed checkpoint
     if (currentIdx >= 0 && currentIdx < stageOrder.length - 1) {
       const nextStage = stageOrder[currentIdx + 1];
       processorLogger.debug(`Using persisted stage ${stage}, resuming from next stage: ${nextStage}`);
@@ -277,7 +286,8 @@ function determineResumeStage(project: any): ProcessingStage {
   if (project.analysis) {
     return "planning";
   }
-  if (project.transcript) {
+  // Check both transcript and transcriptEnhanced - if either exists, we've completed transcription
+  if (project.transcript || project.transcriptEnhanced) {
     return "analysis";
   }
   return "upload";
@@ -581,7 +591,7 @@ async function runProcessingPipeline(
     await storage.updateVideoProject(projectId, { prompt });
 
     // Initialize chat companion for this project
-    initializeProjectChat(projectId, project.fileName || "Untitled Video");
+    await initializeProjectChat(projectId, project.fileName || "Untitled Video");
     updateProjectContext(projectId, { prompt, status: "analyzing", title: project.fileName });
 
     await updateStatus("analyzing");
@@ -596,7 +606,7 @@ async function runProcessingPipeline(
     addActivity(projectId, `Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width || 0}x${metadata.height || 0}`);
     
     // Send upload update to chat companion
-    sendUploadUpdate(projectId, project.fileName || "video", Math.round(metadata.duration));
+    await sendUploadUpdate(projectId, project.fileName || "video", Math.round(metadata.duration));
     updateProjectContext(projectId, { duration: Math.round(metadata.duration) });
 
     // PARALLEL PHASE 1: Extract frames, audio, and detect silence simultaneously
@@ -675,7 +685,7 @@ async function runProcessingPipeline(
     });
     
     // Send transcription update to chat companion
-    sendTranscriptionUpdate(projectId, transcript.length, transcriptResult.detectedLanguage);
+    await sendTranscriptionUpdate(projectId, transcript.length, transcriptResult.detectedLanguage);
     updateProjectContext(projectId, { transcript, status: "transcribing" });
     
     // Save checkpoint: transcription complete
@@ -716,12 +726,13 @@ async function runProcessingPipeline(
       analysis: sanitizedAnalysis,
     });
 
+    const fillerSegmentsForClient = analysis.semanticAnalysis?.fillerSegments ?? detectFillerWords(transcript);
     notifySubscribers(projectId, "enhancedAnalysis", {
       hookMoments: analysis.semanticAnalysis?.hookMoments,
       topicFlow: analysis.semanticAnalysis?.topicFlow,
       structureAnalysis: analysis.semanticAnalysis?.structureAnalysis,
       keyMoments: analysis.semanticAnalysis?.keyMoments,
-      fillerSegments: [],
+      fillerSegments: fillerSegmentsForClient,
       qualityInsights: {
         hookStrength,
         pacingScore: 75,
@@ -731,7 +742,7 @@ async function runProcessingPipeline(
     });
     
     // Send analysis update to chat companion
-    sendAnalysisUpdate(projectId, sanitizedAnalysis);
+    await sendAnalysisUpdate(projectId, sanitizedAnalysis);
     updateProjectContext(projectId, { videoAnalysis: sanitizedAnalysis, status: "planning" });
     
     // Save checkpoint: analysis complete
@@ -739,8 +750,9 @@ async function runProcessingPipeline(
 
     await updateStatus("planning");
     addActivity(projectId, "Creating intelligent edit plan...");
-    const fillerSegments: { start: number; end: number; word: string }[] = [];
-    
+    const fillerSegments: { start: number; end: number; word: string }[] =
+      sanitizedAnalysis.semanticAnalysis?.fillerSegments ?? detectFillerWords(transcript);
+
     // Create enhanced transcript with rich context for intelligent editing decisions
     const enhancedTranscript = {
       speakers: transcriptResult.speakers || [],
@@ -767,8 +779,8 @@ async function runProcessingPipeline(
     // Send edit planning update to chat companion
     const cuts = (editPlan.actions || []).filter((a: any) => a.type === "cut").length;
     const keeps = (editPlan.actions || []).filter((a: any) => a.type === "keep").length;
-    const broll = (editPlan.actions || []).filter((a: any) => a.type === "add_broll" || a.type === "insert_stock" || a.type === "insert_ai_image").length;
-    sendEditPlanningUpdate(projectId, { cuts, keeps, broll });
+    const broll = (editPlan.actions || []).filter((a: any) => a.type === "insert_stock" || a.type === "insert_ai_image").length;
+    await sendEditPlanningUpdate(projectId, { cuts, keeps, broll });
     updateProjectContext(projectId, { editPlan, status: "fetching_stock" });
     
     // Save checkpoint: planning complete
@@ -778,7 +790,7 @@ async function runProcessingPipeline(
     
     // Send media fetching update to chat companion
     const stockQueryCount = editPlan.stockQueries?.length || broll;
-    sendMediaFetchingUpdate(projectId, stockQueryCount);
+    await sendMediaFetchingUpdate(projectId, stockQueryCount);
     updateProjectContext(projectId, { status: "fetching_stock" });
     
     let stockMedia: StockMediaItem[] = [];
@@ -920,15 +932,36 @@ async function runProcessingPipeline(
       processorLogger.info(`Media conversion result: ${stockItems.length} stock items, ${selectedAiImages.length} AI images`);
       
       // Guardrail: Check if AI images were generated but not selected
+      // If no AI images were selected despite generation, force-include the best ones
+      let finalAiImages = selectedAiImages;
       if (generatedAiImages.length > 0 && selectedAiImages.length === 0) {
-        processorLogger.warn(`GUARDRAIL WARNING: ${generatedAiImages.length} AI images were generated but 0 were selected by media selector. Check selection logic.`);
+        processorLogger.warn(`GUARDRAIL: ${generatedAiImages.length} AI images generated but 0 selected - forcing inclusion of top candidates`);
+        
+        // Take up to 3 generated images based on which have the best timing spread
+        const sortedByStart = [...generatedAiImages].sort((a, b) => a.startTime - b.startTime);
+        const numToInclude = Math.min(3, sortedByStart.length);
+        
+        // Try to spread them across the video
+        if (numToInclude === 1) {
+          finalAiImages = sortedByStart.slice(0, 1);
+        } else if (numToInclude === 2) {
+          // Take first and last
+          finalAiImages = [sortedByStart[0], sortedByStart[sortedByStart.length - 1]];
+        } else {
+          // Take first, middle, and last for good distribution
+          const middleIdx = Math.floor(sortedByStart.length / 2);
+          finalAiImages = [sortedByStart[0], sortedByStart[middleIdx], sortedByStart[sortedByStart.length - 1]];
+        }
+        
+        processorLogger.info(`GUARDRAIL: Force-included ${finalAiImages.length} AI images at times: ${finalAiImages.map(img => img.startTime.toFixed(1) + 's').join(', ')}`);
+        addActivity(projectId, `Recovered ${finalAiImages.length} AI images via fallback selection`);
       }
       
       if (stockItems.length > 0) {
         processorLogger.debug(`Stock items selected: ${stockItems.map(s => `${s.type}:${s.query?.slice(0,30)}`).join(', ')}`);
       }
       
-      const aiStockItems: StockMediaItem[] = selectedAiImages.map((img, idx) => ({
+      const aiStockItems: StockMediaItem[] = finalAiImages.map((img, idx) => ({
         id: `ai_${Date.now()}_${idx}`,
         type: 'ai_generated' as const,
         url: img.base64Data ? `data:${img.mimeType};base64,${img.base64Data}` : '',
@@ -990,7 +1023,7 @@ async function runProcessingPipeline(
     // Send media selection update to chat companion
     const stockCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
     const aiCount = stockMedia.filter(m => m.type === 'ai_generated').length;
-    sendMediaSelectionUpdate(projectId, stockCount, aiCount);
+    await sendMediaSelectionUpdate(projectId, stockCount, aiCount);
     
     // Save checkpoint: media selection complete
     await updateProcessingStage(projectId, "media_selection");
@@ -1093,7 +1126,7 @@ async function runProcessingPipeline(
           reviewData,
           stockMedia,
           prompt,
-          (project.analysis as { videoAnalysis?: unknown })?.videoAnalysis as import("@shared/schema").VideoAnalysis | undefined
+          project.analysis as import("@shared/schema").VideoAnalysis | undefined
         );
         
         processorLogger.info(`[AUTONOMOUS] Self-review complete: score=${selfReviewResult.overallScore}, issues=${selfReviewResult.issues?.length || 0}`);
@@ -1151,7 +1184,7 @@ async function runProcessingPipeline(
     notifySubscribers(projectId, "status", { status: "awaiting_review" });
     
     // Send review ready update to chat companion with summary (with safe defaults)
-    sendReviewReadyUpdate(projectId, {
+    await sendReviewReadyUpdate(projectId, {
       totalCuts: reviewData.summary?.totalCuts ?? 0,
       totalKeeps: reviewData.summary?.totalKeeps ?? 0,
       totalBroll: reviewData.summary?.totalBroll ?? 0,
@@ -1188,7 +1221,7 @@ async function runProcessingPipeline(
     addActivity(projectId, `Processing failed: ${errorMessage}`);
     
     // Send error update to chat companion
-    sendErrorUpdate(projectId, "processing", errorMessage);
+    await sendErrorUpdate(projectId, "processing", errorMessage);
     updateProjectContext(projectId, { status: "failed" });
     
     await storage.updateVideoProject(projectId, {
@@ -1237,6 +1270,84 @@ async function runProcessingPipeline(
 export function isJobActive(projectId: number): boolean {
   const job = activeJobs.get(projectId);
   return job?.status === "processing";
+}
+
+/** Map retry API stage to ProcessingStage for pipeline resume */
+export type RetryStage = "transcription" | "analysis" | "planning" | "stock" | "ai_images" | "full";
+
+function mapRetryStageToProcessingStage(retryStage: RetryStage): ProcessingStage {
+  switch (retryStage) {
+    case "full": return "upload";
+    case "transcription": return "transcription";
+    case "analysis": return "analysis";
+    case "planning": return "planning";
+    case "stock":
+    case "ai_images": return "media_fetch";
+    default: return "upload";
+  }
+}
+
+/**
+ * Retry processing from a specific stage. Used by POST /api/videos/:id/retry.
+ * For "full", starts from the beginning. For other stages, resumes from that checkpoint.
+ */
+export async function retryProcessingFromStage(
+  projectId: number,
+  retryStage: RetryStage
+): Promise<{ started: boolean; reason?: string }> {
+  const project = await storage.getVideoProject(projectId);
+  if (!project) {
+    return { started: false, reason: "Project not found" };
+  }
+  if (isJobActive(projectId)) {
+    return { started: false, reason: "Processing already in progress" };
+  }
+  if (!canStartNewJob()) {
+    return { started: false, reason: "Maximum concurrent jobs reached" };
+  }
+
+  const prompt = project.prompt || "";
+  const processingStage = mapRetryStageToProcessingStage(retryStage);
+
+  if (retryStage === "full") {
+    // Reset to pending and run full pipeline
+    await storage.updateVideoProject(projectId, { status: "pending", errorMessage: null });
+    startProcessingJob(projectId, prompt, {
+      addCaptions: true,
+      addBroll: true,
+      removeSilence: true,
+      generateAiImages: true,
+      addTransitions: true,
+    });
+    return { started: true };
+  }
+
+  // Resume from specific stage - ensure we have prerequisite data
+  const resumeStage = processingStage;
+  const stageOrder: ProcessingStage[] = ["upload", "transcription", "analysis", "planning", "media_fetch", "media_selection", "review_ready", "rendering", "complete"];
+  const resumeIndex = stageOrder.indexOf(resumeStage);
+
+  if (resumeIndex <= 0) {
+    // Cannot resume from upload - run full pipeline
+    await storage.updateVideoProject(projectId, { status: "pending", errorMessage: null });
+    startProcessingJob(projectId, prompt, {
+      addCaptions: true,
+      addBroll: true,
+      removeSilence: true,
+      generateAiImages: true,
+      addTransitions: true,
+    });
+    return { started: true };
+  }
+
+  // Set processingStage so recovery logic is consistent
+  await storage.updateVideoProject(projectId, {
+    status: "pending",
+    errorMessage: null,
+    processingStage: stageOrder[resumeIndex - 1], // Last completed stage
+  });
+  resumeProcessing(projectId, prompt, resumeStage);
+  return { started: true };
 }
 
 // Fire-and-forget background render after user approval
@@ -1396,7 +1507,8 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
   
   processorLogger.info(`[Background Render] Complete for project ${projectId}, output: ${publicOutputPath}`);
   
-  // Perform self-review in background
+  // Perform self-review in background and persist results
+  let selfReviewData: { selfReviewScore?: number; selfReviewResult?: any } = {};
   try {
     const selfReviewResult = await performPostRenderSelfReview(
       editResult.outputPath,
@@ -1406,18 +1518,44 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
       reviewData,
       stockMedia,
       project.prompt || "",
-      (project.analysis as any)?.videoAnalysis
+      project.analysis as import("@shared/schema").VideoAnalysis | undefined
     );
     processorLogger.info(`[Background Render] Self-review complete: score=${selfReviewResult.overallScore}`);
+    
+    // Persist self-review results to reviewData for future reference
+    selfReviewData = {
+      selfReviewScore: selfReviewResult.overallScore,
+      selfReviewResult: {
+        overallScore: selfReviewResult.overallScore,
+        watchedFullVideo: selfReviewResult.watchedFullVideo,
+        approved: selfReviewResult.approved,
+        qualityMetrics: selfReviewResult.qualityMetrics,
+        issues: selfReviewResult.issues,
+        detailedFeedback: selfReviewResult.detailedFeedback,
+        suggestions: selfReviewResult.suggestions,
+      },
+    };
   } catch (reviewErr) {
     processorLogger.warn(`[Background Render] Self-review failed (non-critical):`, reviewErr);
   }
   
-  // Mark as completed
-  await storage.updateVideoProject(projectId, {
+  // Mark as completed and store self-review if available
+  const updateData: any = {
     status: "completed" as ProcessingStatus,
     outputPath: publicOutputPath,
-  });
+  };
+  
+  // Merge self-review data into reviewData if available
+  if (selfReviewData.selfReviewScore !== undefined) {
+    const existingReviewData = project.reviewData || {};
+    updateData.reviewData = {
+      ...existingReviewData,
+      selfReviewScore: selfReviewData.selfReviewScore,
+      selfReviewResult: selfReviewData.selfReviewResult,
+    };
+  }
+  
+  await storage.updateVideoProject(projectId, updateData);
   
   processorLogger.info(`[Background Render] Project ${projectId} completed successfully`);
 }

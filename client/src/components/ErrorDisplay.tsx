@@ -1,8 +1,9 @@
-import { RotateCcw, Upload, Mic, AlertCircle, Lightbulb, Loader2 } from "lucide-react";
+import { RotateCcw, Upload, Mic, AlertCircle, Lightbulb, Loader2, Copy, Check } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { useState, useCallback } from "react";
 
 type ErrorType = 
   | "upload_failed"
@@ -37,6 +38,24 @@ export function ErrorDisplay({
   onTranscriptionRetryStart,
   onUploadNew,
 }: ErrorDisplayProps) {
+  const [copied, setCopied] = useState(false);
+  
+  // Copy a safe, non-sensitive error message for support
+  const copyErrorForSupport = useCallback(() => {
+    const safeErrorMessage = [
+      `Error Type: ${errorType || "unknown"}`,
+      `Message: ${errorMessage || "Processing failed"}`,
+      `Suggestion: ${errorSuggestion || "Please try again"}`,
+      `Project ID: ${projectId}`,
+      `Timestamp: ${new Date().toISOString()}`,
+    ].join("\n");
+    
+    navigator.clipboard.writeText(safeErrorMessage).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [errorType, errorMessage, errorSuggestion, projectId]);
+  
   const retryMutation = useMutation({
     mutationFn: async () => {
       const response = await apiRequest("POST", `/api/videos/${projectId}/retry`);
@@ -65,10 +84,19 @@ export function ErrorDisplay({
   const isRetrying = retryMutation.isPending || retryTranscriptionMutation.isPending;
 
   return (
-    <Card className="border-destructive" data-testid="error-display">
+    <Card 
+      className="border-destructive" 
+      data-testid="error-display"
+      role="alert"
+      aria-live="polite"
+      aria-labelledby="error-title"
+    >
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center flex-shrink-0">
+          <div 
+            className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center flex-shrink-0"
+            aria-hidden="true"
+          >
             <AlertCircle className="h-5 w-5 text-destructive" />
           </div>
           <div className="flex-1">
@@ -122,6 +150,27 @@ export function ErrorDisplay({
               >
                 <Upload className="h-4 w-4 mr-2" />
                 Upload New Video
+              </Button>
+              
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={copyErrorForSupport}
+                className="ml-auto"
+                data-testid="button-copy-error"
+                aria-label="Copy error details for support"
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-4 w-4 mr-1" />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4 mr-1" />
+                    Copy for Support
+                  </>
+                )}
               </Button>
             </div>
 

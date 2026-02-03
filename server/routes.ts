@@ -54,6 +54,7 @@ import {
 import {
   analyzeVideoFrames,
   transcribeAudio,
+  transcribeAudioEnhanced,
   generateEditPlan,
   analyzeTranscriptSemantics,
   generateAiImagesForVideo,
@@ -74,6 +75,7 @@ import type { SemanticAnalysis, StockMediaItem, ProcessingStatus, ReviewData, Re
 import { editPlanSchema, reviewDataSchema } from "@shared/schema";
 import { fetchStockMedia } from "./services/pexelsService";
 import { requireAuth, type AuthenticatedRequest } from "./middleware/auth";
+import { idempotencyMiddleware, checkDuplicateJob } from "./middleware/idempotency";
 import { registerAuthRoutes } from "./routes/auth";
 import {
   initializeProjectChat,
@@ -106,7 +108,9 @@ import {
   getActiveJobsInfo,
   getEventsSince,
   getLastEventId,
-  MAX_CONCURRENT_JOBS
+  MAX_CONCURRENT_JOBS,
+  retryProcessingFromStage,
+  type RetryStage,
 } from "./services/backgroundProcessor";
 
 // Use unified slot management from backgroundProcessor
@@ -134,7 +138,7 @@ const upload = multer({
     },
   }),
   limits: {
-    fileSize: 1024 * 1024 * 1024,
+    fileSize: 300 * 1024 * 1024, // 300MB - reduced from 1GB to prevent memory/disk exhaustion
   },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith("video/")) {
@@ -143,6 +147,37 @@ const upload = multer({
       cb(new Error("Only video files are allowed"));
     }
   },
+});
+
+// Validation schemas for API inputs
+const autosaveBodySchema = z.object({
+  reviewData: reviewDataSchema,
+});
+
+const chatMessageSchema = z.object({
+  message: z.string()
+    .min(1, "Message cannot be empty")
+    .max(4000, "Message too long (max 4000 characters)")
+    .transform(s => s.trim()),
+});
+
+const retryStageSchema = z.enum([
+  'transcription',
+  'analysis',
+  'planning',
+  'stock',
+  'ai_images',
+  'full',
+  'all' // Client sends "all" - treat as full
+]).transform(v => v === 'all' ? 'full' as const : v);
+
+const cacheTypeAllowlist = ['thumbnail', 'analysis', 'transcript', 'media', 'stock'] as const;
+const cacheParamsSchema = z.object({
+  type: z.enum(cacheTypeAllowlist),
+  key: z.string()
+    .min(1)
+    .max(256)
+    .regex(/^[a-zA-Z0-9_-]+$/, "Invalid cache key format"),
 });
 
 function getSecurePath(baseDir: string, requestedPath: string): string | null {
@@ -421,7 +456,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/videos/:id", async (req: Request, res: Response) => {
+  app.get("/api/videos/:id", requireAuth, async (req: Request, res: Response) => {
     try {
       const paramResult = idParamSchema.safeParse(req.params);
       if (!paramResult.success) {
@@ -544,7 +579,11 @@ export async function registerRoutes(
     const lastEventIdHeader = req.headers["last-event-id"];
     const lastEventIdQuery = req.query.lastEventId;
     const lastEventIdRaw = lastEventIdQuery || lastEventIdHeader;
-    const clientLastEventId = lastEventIdRaw ? parseInt(lastEventIdRaw as string, 10) : 0;
+    let clientLastEventId = lastEventIdRaw ? parseInt(lastEventIdRaw as string, 10) : 0;
+    // Fix: Handle NaN or negative values - treat as 0 (start from beginning)
+    if (Number.isNaN(clientLastEventId) || clientLastEventId < 0) {
+      clientLastEventId = 0;
+    }
 
     // Send event with ID for replay support
     const sendEventWithId = (eventId: number, type: string, data: Record<string, unknown>) => {
@@ -596,7 +635,7 @@ export async function registerRoutes(
         hasTranscript,
         hasEditPlan,
         hasStockMedia,
-        message: "Processing was interrupted. Click 'Retry Processing' to restart."
+        message: "Processing was interrupted (e.g. server restarted). Click 'Retry processing' to continue from where we left off."
       });
       
       clearInterval(heartbeatInterval);
@@ -692,7 +731,8 @@ export async function registerRoutes(
   });
 
   // Approve review and continue rendering
-  app.post("/api/videos/:id/approve-review", requireAuth, async (req: Request, res: Response) => {
+  // idempotencyMiddleware ensures duplicate approvals with same key return cached response
+  app.post("/api/videos/:id/approve-review", requireAuth, idempotencyMiddleware, async (req: Request, res: Response) => {
     const paramResult = idParamSchema.safeParse(req.params);
     if (!paramResult.success) {
       return res.status(400).json({ error: formatZodError(paramResult.error) });
@@ -1154,8 +1194,9 @@ export async function registerRoutes(
         }
         
         // Record user feedback for AI learning (persisted to database)
+        // Stored project.analysis is flattened (context/duration at top level)
         try {
-          const videoAnalysis = project.analysis as any;
+          const analysisForContext = project.analysis as { context?: { genre?: string; tone?: string }; duration?: number } | null;
           let savedCount = 0;
           for (const action of reviewData.editPlan.actions) {
             await storage.saveEditFeedback({
@@ -1169,9 +1210,9 @@ export async function registerRoutes(
               modifiedStart: null,
               modifiedEnd: null,
               userReason: null,
-              contextGenre: videoAnalysis?.videoAnalysis?.context?.genre || null,
-              contextTone: videoAnalysis?.videoAnalysis?.context?.tone || null,
-              contextDuration: videoAnalysis?.videoAnalysis?.duration ? Math.round(videoAnalysis.videoAnalysis.duration) : null,
+              contextGenre: analysisForContext?.context?.genre || null,
+              contextTone: analysisForContext?.context?.tone || null,
+              contextDuration: analysisForContext?.duration != null ? Math.round(analysisForContext.duration) : null,
             });
             savedCount++;
           }
@@ -1181,13 +1222,13 @@ export async function registerRoutes(
           routesLogger.warn("[Render] Failed to persist feedback (non-critical):", feedbackErr);
         }
         
-        // Perform AI pre-render review
+        // Perform AI pre-render review (project.analysis is flattened VideoAnalysis)
         try {
-          const videoAnalysis = project.analysis as any;
-          if (videoAnalysis?.videoAnalysis && transcript.length > 0) {
+          const videoAnalysis = project.analysis as import("@shared/schema").VideoAnalysis | null;
+          if (videoAnalysis && transcript.length > 0) {
             sendActivity("Running AI quality review on your edits...");
             const aiReview = await performPreRenderReview(
-              videoAnalysis.videoAnalysis,
+              videoAnalysis,
               transcript,
               { actions: reviewData.editPlan.actions } as any,
               reviewData,
@@ -1301,7 +1342,8 @@ export async function registerRoutes(
       const outputPathForReview = editResult.outputPath;
       const projectIdForReview = id;
       const promptForReview = project.prompt || "Edit this video";
-      const videoAnalysisForReview = (project.analysis as { videoAnalysis?: unknown })?.videoAnalysis as import("@shared/schema").VideoAnalysis | undefined;
+      // Stored project.analysis is flattened VideoAnalysis
+      const videoAnalysisForReview = project.analysis as import("@shared/schema").VideoAnalysis | undefined;
       
       // Only run self-review if we have valid reviewData
       if (reviewData && reviewData.userApproved) {
@@ -1486,7 +1528,7 @@ export async function registerRoutes(
             if (finalScore >= 70 && reviewData) {
               try {
                 routesLogger.info(`[Learning] Storing successful patterns (score: ${finalScore}/100)...`);
-                const storedPatterns = storePattern(
+                const storedPatterns = await storePattern(
                   reviewData,
                   lastSelfReview || selfReviewResult,
                   videoAnalysisForReview,
@@ -1594,7 +1636,7 @@ export async function registerRoutes(
   });
 
   // Enhanced analysis endpoint - returns full analysis data
-  app.get("/api/videos/:id/analysis", async (req: Request, res: Response) => {
+  app.get("/api/videos/:id/analysis", requireAuth, async (req: Request, res: Response) => {
     try {
       const paramResult = idParamSchema.safeParse(req.params);
       if (!paramResult.success) {
@@ -1802,11 +1844,17 @@ export async function registerRoutes(
   app.post("/api/videos/:id/autosave", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      const { reviewData } = req.body;
-      if (!reviewData) {
-        return res.status(400).json({ error: "reviewData is required" });
+      
+      // Validate the request body with Zod schema
+      const bodyResult = autosaveBodySchema.safeParse(req.body);
+      if (!bodyResult.success) {
+        return res.status(400).json({ 
+          error: "Invalid autosave data", 
+          details: formatZodError(bodyResult.error) 
+        });
       }
-      await storage.saveAutosave(id, reviewData);
+      
+      await storage.saveAutosave(id, bodyResult.data.reviewData);
       res.json({ success: true });
     } catch (error) {
       routesLogger.error("Failed to save autosave:", error);
@@ -1833,8 +1881,16 @@ export async function registerRoutes(
   // Get cached asset
   app.get("/api/cache/:type/:key", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const type = req.params.type as string;
-      const key = req.params.key as string;
+      // Validate cache params to prevent injection or path traversal
+      const paramsResult = cacheParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ 
+          error: "Invalid cache parameters",
+          details: formatZodError(paramsResult.error)
+        });
+      }
+      
+      const { type, key } = paramsResult.data;
       const cached = await storage.getCachedAsset(type, key);
       if (cached) {
         res.json({ hit: true, data: cached });
@@ -1854,7 +1910,7 @@ export async function registerRoutes(
   app.get("/api/videos/:id/chat", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      const messages = getProjectMessages(id);
+      const messages = await getProjectMessages(id);
       res.json({ messages });
     } catch (error) {
       routesLogger.error("Failed to get chat messages:", error);
@@ -1866,11 +1922,15 @@ export async function registerRoutes(
   app.post("/api/videos/:id/chat", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      const { message } = req.body;
       
-      if (!message || typeof message !== "string") {
-        return res.status(400).json({ error: "Message is required" });
+      // Validate message with length check
+      const messageResult = chatMessageSchema.safeParse(req.body);
+      if (!messageResult.success) {
+        return res.status(400).json({ 
+          error: formatZodError(messageResult.error) 
+        });
       }
+      const { message } = messageResult.data;
       
       const project = await storage.getVideoProject(id);
       if (!project) {
@@ -1878,13 +1938,13 @@ export async function registerRoutes(
       }
       
       // Add user message
-      addUserMessage(id, message);
+      await addUserMessage(id, message);
       
       // Get AI response
       const answerMessage = await answerUserQuestion(id, message);
       
       // Return the new messages
-      const recentMessages = getProjectMessages(id, 2);
+      const recentMessages = await getProjectMessages(id, 2);
       res.json({ messages: recentMessages });
     } catch (error) {
       routesLogger.error("Failed to process chat message:", error);
@@ -1900,23 +1960,37 @@ export async function registerRoutes(
   app.post("/api/videos/:id/retry", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      // Safely extract stage from body with default
-      const stage = req.body?.stage || 'full'; // 'transcription', 'analysis', 'planning', 'stock', 'ai_images', 'full'
+      
+      // Validate stage against allowed values
+      const rawStage = req.body?.stage;
+      let stage: "transcription" | "analysis" | "planning" | "stock" | "ai_images" | "full" = 'full';
+      
+      if (rawStage !== undefined) {
+        const stageResult = retryStageSchema.safeParse(rawStage);
+        if (!stageResult.success) {
+          return res.status(400).json({ 
+            error: `Invalid stage. Must be one of: transcription, analysis, planning, stock, ai_images, full, all` 
+          });
+        }
+        stage = stageResult.data;
+      }
       
       const project = await storage.getVideoProject(id);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
       
-      // Reset project to pending state so it can be reprocessed
-      await storage.updateVideoProject(id, {
-        status: "pending",
-        errorMessage: null,
-      });
+      const result = await retryProcessingFromStage(id, stage as RetryStage);
+      
+      if (!result.started) {
+        return res.status(409).json({ 
+          error: result.reason || "Could not start retry",
+        });
+      }
       
       res.json({ 
         success: true, 
-        message: "Project reset for retry. Start processing again.",
+        message: "Retry started. Connect to process SSE to receive updates.",
         projectId: id,
         stage
       });
@@ -1973,15 +2047,25 @@ export async function registerRoutes(
         // Extract audio
         const audioPath = await extractAudio(videoPath);
         
-        // Run transcription
-        const transcript = await transcribeAudio(audioPath);
+        // Get video duration for enhanced transcription (use stored duration or default)
+        const videoDuration = project.duration || 60;
+        
+        // Run enhanced transcription (same as main pipeline) for consistent transcript shape
+        const transcriptResult = await transcribeAudioEnhanced(audioPath, videoDuration);
+        const transcript = transcriptResult.segments;
         
         // Clean up audio file
         await fs.unlink(audioPath).catch(() => {});
 
-        // Update project with new transcript
+        // Update project with new transcript (including enhanced data if available)
         await storage.updateVideoProject(id, {
           transcript: transcript,
+          transcriptEnhanced: {
+            speakers: transcriptResult.speakers,
+            chapters: transcriptResult.chapters,
+            sentiments: transcriptResult.sentiments,
+            entities: transcriptResult.entities,
+          },
           status: "pending",
           errorMessage: null,
         });

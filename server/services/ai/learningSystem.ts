@@ -1,5 +1,6 @@
 import { createLogger } from "../../utils/logger";
-import type { ReviewData, EditAction, VideoAnalysis, EditPlan } from "@shared/schema";
+import { storage } from "../../storage";
+import type { ReviewData, EditAction, VideoAnalysis, EditPlan, EditingPattern as DBEditingPattern } from "@shared/schema";
 import type { SelfReviewResult } from "./postRenderReview";
 
 const learningLogger = createLogger("ai-learning");
@@ -74,11 +75,50 @@ export interface LearnedPreferences {
   }>;
 }
 
-const patternStore = new Map<PatternType, EditingPattern[]>();
+// In-memory cache for patterns (loaded from DB on demand)
+const patternCache = new Map<PatternType, EditingPattern[]>();
+let patternCacheLoaded = false;
 const feedbackStore: FeedbackLearning[] = [];
 
 const MAX_PATTERNS_PER_TYPE = 100;
 const PATTERN_DECAY_DAYS = 30;
+
+// Load patterns from database into cache
+async function loadPatternsFromDB(): Promise<void> {
+  if (patternCacheLoaded) return;
+  
+  try {
+    const patternTypes: PatternType[] = ["cut", "transition", "broll", "ai_image", "caption", "pacing", "general"];
+    
+    for (const type of patternTypes) {
+      const dbPatterns = await storage.getPatterns(type, MAX_PATTERNS_PER_TYPE);
+      const patterns = dbPatterns.map(dbPatternToEditingPattern);
+      patternCache.set(type, patterns);
+    }
+    
+    patternCacheLoaded = true;
+    learningLogger.info("Loaded learning patterns from database");
+  } catch (error) {
+    learningLogger.error("Failed to load patterns from database:", error);
+  }
+}
+
+// Convert DB pattern to EditingPattern format
+function dbPatternToEditingPattern(dbPattern: DBEditingPattern): EditingPattern {
+  return {
+    id: dbPattern.patternId,
+    type: dbPattern.type as PatternType,
+    genre: dbPattern.genre || undefined,
+    tone: dbPattern.tone || undefined,
+    prompt: dbPattern.prompt || undefined,
+    actionDetails: dbPattern.actionDetails as EditingPattern["actionDetails"],
+    successScore: dbPattern.successScore,
+    userApproved: dbPattern.userApproved === 1,
+    selfReviewScore: dbPattern.selfReviewScore || undefined,
+    timestamp: dbPattern.createdAt,
+    context: dbPattern.context as EditingPattern["context"] | undefined,
+  };
+}
 
 function generatePatternId(): string {
   return `pattern_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -144,12 +184,12 @@ function calculateRelevanceScore(
   return Math.min(100, Math.max(0, score));
 }
 
-export function storePattern(
+export async function storePattern(
   reviewData: ReviewData,
   selfReviewResult: SelfReviewResult,
   videoAnalysis: VideoAnalysis | undefined,
   userPrompt: string
-): EditingPattern[] {
+): Promise<EditingPattern[]> {
   learningLogger.info("═══════════════════════════════════════════════════════");
   learningLogger.info("AI LEARNING SYSTEM: Storing successful patterns...");
   learningLogger.info("═══════════════════════════════════════════════════════");
@@ -235,7 +275,7 @@ export function storePattern(
         context,
       };
       
-      addPatternToStore(pattern);
+      await addPatternToStore(pattern);
       storedPatterns.push(pattern);
     }
   }
@@ -262,7 +302,7 @@ export function storePattern(
         context,
       };
       
-      addPatternToStore(pattern);
+      await addPatternToStore(pattern);
       storedPatterns.push(pattern);
     }
   }
@@ -283,12 +323,13 @@ export function storePattern(
   };
   
   if (pacingPattern.successScore >= 70) {
-    addPatternToStore(pacingPattern);
+    await addPatternToStore(pacingPattern);
     storedPatterns.push(pacingPattern);
   }
   
   learningLogger.info(`Stored ${storedPatterns.length} patterns from successful edit`);
-  learningLogger.info(`Pattern breakdown: ${JSON.stringify(getPatternStats().patternsByType)}`);
+  const stats = await getPatternStats();
+  learningLogger.info(`Pattern breakdown: ${JSON.stringify(stats.patternsByType)}`);
   
   return storedPatterns;
 }
@@ -319,12 +360,13 @@ function calculateActionSuccessScore(
   return Math.max(0, Math.min(100, baseScore));
 }
 
-function addPatternToStore(pattern: EditingPattern): void {
-  if (!patternStore.has(pattern.type)) {
-    patternStore.set(pattern.type, []);
+async function addPatternToStore(pattern: EditingPattern): Promise<void> {
+  // Add to in-memory cache
+  if (!patternCache.has(pattern.type)) {
+    patternCache.set(pattern.type, []);
   }
   
-  const patterns = patternStore.get(pattern.type)!;
+  const patterns = patternCache.get(pattern.type)!;
   patterns.push(pattern);
   
   if (patterns.length > MAX_PATTERNS_PER_TYPE) {
@@ -332,16 +374,38 @@ function addPatternToStore(pattern: EditingPattern): void {
     patterns.splice(MAX_PATTERNS_PER_TYPE);
   }
   
-  patternStore.set(pattern.type, patterns);
+  patternCache.set(pattern.type, patterns);
+  
+  // Persist to database
+  try {
+    await storage.savePattern({
+      patternId: pattern.id,
+      type: pattern.type,
+      genre: pattern.genre || null,
+      tone: pattern.tone || null,
+      prompt: pattern.prompt || null,
+      actionDetails: pattern.actionDetails,
+      successScore: pattern.successScore,
+      userApproved: pattern.userApproved ? 1 : 0,
+      selfReviewScore: pattern.selfReviewScore || null,
+      context: pattern.context || null,
+    });
+  } catch (error) {
+    learningLogger.error("Failed to persist pattern to database:", error);
+    // Continue - pattern is still in memory cache for this session
+  }
 }
 
-export function retrievePatterns(
+export async function retrievePatterns(
   patternTypes: PatternType[],
   videoAnalysis?: VideoAnalysis,
   userPrompt?: string,
   limit: number = 10
-): PatternSuggestion[] {
+): Promise<PatternSuggestion[]> {
   learningLogger.info("Retrieving relevant patterns from learning system...");
+  
+  // Ensure patterns are loaded from database
+  await loadPatternsFromDB();
   
   const targetGenre = videoAnalysis?.context?.genre;
   const targetTone = videoAnalysis?.context?.tone;
@@ -354,7 +418,7 @@ export function retrievePatterns(
   const suggestions: PatternSuggestion[] = [];
   
   for (const type of patternTypes) {
-    const patterns = patternStore.get(type) || [];
+    const patterns = patternCache.get(type) || [];
     
     for (const pattern of patterns) {
       let relevanceScore = calculateRelevanceScore(
@@ -425,11 +489,14 @@ function generateSuggestionReason(
   return reasons.length > 0 ? reasons.join(", ") : `Relevance score: ${relevanceScore.toFixed(0)}`;
 }
 
-export function applyLearnedPreferences(
+export async function applyLearnedPreferences(
   videoAnalysis?: VideoAnalysis,
   userPrompt?: string
-): LearnedPreferences {
+): Promise<LearnedPreferences> {
   learningLogger.info("Applying learned preferences to edit planning...");
+  
+  // Ensure patterns are loaded from database
+  await loadPatternsFromDB();
   
   const preferences: LearnedPreferences = {
     preferredTransitionTypes: [],
@@ -442,7 +509,7 @@ export function applyLearnedPreferences(
     genrePreferences: {},
   };
   
-  const transitionPatterns = patternStore.get("transition") || [];
+  const transitionPatterns = patternCache.get("transition") || [];
   if (transitionPatterns.length > 0) {
     const transitionTypes = new Map<string, number>();
     for (const p of transitionPatterns) {
@@ -457,13 +524,13 @@ export function applyLearnedPreferences(
       .map(([type]) => type);
   }
   
-  const brollPatterns = patternStore.get("broll") || [];
+  const brollPatterns = patternCache.get("broll") || [];
   if (brollPatterns.length > 0) {
     const totalDuration = brollPatterns.reduce((sum, p) => sum + (p.actionDetails.duration || 3), 0);
     preferences.avgBrollDuration = totalDuration / brollPatterns.length;
   }
   
-  const pacingPatterns = patternStore.get("pacing") || [];
+  const pacingPatterns = patternCache.get("pacing") || [];
   if (pacingPatterns.length > 0) {
     const avgPacingScore = pacingPatterns.reduce((sum, p) => sum + p.successScore, 0) / pacingPatterns.length;
     if (avgPacingScore >= 80) {
@@ -473,7 +540,7 @@ export function applyLearnedPreferences(
     }
   }
   
-  const cutPatterns = patternStore.get("cut") || [];
+  const cutPatterns = patternCache.get("cut") || [];
   if (cutPatterns.length > 0) {
     const totalDuration = cutPatterns.reduce((sum, p) => sum + (p.actionDetails.duration || 2), 0);
     preferences.cutPatterns.avgCutDuration = totalDuration / cutPatterns.length;
@@ -535,7 +602,7 @@ export function recordFeedback(
   
   feedbackStore.push(feedback);
   
-  for (const [, patterns] of Array.from(patternStore.entries())) {
+  for (const [, patterns] of Array.from(patternCache.entries())) {
     const pattern = patterns.find((p: EditingPattern) => p.id === patternId);
     if (pattern) {
       if (feedbackType === "positive") {
@@ -550,7 +617,10 @@ export function recordFeedback(
   learningLogger.debug(`Recorded ${feedbackType} feedback for pattern ${patternId}`);
 }
 
-export function getPatternStats(): LearningStats {
+export async function getPatternStats(): Promise<LearningStats> {
+  // Ensure patterns are loaded from database
+  await loadPatternsFromDB();
+  
   const patternsByType: Record<PatternType, number> = {
     cut: 0,
     transition: 0,
@@ -567,7 +637,7 @@ export function getPatternStats(): LearningStats {
   let recentLearnings = 0;
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   
-  for (const [type, patterns] of Array.from(patternStore.entries())) {
+  for (const [type, patterns] of Array.from(patternCache.entries())) {
     patternsByType[type as PatternType] = patterns.length;
     totalPatterns += patterns.length;
     
@@ -599,28 +669,34 @@ export function getPatternStats(): LearningStats {
   };
 }
 
-export function clearOldPatterns(maxAgeDays: number = PATTERN_DECAY_DAYS * 2): number {
+export async function clearOldPatterns(maxAgeDays: number = PATTERN_DECAY_DAYS * 2): Promise<number> {
+  // Clear from database
+  const maxAge = maxAgeDays * 24 * 60 * 60 * 1000;
+  const removedFromDB = await storage.deleteOldPatterns(maxAge, MAX_PATTERNS_PER_TYPE);
+  
+  // Also clear from in-memory cache
   const cutoffDate = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
-  let removedCount = 0;
+  let removedFromCache = 0;
   
-  for (const [type, patterns] of Array.from(patternStore.entries())) {
+  for (const [type, patterns] of Array.from(patternCache.entries())) {
     const filtered = patterns.filter((p: EditingPattern) => new Date(p.timestamp) > cutoffDate);
-    removedCount += patterns.length - filtered.length;
-    patternStore.set(type, filtered);
+    removedFromCache += patterns.length - filtered.length;
+    patternCache.set(type, filtered);
   }
   
-  if (removedCount > 0) {
-    learningLogger.info(`Cleared ${removedCount} old patterns (older than ${maxAgeDays} days)`);
+  const totalRemoved = Math.max(removedFromDB, removedFromCache);
+  if (totalRemoved > 0) {
+    learningLogger.info(`Cleared ${totalRemoved} old patterns (older than ${maxAgeDays} days)`);
   }
   
-  return removedCount;
+  return totalRemoved;
 }
 
-export function getLearningContext(
+export async function getLearningContext(
   videoAnalysis?: VideoAnalysis,
   userPrompt?: string
-): string {
-  const suggestions = retrievePatterns(
+): Promise<string> {
+  const suggestions = await retrievePatterns(
     ["cut", "transition", "broll", "pacing"],
     videoAnalysis,
     userPrompt,
@@ -631,7 +707,7 @@ export function getLearningContext(
     return "";
   }
   
-  const preferences = applyLearnedPreferences(videoAnalysis, userPrompt);
+  const preferences = await applyLearnedPreferences(videoAnalysis, userPrompt);
   
   let context = "\n\n--- LEARNED PREFERENCES FROM PAST SUCCESSFUL EDITS ---\n";
   

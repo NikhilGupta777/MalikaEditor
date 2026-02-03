@@ -4,37 +4,50 @@ import OpenAI from "openai";
 let geminiClient: GoogleGenAI | null = null;
 let videoAnalysisGeminiClient: GoogleGenAI | null = null;
 
+/**
+ * Get Gemini API key - prefers user's own key from .env (GEMINI_API_KEY),
+ * falls back to Replit integration (AI_INTEGRATIONS_GEMINI_API_KEY).
+ */
+function getGeminiApiKey(): string {
+  const key = process.env.GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (!key) {
+    throw new Error('Gemini API key is not configured. Please set GEMINI_API_KEY or AI_INTEGRATIONS_GEMINI_API_KEY.');
+  }
+  return key;
+}
+
+/**
+ * Use Replit proxy only when using Replit integration key.
+ * User's GEMINI_API_KEY must use direct Google API.
+ */
+function useReplitProxy(): boolean {
+  return !process.env.GEMINI_API_KEY && !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+}
+
 export function getGeminiClient(): GoogleGenAI {
   if (!geminiClient) {
-    if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
-      throw new Error('Gemini API key is not configured. Please set up the Gemini integration.');
-    }
+    const apiKey = getGeminiApiKey();
     geminiClient = new GoogleGenAI({
-      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-      httpOptions: {
-        apiVersion: "",
-        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-      },
+      apiKey,
+      httpOptions: useReplitProxy() && process.env.AI_INTEGRATIONS_GEMINI_BASE_URL
+        ? { apiVersion: "", baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL }
+        : undefined,
     });
   }
   return geminiClient;
 }
 
-// Separate Gemini client for video analysis using user's own API key
+/**
+ * Video analysis client - uses same key as getGeminiClient (GEMINI_API_KEY for all Gemini tasks).
+ */
 export function getVideoAnalysisGeminiClient(): GoogleGenAI {
   if (!videoAnalysisGeminiClient) {
-    // Use user's own API key for video analysis, fall back to Replit integration
-    const apiKey = process.env.GEMINI_VIDEO_ANALYSIS_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('Gemini API key for video analysis is not configured. Please set GEMINI_VIDEO_ANALYSIS_API_KEY.');
-    }
+    const apiKey = getGeminiApiKey();
     videoAnalysisGeminiClient = new GoogleGenAI({
-      apiKey: apiKey,
-      // Use direct Google API when using user's own key
-      httpOptions: process.env.GEMINI_VIDEO_ANALYSIS_API_KEY ? undefined : {
-        apiVersion: "",
-        baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-      },
+      apiKey,
+      httpOptions: useReplitProxy() && process.env.AI_INTEGRATIONS_GEMINI_BASE_URL
+        ? { apiVersion: "", baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL }
+        : undefined,
     });
   }
   return videoAnalysisGeminiClient;

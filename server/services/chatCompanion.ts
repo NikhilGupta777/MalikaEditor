@@ -1,7 +1,8 @@
 import { createLogger } from "../utils/logger";
 import { getGeminiClient } from "./ai/clients";
 import { AI_CONFIG } from "../config/ai";
-import type { VideoAnalysis, EditPlan, TranscriptSegment, StockMediaItem, ReviewData } from "@shared/schema";
+import { storage } from "../storage";
+import type { VideoAnalysis, EditPlan, TranscriptSegment, StockMediaItem, ReviewData, ProjectChatMessage } from "@shared/schema";
 
 const chatLogger = createLogger("chat-companion");
 
@@ -33,8 +34,11 @@ export interface ProjectContext {
   selfReviewScore?: number;
 }
 
-const projectMessages = new Map<number, ChatMessage[]>();
+// In-memory cache for project contexts (lightweight, can be rebuilt from project data)
 const projectContexts = new Map<number, ProjectContext>();
+
+// Track which projects have been initialized to avoid duplicate welcome messages
+const initializedProjects = new Set<number>();
 
 const MAX_MESSAGES_PER_PROJECT = 100;
 
@@ -42,16 +46,42 @@ function generateMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-export function initializeProjectChat(projectId: number, title?: string): void {
-  if (!projectMessages.has(projectId)) {
-    projectMessages.set(projectId, []);
-    projectContexts.set(projectId, { projectId, title });
-    
-    addCompanionMessage(projectId, "milestone", 
-      `Hey there! I'm your AI editing companion. I'll guide you through the entire video editing process and explain what I'm doing at each step. Feel free to ask me anything along the way!`,
-      "initialization"
-    );
+// Convert DB message to ChatMessage format
+function dbMessageToChatMessage(dbMsg: ProjectChatMessage): ChatMessage {
+  return {
+    id: dbMsg.messageId,
+    projectId: dbMsg.projectId,
+    role: dbMsg.role as MessageRole,
+    type: dbMsg.type as MessageType,
+    content: dbMsg.content,
+    timestamp: dbMsg.createdAt,
+    stage: dbMsg.stage || undefined,
+    metadata: dbMsg.metadata as Record<string, any> | undefined,
+  };
+}
+
+export async function initializeProjectChat(projectId: number, title?: string): Promise<void> {
+  // Check if already initialized in this session
+  if (initializedProjects.has(projectId)) {
+    return;
   }
+  
+  // Check if there are existing messages in DB
+  const existingMessages = await storage.getChatMessages(projectId, 1);
+  if (existingMessages.length > 0) {
+    initializedProjects.add(projectId);
+    projectContexts.set(projectId, { projectId, title });
+    return;
+  }
+  
+  // First time - add welcome message
+  projectContexts.set(projectId, { projectId, title });
+  initializedProjects.add(projectId);
+  
+  await addCompanionMessage(projectId, "milestone", 
+    `Hey there! I'm your AI editing companion. I'll guide you through the entire video editing process and explain what I'm doing at each step. Feel free to ask me anything along the way!`,
+    "initialization"
+  );
 }
 
 export function updateProjectContext(projectId: number, updates: Partial<ProjectContext>): void {
@@ -63,15 +93,32 @@ export function getProjectContext(projectId: number): ProjectContext | undefined
   return projectContexts.get(projectId);
 }
 
-export function addCompanionMessage(
+export async function addCompanionMessage(
   projectId: number,
   type: MessageType,
   content: string,
   stage?: string,
   metadata?: Record<string, any>
-): ChatMessage {
+): Promise<ChatMessage> {
+  const messageId = generateMessageId();
+  
+  try {
+    await storage.addChatMessage({
+      projectId,
+      messageId,
+      role: "companion",
+      type,
+      content,
+      stage: stage || null,
+      metadata: metadata || null,
+    });
+  } catch (error) {
+    chatLogger.error(`Failed to persist companion message: ${error}`);
+    // Continue even if persistence fails - message is still useful in this session
+  }
+  
   const message: ChatMessage = {
-    id: generateMessageId(),
+    id: messageId,
     projectId,
     role: "companion",
     type,
@@ -81,50 +128,56 @@ export function addCompanionMessage(
     metadata,
   };
   
-  addMessage(projectId, message);
   chatLogger.debug(`[Project ${projectId}] Companion: ${content.substring(0, 80)}...`);
   
   return message;
 }
 
-export function addUserMessage(projectId: number, content: string): ChatMessage {
-  const message: ChatMessage = {
-    id: generateMessageId(),
+export async function addUserMessage(projectId: number, content: string): Promise<ChatMessage> {
+  const messageId = generateMessageId();
+  
+  try {
+    await storage.addChatMessage({
+      projectId,
+      messageId,
+      role: "user",
+      type: "question",
+      content,
+      stage: null,
+      metadata: null,
+    });
+  } catch (error) {
+    chatLogger.error(`Failed to persist user message: ${error}`);
+  }
+  
+  return {
+    id: messageId,
     projectId,
     role: "user",
     type: "question",
     content,
     timestamp: new Date(),
   };
-  
-  addMessage(projectId, message);
-  return message;
 }
 
-function addMessage(projectId: number, message: ChatMessage): void {
-  if (!projectMessages.has(projectId)) {
-    projectMessages.set(projectId, []);
-  }
-  
-  const messages = projectMessages.get(projectId)!;
-  messages.push(message);
-  
-  if (messages.length > MAX_MESSAGES_PER_PROJECT) {
-    messages.shift();
+export async function getProjectMessages(projectId: number, limit?: number): Promise<ChatMessage[]> {
+  try {
+    const dbMessages = await storage.getChatMessages(projectId, limit || MAX_MESSAGES_PER_PROJECT);
+    return dbMessages.map(dbMessageToChatMessage);
+  } catch (error) {
+    chatLogger.error(`Failed to get chat messages: ${error}`);
+    return [];
   }
 }
 
-export function getProjectMessages(projectId: number, limit?: number): ChatMessage[] {
-  const messages = projectMessages.get(projectId) || [];
-  if (limit) {
-    return messages.slice(-limit);
+export async function clearProjectChat(projectId: number): Promise<void> {
+  try {
+    await storage.deleteChatMessages(projectId);
+  } catch (error) {
+    chatLogger.error(`Failed to clear chat messages: ${error}`);
   }
-  return [...messages];
-}
-
-export function clearProjectChat(projectId: number): void {
-  projectMessages.delete(projectId);
   projectContexts.delete(projectId);
+  initializedProjects.delete(projectId);
 }
 
 export async function answerUserQuestion(
@@ -132,7 +185,7 @@ export async function answerUserQuestion(
   question: string
 ): Promise<ChatMessage> {
   const context = projectContexts.get(projectId);
-  const recentMessages = getProjectMessages(projectId, 10);
+  const recentMessages = await getProjectMessages(projectId, 10);
   
   const conversationHistory = recentMessages
     .map(m => `${m.role === "companion" ? "Assistant" : "User"}: ${m.content}`)
@@ -171,32 +224,15 @@ Your response:`;
     
     const answerText = response.text || "I'm not sure how to answer that. Could you rephrase your question?";
     
-    const answerMessage: ChatMessage = {
-      id: generateMessageId(),
-      projectId,
-      role: "companion",
-      type: "answer",
-      content: answerText,
-      timestamp: new Date(),
-    };
-    
-    addMessage(projectId, answerMessage);
+    const answerMessage = await addCompanionMessage(projectId, "answer", answerText);
     return answerMessage;
     
   } catch (error) {
     chatLogger.error(`Failed to answer user question: ${error}`);
     
-    const errorMessage: ChatMessage = {
-      id: generateMessageId(),
-      projectId,
-      role: "companion",
-      type: "answer",
-      content: "I'm having trouble processing that right now. Let me focus on your video editing, and you can ask me again in a moment!",
-      timestamp: new Date(),
-    };
-    
-    addMessage(projectId, errorMessage);
-    return errorMessage;
+    return await addCompanionMessage(projectId, "answer",
+      "I'm having trouble processing that right now. Let me focus on your video editing, and you can ask me again in a moment!"
+    );
   }
 }
 
@@ -235,7 +271,8 @@ function buildContextSummary(context?: ProjectContext): string {
   if (context.editPlan?.actions?.length) {
     const cuts = context.editPlan.actions.filter(a => a.type === "cut").length;
     const keeps = context.editPlan.actions.filter(a => a.type === "keep").length;
-    const broll = context.editPlan.actions.filter(a => a.type === "add_broll").length;
+    // Count both insert_stock and insert_ai_image as B-roll (fix for "add_broll" which doesn't exist)
+    const broll = context.editPlan.actions.filter(a => a.type === "insert_stock" || a.type === "insert_ai_image").length;
     parts.push(`Edit plan: ${cuts} cuts, ${keeps} keeps, ${broll} B-roll placements`);
   }
   
@@ -250,104 +287,104 @@ function buildContextSummary(context?: ProjectContext): string {
   return parts.length > 0 ? parts.join("\n") : "Project is being initialized...";
 }
 
-export function sendUploadUpdate(projectId: number, fileName: string, duration: number): void {
-  addCompanionMessage(projectId, "update",
+export async function sendUploadUpdate(projectId: number, fileName: string, duration: number): Promise<void> {
+  await addCompanionMessage(projectId, "update",
     `Great! I've received your video "${fileName}". It's ${duration} seconds long. Let me start analyzing it to understand what we're working with...`,
     "upload"
   );
 }
 
-export function sendTranscriptionUpdate(projectId: number, segmentCount: number, language?: string): void {
+export async function sendTranscriptionUpdate(projectId: number, segmentCount: number, language?: string): Promise<void> {
   const langNote = language ? ` I detected that the video is in ${language}.` : "";
-  addCompanionMessage(projectId, "update",
+  await addCompanionMessage(projectId, "update",
     `I've transcribed the audio and found ${segmentCount} speech segments.${langNote} This transcript will help me understand the content and time my edits precisely.`,
     "transcription"
   );
 }
 
-export function sendAnalysisUpdate(projectId: number, analysis: VideoAnalysis): void {
+export async function sendAnalysisUpdate(projectId: number, analysis: VideoAnalysis): Promise<void> {
   const genre = analysis.context?.genre || "general";
   const tone = analysis.context?.tone || "casual";
   const sceneCount = analysis.scenes?.length || 0;
   
-  addCompanionMessage(projectId, "insight",
+  await addCompanionMessage(projectId, "insight",
     `I've analyzed your video! It appears to be a ${genre} video with a ${tone} tone. I identified ${sceneCount} distinct scenes. Based on this, I'll tailor the editing style to match the content.`,
     "analysis",
     { genre, tone, sceneCount }
   );
 }
 
-export function sendEditPlanningUpdate(projectId: number, actionCounts: { cuts: number; keeps: number; broll: number }): void {
-  addCompanionMessage(projectId, "explanation",
+export async function sendEditPlanningUpdate(projectId: number, actionCounts: { cuts: number; keeps: number; broll: number }): Promise<void> {
+  await addCompanionMessage(projectId, "explanation",
     `I've created an edit plan! Here's what I'm thinking: ${actionCounts.cuts} segments to cut (removing filler or repetitive parts), ${actionCounts.keeps} segments to keep (the important content), and ${actionCounts.broll} spots where I'll add B-roll footage to make it more engaging.`,
     "edit_planning",
     actionCounts
   );
 }
 
-export function sendMediaFetchingUpdate(projectId: number, queriesCount: number): void {
-  addCompanionMessage(projectId, "update",
+export async function sendMediaFetchingUpdate(projectId: number, queriesCount: number): Promise<void> {
+  await addCompanionMessage(projectId, "update",
     `Now I'm searching for the perfect B-roll footage. I've identified ${queriesCount} different topics where visual support would enhance your video. I'll analyze thumbnails to pick the most relevant ones!`,
     "media_fetching"
   );
 }
 
-export function sendMediaSelectionUpdate(projectId: number, selectedCount: number, aiImageCount: number): void {
+export async function sendMediaSelectionUpdate(projectId: number, selectedCount: number, aiImageCount: number): Promise<void> {
   const aiNote = aiImageCount > 0 ? ` I also generated ${aiImageCount} custom AI images for unique visuals.` : "";
-  addCompanionMessage(projectId, "insight",
+  await addCompanionMessage(projectId, "insight",
     `I've selected ${selectedCount} pieces of stock media for your B-roll.${aiNote} Each one was chosen based on visual relevance to your content.`,
     "media_selection",
     { selectedCount, aiImageCount }
   );
 }
 
-export function sendReviewReadyUpdate(projectId: number, summary?: { totalCuts: number; totalKeeps: number; totalBroll: number; totalAiImages: number }): void {
+export async function sendReviewReadyUpdate(projectId: number, summary?: { totalCuts: number; totalKeeps: number; totalBroll: number; totalAiImages: number }): Promise<void> {
   const summaryText = summary 
     ? ` I've planned ${summary.totalCuts} cuts, ${summary.totalKeeps} segments to keep, and ${summary.totalBroll + summary.totalAiImages} B-roll insertions.`
     : "";
-  addCompanionMessage(projectId, "milestone",
+  await addCompanionMessage(projectId, "milestone",
     `Everything is ready for your review!${summaryText} Take a look at the transcript and my edit suggestions. You can approve, reject, or modify any of my decisions. I'll explain my reasoning if you click on any edit action.`,
     "review_ready",
     summary
   );
 }
 
-export function sendRenderingUpdate(projectId: number): void {
-  addCompanionMessage(projectId, "update",
+export async function sendRenderingUpdate(projectId: number): Promise<void> {
+  await addCompanionMessage(projectId, "update",
     `You've approved the edits - now I'm rendering your final video. This involves applying all the cuts, adding B-roll overlays, syncing captions, and creating smooth transitions. This might take a few minutes...`,
     "rendering"
   );
 }
 
-export function sendSelfReviewUpdate(projectId: number, score: number, issueCount: number): void {
+export async function sendSelfReviewUpdate(projectId: number, score: number, issueCount: number): Promise<void> {
   const quality = score >= 90 ? "excellent" : score >= 70 ? "good" : score >= 50 ? "acceptable" : "needs improvement";
   const issueNote = issueCount > 0 ? ` I found ${issueCount} potential issues that could be improved.` : " No major issues detected!";
   
-  addCompanionMessage(projectId, "insight",
+  await addCompanionMessage(projectId, "insight",
     `I just watched the rendered video to check my own work. Quality score: ${score}/100 (${quality}).${issueNote}`,
     "self_review",
     { score, issueCount, quality }
   );
 }
 
-export function sendCorrectionUpdate(projectId: number, iteration: number, correctionCount: number): void {
-  addCompanionMessage(projectId, "explanation",
+export async function sendCorrectionUpdate(projectId: number, iteration: number, correctionCount: number): Promise<void> {
+  await addCompanionMessage(projectId, "explanation",
     `I noticed some issues in my self-review, so I'm making ${correctionCount} corrections and re-rendering. This is iteration ${iteration} of my self-improvement loop - I want to get this right for you!`,
     "correction",
     { iteration, correctionCount }
   );
 }
 
-export function sendCompletionUpdate(projectId: number, finalScore?: number): void {
+export async function sendCompletionUpdate(projectId: number, finalScore?: number): Promise<void> {
   const scoreNote = finalScore ? ` Final quality score: ${finalScore}/100.` : "";
-  addCompanionMessage(projectId, "milestone",
+  await addCompanionMessage(projectId, "milestone",
     `Your video is complete and ready to download!${scoreNote} I hope you love the result. Feel free to ask me any questions about the edits I made!`,
     "complete"
   );
 }
 
-export function sendErrorUpdate(projectId: number, stage: string, userFriendlyMessage: string): void {
-  addCompanionMessage(projectId, "update",
+export async function sendErrorUpdate(projectId: number, stage: string, userFriendlyMessage: string): Promise<void> {
+  await addCompanionMessage(projectId, "update",
     `I ran into a small hiccup during ${stage}: ${userFriendlyMessage}. Don't worry, I'm handling it and will continue with the best approach available.`,
     "error",
     { stage }
@@ -360,10 +397,15 @@ export function explainEditAction(action: any): string {
       return `I'm removing this segment (${action.start?.toFixed(1)}s - ${action.end?.toFixed(1)}s) because: ${action.reason || "it doesn't add value to the final video"}`;
     case "keep":
       return `I'm keeping this segment because: ${action.reason || "it contains important content"}`;
-    case "add_broll":
-      return `I'm adding B-roll here to: ${action.reason || "visually support the content being discussed"}`;
+    case "insert_stock":
+      return `I'm adding stock footage here to: ${action.reason || "visually support the content being discussed"}`;
+    case "insert_ai_image":
+      return `I'm adding an AI-generated image here to: ${action.reason || "illustrate the concept being discussed"}`;
     case "add_caption":
       return `Adding a caption at this point to highlight: ${action.text || "key information"}`;
+    // Legacy support for add_broll if it appears anywhere
+    case "add_broll":
+      return `I'm adding B-roll here to: ${action.reason || "visually support the content being discussed"}`;
     default:
       return `This action helps improve the overall video quality.`;
   }

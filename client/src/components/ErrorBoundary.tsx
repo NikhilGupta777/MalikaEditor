@@ -23,7 +23,34 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    console.error("Error caught by ErrorBoundary:", error, errorInfo);
+    // Log to console in development
+    if (process.env.NODE_ENV === "development") {
+      console.error("Error caught by ErrorBoundary:", error, errorInfo);
+    }
+    
+    // Send to error reporting service (e.g., Sentry) in production
+    // Strip PII before sending - only include error message and component stack
+    this.reportError({
+      message: error.message,
+      name: error.name,
+      componentStack: errorInfo.componentStack ?? null,
+      // Don't include: full stack trace (may contain file paths), user data, tokens
+    });
+  }
+  
+  private reportError(errorData: { message: string; name: string; componentStack: string | null }): void {
+    // Integration point for error reporting service (e.g., Sentry)
+    // In production, this would send to an external service:
+    // if (process.env.NODE_ENV === "production" && window.Sentry) {
+    //   window.Sentry.captureException(new Error(errorData.message), {
+    //     extra: { componentStack: errorData.componentStack }
+    //   });
+    // }
+    
+    // For now, log a sanitized version
+    if (process.env.NODE_ENV === "production") {
+      console.error(`[ErrorBoundary] ${errorData.name}: ${errorData.message}`);
+    }
   }
 
   handleReset = (): void => {

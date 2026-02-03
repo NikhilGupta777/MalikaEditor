@@ -47,7 +47,7 @@ export function PromptInput({
   editOptions, 
   onEditOptionsChange 
 }: PromptInputProps) {
-  const [prompt, setPrompt] = useState("Make it engaging and professional");
+  const [prompt, setPrompt] = useState(""); // Empty by default - quick styles or placeholder guide the user
 
   const handleSubmit = useCallback(() => {
     if (prompt.trim()) {

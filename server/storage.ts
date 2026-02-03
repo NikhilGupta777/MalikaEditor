@@ -11,6 +11,10 @@ import {
   type InsertEditFeedback,
   type EditFeedbackRecord,
   type TranscriptEnhancedType,
+  type ProjectChatMessage,
+  type InsertProjectChatMessage,
+  type EditingPattern,
+  type InsertEditingPattern,
   videoAnalysisSchema,
   editPlanSchema,
   transcriptSegmentSchema,
@@ -21,6 +25,9 @@ import {
   cachedAssets,
   projectAutosaves,
   editFeedback,
+  projectChatMessages,
+  editingPatterns,
+  users, // Added for DB-based user storage
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { z } from "zod";
@@ -81,6 +88,18 @@ export interface IStorage {
     totalFeedback: number;
     byActionType: Record<string, { approved: number; rejected: number }>;
   }>;
+
+  // Chat persistence
+  getChatMessages(projectId: number, limit?: number): Promise<ProjectChatMessage[]>;
+  addChatMessage(message: Omit<InsertProjectChatMessage, 'id' | 'createdAt'>): Promise<ProjectChatMessage>;
+  deleteChatMessages(projectId: number): Promise<number>;
+  cleanupOldChatMessages(maxAge?: number): Promise<number>;
+
+  // Learning patterns persistence
+  getPatterns(type?: string, limit?: number): Promise<EditingPattern[]>;
+  getPatternsByGenre(genre: string, limit?: number): Promise<EditingPattern[]>;
+  savePattern(pattern: Omit<InsertEditingPattern, 'id' | 'createdAt'>): Promise<EditingPattern>;
+  deleteOldPatterns(maxAge?: number, maxPerType?: number): Promise<number>;
 }
 
 function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<VideoProject> {
@@ -470,15 +489,210 @@ export class DatabaseStorage {
       throw error;
     }
   }
+
+  // User methods - persisted to DB instead of memory
+  async getUser(id: string): Promise<User | undefined> {
+    try {
+      const [result] = await db.select().from(users).where(eq(users.id, id));
+      return result;
+    } catch (error) {
+      logger.error("Failed to get user", { error, id });
+      throw error;
+    }
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    try {
+      const [result] = await db.select().from(users).where(eq(users.username, username));
+      return result;
+    } catch (error) {
+      logger.error("Failed to get user by username", { error, username });
+      throw error;
+    }
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    try {
+      const [result] = await db.insert(users).values({
+        username: insertUser.username,
+        password: insertUser.password,
+      }).returning();
+      
+      logger.info("Created user", { id: result.id, username: result.username });
+      return result;
+    } catch (error) {
+      logger.error("Failed to create user", { error, username: insertUser.username });
+      throw error;
+    }
+  }
+
+  // Chat message methods - persisted companion chat
+  async getChatMessages(projectId: number, limit?: number): Promise<ProjectChatMessage[]> {
+    try {
+      let query = db.select()
+        .from(projectChatMessages)
+        .where(eq(projectChatMessages.projectId, projectId))
+        .orderBy(projectChatMessages.createdAt);
+      
+      if (limit) {
+        // Get most recent messages
+        const messages = await db.select()
+          .from(projectChatMessages)
+          .where(eq(projectChatMessages.projectId, projectId))
+          .orderBy(desc(projectChatMessages.createdAt))
+          .limit(limit);
+        return messages.reverse(); // Return in chronological order
+      }
+      
+      return await query;
+    } catch (error) {
+      logger.error("Failed to get chat messages", { error, projectId });
+      throw error;
+    }
+  }
+
+  async addChatMessage(message: Omit<InsertProjectChatMessage, 'id' | 'createdAt'>): Promise<ProjectChatMessage> {
+    try {
+      const [result] = await db.insert(projectChatMessages).values({
+        projectId: message.projectId,
+        messageId: message.messageId,
+        role: message.role,
+        type: message.type,
+        content: message.content,
+        stage: message.stage || null,
+        metadata: message.metadata || null,
+      }).returning();
+      
+      return result;
+    } catch (error) {
+      logger.error("Failed to add chat message", { error, projectId: message.projectId });
+      throw error;
+    }
+  }
+
+  async deleteChatMessages(projectId: number): Promise<number> {
+    try {
+      const result = await db.delete(projectChatMessages)
+        .where(eq(projectChatMessages.projectId, projectId));
+      return result.rowCount || 0;
+    } catch (error) {
+      logger.error("Failed to delete chat messages", { error, projectId });
+      throw error;
+    }
+  }
+
+  async cleanupOldChatMessages(maxAge: number = 24 * 60 * 60 * 1000): Promise<number> {
+    try {
+      const cutoff = new Date(Date.now() - maxAge);
+      const result = await db.delete(projectChatMessages)
+        .where(lt(projectChatMessages.createdAt, cutoff));
+      return result.rowCount || 0;
+    } catch (error) {
+      logger.error("Failed to cleanup old chat messages", { error });
+      throw error;
+    }
+  }
+
+  // Learning patterns persistence
+  async getPatterns(type?: string, limit: number = 100): Promise<EditingPattern[]> {
+    try {
+      if (type) {
+        return await db.select()
+          .from(editingPatterns)
+          .where(eq(editingPatterns.type, type as any))
+          .orderBy(desc(editingPatterns.createdAt))
+          .limit(limit);
+      }
+      return await db.select()
+        .from(editingPatterns)
+        .orderBy(desc(editingPatterns.createdAt))
+        .limit(limit);
+    } catch (error) {
+      logger.error("Failed to get patterns", { error, type });
+      throw error;
+    }
+  }
+
+  async getPatternsByGenre(genre: string, limit: number = 50): Promise<EditingPattern[]> {
+    try {
+      return await db.select()
+        .from(editingPatterns)
+        .where(eq(editingPatterns.genre, genre))
+        .orderBy(desc(editingPatterns.createdAt))
+        .limit(limit);
+    } catch (error) {
+      logger.error("Failed to get patterns by genre", { error, genre });
+      throw error;
+    }
+  }
+
+  async savePattern(pattern: Omit<InsertEditingPattern, 'id' | 'createdAt'>): Promise<EditingPattern> {
+    try {
+      const [result] = await db.insert(editingPatterns).values({
+        patternId: pattern.patternId,
+        type: pattern.type,
+        genre: pattern.genre || null,
+        tone: pattern.tone || null,
+        prompt: pattern.prompt || null,
+        actionDetails: pattern.actionDetails,
+        successScore: pattern.successScore,
+        userApproved: pattern.userApproved,
+        selfReviewScore: pattern.selfReviewScore || null,
+        context: pattern.context || null,
+      }).returning();
+      
+      logger.debug("Saved learning pattern", { patternId: result.patternId, type: result.type });
+      return result;
+    } catch (error) {
+      logger.error("Failed to save pattern", { error, patternId: pattern.patternId });
+      throw error;
+    }
+  }
+
+  async deleteOldPatterns(maxAge: number = 30 * 24 * 60 * 60 * 1000, maxPerType: number = 100): Promise<number> {
+    try {
+      // Delete patterns older than maxAge
+      const cutoff = new Date(Date.now() - maxAge);
+      const ageResult = await db.delete(editingPatterns)
+        .where(lt(editingPatterns.createdAt, cutoff));
+      
+      // For each type, keep only maxPerType most recent patterns
+      // This is done by getting patterns to keep and deleting the rest
+      const patternTypes = ['cut', 'transition', 'broll', 'ai_image', 'caption', 'pacing', 'general'];
+      let typeDeleted = 0;
+      
+      for (const type of patternTypes) {
+        const patterns = await db.select({ id: editingPatterns.id })
+          .from(editingPatterns)
+          .where(eq(editingPatterns.type, type as any))
+          .orderBy(desc(editingPatterns.createdAt))
+          .offset(maxPerType);
+        
+        if (patterns.length > 0) {
+          const idsToDelete = patterns.map(p => p.id);
+          for (const id of idsToDelete) {
+            await db.delete(editingPatterns).where(eq(editingPatterns.id, id));
+            typeDeleted++;
+          }
+        }
+      }
+      
+      return (ageResult.rowCount || 0) + typeDeleted;
+    } catch (error) {
+      logger.error("Failed to cleanup old patterns", { error });
+      throw error;
+    }
+  }
 }
 
-const memStorage = new MemStorage();
+const memStorage = new MemStorage(); // Kept for backwards compatibility, but unused
 const dbStorage = new DatabaseStorage();
 
 export const storage: IStorage = {
-  getUser: memStorage.getUser.bind(memStorage),
-  getUserByUsername: memStorage.getUserByUsername.bind(memStorage),
-  createUser: memStorage.createUser.bind(memStorage),
+  // User methods now use DB storage for persistence across restarts
+  getUser: dbStorage.getUser.bind(dbStorage),
+  getUserByUsername: dbStorage.getUserByUsername.bind(dbStorage),
+  createUser: dbStorage.createUser.bind(dbStorage),
 
   createVideoProject: dbStorage.createVideoProject.bind(dbStorage),
   getVideoProject: dbStorage.getVideoProject.bind(dbStorage),
@@ -499,4 +713,16 @@ export const storage: IStorage = {
   saveEditFeedback: dbStorage.saveEditFeedback.bind(dbStorage),
   getEditFeedbackByProject: dbStorage.getEditFeedbackByProject.bind(dbStorage),
   getFeedbackSummary: dbStorage.getFeedbackSummary.bind(dbStorage),
+
+  // Chat persistence methods
+  getChatMessages: dbStorage.getChatMessages.bind(dbStorage),
+  addChatMessage: dbStorage.addChatMessage.bind(dbStorage),
+  deleteChatMessages: dbStorage.deleteChatMessages.bind(dbStorage),
+  cleanupOldChatMessages: dbStorage.cleanupOldChatMessages.bind(dbStorage),
+
+  // Learning patterns persistence
+  getPatterns: dbStorage.getPatterns.bind(dbStorage),
+  getPatternsByGenre: dbStorage.getPatternsByGenre.bind(dbStorage),
+  savePattern: dbStorage.savePattern.bind(dbStorage),
+  deleteOldPatterns: dbStorage.deleteOldPatterns.bind(dbStorage),
 };

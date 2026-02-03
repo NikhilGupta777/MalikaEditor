@@ -11,12 +11,17 @@ interface SSEOptions {
   onMaxRetriesReached?: () => void;
 }
 
+export interface SSEConnectOptions {
+  /** Override sessionKey for this connection (e.g. per-project key when hook is shared). */
+  sessionKey?: string;
+}
+
 interface SSEController {
-  connect: (url: string) => void;
+  connect: (url: string, options?: SSEConnectOptions) => void;
   close: () => void;
   isConnected: () => boolean;
   getLastEventId: () => string | null;
-  clearStoredEventId: () => void;
+  clearStoredEventId: (key?: string) => void;
 }
 
 export function useSSE(options: SSEOptions = {}): SSEController {
@@ -47,6 +52,7 @@ export function useSSE(options: SSEOptions = {}): SSEController {
     return null;
   };
   const lastEventIdRef = useRef<string | null>(getStoredEventId());
+  const connectionSessionKeyRef = useRef<string | null>(null);
 
   const clearRetryTimeout = useCallback(() => {
     if (retryTimeoutRef.current) {
@@ -69,15 +75,25 @@ export function useSSE(options: SSEOptions = {}): SSEController {
     return lastEventIdRef.current;
   }, []);
 
-  const connect = useCallback((url: string) => {
+  const connect = useCallback((url: string, connectOptions?: SSEConnectOptions) => {
     close();
     isClosedManuallyRef.current = false;
     urlRef.current = url;
     retryCountRef.current = 0;
+    connectionSessionKeyRef.current = connectOptions?.sessionKey ?? sessionKey ?? null;
+    const effectiveKey = connectionSessionKeyRef.current;
+    if (effectiveKey) {
+      try {
+        lastEventIdRef.current = sessionStorage.getItem(`sse_lastEventId_${effectiveKey}`);
+      } catch {
+        lastEventIdRef.current = null;
+      }
+    }
 
     const createConnection = () => {
       if (isClosedManuallyRef.current) return;
 
+      const keyForThisConnection = connectionSessionKeyRef.current ?? sessionKey;
       // Add lastEventId to URL for reconnection replay support
       // On retry (retryCount > 0) or if we have a stored lastEventId (page refresh)
       let connectionUrl = url;
@@ -101,14 +117,14 @@ export function useSSE(options: SSEOptions = {}): SSEController {
         // Track the last event ID for replay on reconnection
         if (event.lastEventId) {
           lastEventIdRef.current = event.lastEventId;
-          // Persist to sessionStorage if sessionKey provided (survives page refresh)
-          if (sessionKey) {
+          const storageKey = keyForThisConnection;
+          if (storageKey) {
             try {
-              sessionStorage.setItem(`sse_lastEventId_${sessionKey}`, event.lastEventId);
+              sessionStorage.setItem(`sse_lastEventId_${storageKey}`, event.lastEventId);
             } catch { /* sessionStorage not available */ }
           }
         }
-        
+
         try {
           const data = JSON.parse(event.data);
           onMessage?.(data, event.lastEventId);
@@ -138,18 +154,19 @@ export function useSSE(options: SSEOptions = {}): SSEController {
     };
 
     createConnection();
-  }, [close, maxRetries, retryDelay, onOpen, onMessage, onError, onReconnect, onMaxRetriesReached]);
+  }, [close, maxRetries, retryDelay, sessionKey, onOpen, onMessage, onError, onReconnect, onMaxRetriesReached]);
 
   const isConnected = useCallback(() => {
     return eventSourceRef.current?.readyState === EventSource.OPEN;
   }, []);
 
-  // Clear stored event ID (useful when starting a fresh processing session)
-  const clearStoredEventId = useCallback(() => {
+  // Clear stored event ID (useful when starting a fresh processing session). Pass key to clear, or uses connection/key from options.
+  const clearStoredEventId = useCallback((key?: string) => {
     lastEventIdRef.current = null;
-    if (sessionKey) {
+    const toClear = key ?? connectionSessionKeyRef.current ?? sessionKey;
+    if (toClear) {
       try {
-        sessionStorage.removeItem(`sse_lastEventId_${sessionKey}`);
+        sessionStorage.removeItem(`sse_lastEventId_${toClear}`);
       } catch { /* sessionStorage not available */ }
     }
   }, [sessionKey]);

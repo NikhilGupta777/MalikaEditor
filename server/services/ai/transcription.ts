@@ -468,7 +468,47 @@ function createSegmentFromAssemblyAIWords(
 }
 
 // Cache for speech start times to avoid redundant FFmpeg calls
-const speechStartCache = new Map<string, number>();
+// Using TTL to prevent memory leaks
+interface SpeechCacheEntry {
+  value: number;
+  timestamp: number;
+}
+const speechStartCache = new Map<string, SpeechCacheEntry>();
+const SPEECH_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour TTL
+const SPEECH_CACHE_MAX_SIZE = 100; // Maximum entries
+
+// Cleanup old entries periodically
+function cleanupSpeechCache(): void {
+  const now = Date.now();
+  const keysToDelete: string[] = [];
+  
+  // Use Array.from for compatibility with TypeScript target
+  const entries = Array.from(speechStartCache.entries());
+  for (let i = 0; i < entries.length; i++) {
+    const [key, entry] = entries[i];
+    if (now - entry.timestamp > SPEECH_CACHE_TTL_MS) {
+      keysToDelete.push(key);
+    }
+  }
+  
+  for (const key of keysToDelete) {
+    speechStartCache.delete(key);
+  }
+  
+  // Also enforce max size - remove oldest entries
+  if (speechStartCache.size > SPEECH_CACHE_MAX_SIZE) {
+    const sortedEntries = Array.from(speechStartCache.entries())
+      .sort((a, b) => a[1].timestamp - b[1].timestamp);
+    
+    const toRemove = speechStartCache.size - SPEECH_CACHE_MAX_SIZE;
+    for (let i = 0; i < toRemove; i++) {
+      speechStartCache.delete(sortedEntries[i][0]);
+    }
+  }
+}
+
+// Run cleanup every 10 minutes
+setInterval(cleanupSpeechCache, 10 * 60 * 1000);
 
 /**
  * Detect when speech first starts in an audio file using FFmpeg silencedetect
@@ -477,9 +517,10 @@ const speechStartCache = new Map<string, number>();
  * @returns Time in seconds when speech first starts (0 if detection fails)
  */
 async function detectSpeechStart(audioPath: string): Promise<number> {
-  // Check cache first
-  if (speechStartCache.has(audioPath)) {
-    return speechStartCache.get(audioPath)!;
+  // Check cache first (with TTL validation)
+  const cached = speechStartCache.get(audioPath);
+  if (cached && (Date.now() - cached.timestamp < SPEECH_CACHE_TTL_MS)) {
+    return cached.value;
   }
   
   return new Promise((resolve) => {
@@ -503,7 +544,7 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
         completed = true;
         process.kill('SIGKILL');
         aiLogger.warn('Speech start detection timed out, using default offset 0');
-        speechStartCache.set(audioPath, 0);
+        speechStartCache.set(audioPath, { value: 0, timestamp: Date.now() });
         resolve(0);
       }
     }, timeoutMs);
@@ -554,7 +595,7 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
           aiLogger.debug('No silence detected, speech starts at 0s');
         }
         
-        speechStartCache.set(audioPath, speechStart);
+        speechStartCache.set(audioPath, { value: speechStart, timestamp: Date.now() });
         resolve(speechStart);
       }
     });
@@ -564,7 +605,7 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
         completed = true;
         clearTimeout(timeoutId);
         aiLogger.warn(`Speech start detection failed: ${err.message}, using default offset 0`);
-        speechStartCache.set(audioPath, 0);
+        speechStartCache.set(audioPath, { value: 0, timestamp: Date.now() });
         resolve(0);
       }
     });
@@ -585,7 +626,7 @@ const GEMINI_MAX_FILE_SIZE_MB = AI_CONFIG.limits.geminiMaxFileSizeMB;
 export function logTranscriptionConfig(): void {
   const hasAssemblyAIKey = !!process.env.ASSEMBLYAI_API_KEY;
   const hasOpenAIKey = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-  const hasGeminiKey = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  const hasGeminiKey = !!(process.env.GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY);
 
   aiLogger.info("═══════════════════════════════════════════════════════");
   aiLogger.info("TRANSCRIPTION SYSTEM INITIALIZED");
@@ -1388,7 +1429,7 @@ export async function transcribeAudioEnhanced(
   
   const hasAssemblyAI = !!process.env.ASSEMBLYAI_API_KEY;
   const hasOpenAI = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
-  const hasGemini = !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  const hasGemini = !!(process.env.GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY);
   
   // Primary: AssemblyAI (best for captions - native word-level timestamps + enhanced AI features)
   if (hasAssemblyAI) {

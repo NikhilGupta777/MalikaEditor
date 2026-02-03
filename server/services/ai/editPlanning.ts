@@ -714,12 +714,12 @@ export async function generateSmartEditPlan(
   }
 
   // PHASE 4: Apply learned preferences from previous successful edits
-  const learningContext = getLearningContext(analysis, prompt);
+  const learningContext = await getLearningContext(analysis, prompt);
   if (learningContext) {
     aiLogger.info("[Learning] Applying learned preferences from successful past edits");
   }
-  const learnedPreferences = applyLearnedPreferences(analysis, prompt);
-  const relevantPatterns = retrievePatterns(["cut", "transition", "broll", "pacing"], analysis, prompt, 5);
+  const learnedPreferences = await applyLearnedPreferences(analysis, prompt);
+  const relevantPatterns = await retrievePatterns(["cut", "transition", "broll", "pacing"], analysis, prompt, 5);
   if (relevantPatterns.length > 0) {
     aiLogger.info(`[Learning] Found ${relevantPatterns.length} relevant patterns from past edits`);
   }

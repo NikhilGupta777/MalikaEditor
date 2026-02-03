@@ -19,9 +19,18 @@ interface RenderSSEController {
 export function useRenderSSE(callbacks: RenderSSECallbacks): RenderSSEController {
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
+  // Ref to hold the close function to avoid closure issues
+  const closeRef = useRef<(() => void) | null>(null);
 
   const handleMessage = useCallback((data: unknown) => {
     const message = data as Record<string, unknown>;
+    
+    // Helper to close connection after terminal events
+    const closeConnection = () => {
+      if (closeRef.current) {
+        closeRef.current();
+      }
+    };
     
     if (message.type === "status") {
       callbacksRef.current.onStatusUpdate(message.status as string);
@@ -37,13 +46,13 @@ export function useRenderSSE(callbacks: RenderSSECallbacks): RenderSSEController
         duration: message.duration as number | undefined,
         aiImageStats: message.aiImageStats,
       });
-      sse.close();
+      closeConnection();
     } else if (message.type === "error") {
       callbacksRef.current.onError(
         message.error as string,
         message.suggestion as string | undefined
       );
-      sse.close();
+      closeConnection();
     }
   }, []);
 
@@ -65,6 +74,9 @@ export function useRenderSSE(callbacks: RenderSSECallbacks): RenderSSEController
       console.log(`Render SSE reconnecting (attempt ${attempt})`);
     },
   });
+
+  // Assign close function to ref so handleMessage can access it
+  closeRef.current = sse.close;
 
   const startRender = useCallback((projectId: number, qualityMode: string, isReconnect = false) => {
     const params = new URLSearchParams();

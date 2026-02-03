@@ -293,8 +293,26 @@ export interface FeedbackSummary {
   }[];
 }
 
-let feedbackCache: EditFeedback[] = [];
+// Feedback cache with TTL to prevent memory leaks
+interface FeedbackCacheEntry {
+  feedback: EditFeedback;
+  timestamp: number;
+}
+let feedbackCache: FeedbackCacheEntry[] = [];
 let dbFeedbackLoaded = false;
+const FEEDBACK_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hour TTL
+const FEEDBACK_CACHE_MAX_SIZE = 1000; // Maximum entries
+
+// Cleanup old feedback entries periodically
+function cleanupFeedbackCache(): void {
+  const now = Date.now();
+  feedbackCache = feedbackCache.filter(entry => 
+    now - entry.timestamp < FEEDBACK_CACHE_TTL_MS
+  );
+}
+
+// Run cleanup every hour
+setInterval(cleanupFeedbackCache, 60 * 60 * 1000);
 
 async function loadFeedbackFromDb(): Promise<void> {
   if (dbFeedbackLoaded) return;
@@ -309,9 +327,9 @@ async function loadFeedbackFromDb(): Promise<void> {
 }
 
 export async function recordEditFeedbackAsync(feedback: EditFeedback): Promise<void> {
-  feedbackCache.push(feedback);
-  if (feedbackCache.length > 1000) {
-    feedbackCache = feedbackCache.slice(-1000);
+  feedbackCache.push({ feedback, timestamp: Date.now() });
+  if (feedbackCache.length > FEEDBACK_CACHE_MAX_SIZE) {
+    feedbackCache = feedbackCache.slice(-FEEDBACK_CACHE_MAX_SIZE);
   }
   
   try {
@@ -338,9 +356,9 @@ export async function recordEditFeedbackAsync(feedback: EditFeedback): Promise<v
 }
 
 export function recordEditFeedback(feedback: EditFeedback): void {
-  feedbackCache.push(feedback);
-  if (feedbackCache.length > 1000) {
-    feedbackCache = feedbackCache.slice(-1000);
+  feedbackCache.push({ feedback, timestamp: Date.now() });
+  if (feedbackCache.length > FEEDBACK_CACHE_MAX_SIZE) {
+    feedbackCache = feedbackCache.slice(-FEEDBACK_CACHE_MAX_SIZE);
   }
   reviewLogger.debug(`Recorded feedback for action ${feedback.editActionId}: approved=${feedback.wasApproved}`);
   
@@ -377,12 +395,18 @@ export async function getFeedbackSummaryAsync(): Promise<FeedbackSummary> {
 }
 
 export function getFeedbackSummary(): FeedbackSummary {
-  const totalFeedback = feedbackCache.length;
-  const approvedCount = feedbackCache.filter(f => f.wasApproved).length;
+  // Get valid (non-expired) feedback
+  const now = Date.now();
+  const validFeedback = feedbackCache
+    .filter(entry => now - entry.timestamp < FEEDBACK_CACHE_TTL_MS)
+    .map(entry => entry.feedback);
+  
+  const totalFeedback = validFeedback.length;
+  const approvedCount = validFeedback.filter(f => f.wasApproved).length;
   
   const rejectionsByType = new Map<string, { count: number; reasons: string[] }>();
   
-  for (const feedback of feedbackCache.filter(f => !f.wasApproved)) {
+  for (const feedback of validFeedback.filter(f => !f.wasApproved)) {
     const existing = rejectionsByType.get(feedback.actionType) || { count: 0, reasons: [] };
     existing.count++;
     if (feedback.userReason) {

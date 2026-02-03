@@ -1,9 +1,10 @@
 import ffmpeg from "fluent-ffmpeg";
 import { promises as fs, createWriteStream } from "fs";
+import * as fsSync from "fs";
 import { pipeline } from "stream/promises";
 import path from "path";
-import os from "os";
 import { v4 as uuidv4 } from "uuid";
+import { UPLOADS_DIR as UPLOADS_DIR_CONFIG, OUTPUT_DIR as OUTPUT_DIR_CONFIG, FRAMES_DIR as FRAMES_DIR_CONFIG, AUDIO_DIR as AUDIO_DIR_CONFIG, STOCK_DIR as STOCK_DIR_CONFIG, CHAPTERS_DIR as CHAPTERS_DIR_CONFIG } from "../config/paths";
 import axios from "axios";
 import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem, SemanticAnalysis } from "@shared/schema";
 import { createLogger } from "../utils/logger";
@@ -25,13 +26,13 @@ export interface ChapterExtractionInput {
 
 const videoLogger = createLogger("video-processor");
 
-const TEMP_DIR = os.tmpdir();
-const UPLOADS_DIR = path.join(TEMP_DIR, "malika_uploads");
-const FRAMES_DIR = path.join(TEMP_DIR, "malika_frames");
-const OUTPUT_DIR = path.join(TEMP_DIR, "malika_output");
-const AUDIO_DIR = path.join(TEMP_DIR, "malika_audio");
-const STOCK_DIR = path.join(TEMP_DIR, "malika_stock");
-const CHAPTERS_DIR = path.join(TEMP_DIR, "malika_chapters");
+// Use centralized paths (respects UPLOADS_PATH env)
+const UPLOADS_DIR = UPLOADS_DIR_CONFIG;
+const FRAMES_DIR = FRAMES_DIR_CONFIG;
+const OUTPUT_DIR = OUTPUT_DIR_CONFIG;
+const AUDIO_DIR = AUDIO_DIR_CONFIG;
+const STOCK_DIR = STOCK_DIR_CONFIG;
+const CHAPTERS_DIR = CHAPTERS_DIR_CONFIG;
 
 // FFmpeg timeouts from centralized config
 const FFPROBE_TIMEOUT_MS = AI_CONFIG.ffmpeg?.probeTimeoutMs ?? 30000;
@@ -317,11 +318,9 @@ function runFfprobeWithTimeout(
 function cleanupTempFilesSync(paths: string[]): void {
   for (const p of paths) {
     try {
-      fs.unlink(p).catch(() => {
-        // File may already be deleted - ignore
-      });
+      fsSync.rmSync(p, { recursive: true, force: true });
     } catch {
-      // Sync error accessing path - ignore
+      // File may already be deleted or path invalid - ignore
     }
   }
 }

@@ -122,6 +122,17 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     return true;
   };
 
+  // Sync localReviewData with reviewData prop when prop changes (but not if user has interacted)
+  // This handles cases where the server updates reviewData after initial render
+  const prevReviewDataRef = useRef(reviewData);
+  useEffect(() => {
+    // Only sync if the prop has actually changed (not just a re-render)
+    if (prevReviewDataRef.current !== reviewData && !userHasInteracted) {
+      setLocalReviewData(reviewData);
+    }
+    prevReviewDataRef.current = reviewData;
+  }, [reviewData, userHasInteracted]);
+
   // Hydrate local state from autosave if available (only if user hasn't started interacting)
   useEffect(() => {
     if (!hasHydratedAutosave && hasAutosave && autosaveData && !userHasInteracted) {

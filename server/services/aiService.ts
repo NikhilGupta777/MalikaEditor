@@ -19,6 +19,7 @@ export {
   getOpenAIClient,
   logTranscriptionConfig,
   transcribeAudio,
+  transcribeAudioEnhanced,
   analyzeVideoFrames,
   analyzeVideoDeep,
   watchFullVideo,

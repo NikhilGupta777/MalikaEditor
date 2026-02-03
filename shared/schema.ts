@@ -316,6 +316,53 @@ export const editFeedback = pgTable("edit_feedback", {
 export type EditFeedbackRecord = typeof editFeedback.$inferSelect;
 export type InsertEditFeedback = typeof editFeedback.$inferInsert;
 
+// Project chat messages - persisted companion chat for each project
+export const chatMessageRoleEnum = pgEnum("chat_message_role", ["companion", "user", "system"]);
+export const chatMessageTypeEnum = pgEnum("chat_message_type", ["update", "explanation", "question", "answer", "milestone", "insight"]);
+
+export const projectChatMessages = pgTable("project_chat_messages", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => videoProjects.id, { onDelete: "cascade" }).notNull(),
+  messageId: text("message_id").notNull(), // Client-generated unique ID
+  role: chatMessageRoleEnum("role").notNull(),
+  type: chatMessageTypeEnum("type").notNull(),
+  content: text("content").notNull(),
+  stage: text("stage"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => ({
+  projectIdIdx: index("project_chat_messages_project_id_idx").on(table.projectId),
+  createdAtIdx: index("project_chat_messages_created_at_idx").on(table.createdAt),
+}));
+
+export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;
+export type InsertProjectChatMessage = typeof projectChatMessages.$inferInsert;
+
+// Learning patterns - persistent storage for AI editing patterns
+export const patternTypeEnum = pgEnum("pattern_type", ["cut", "transition", "broll", "ai_image", "caption", "pacing", "general"]);
+
+export const editingPatterns = pgTable("editing_patterns", {
+  id: serial("id").primaryKey(),
+  patternId: text("pattern_id").notNull().unique(), // Client-generated unique ID
+  type: patternTypeEnum("type").notNull(),
+  genre: text("genre"),
+  tone: text("tone"),
+  prompt: text("prompt"),
+  actionDetails: jsonb("action_details").notNull(), // { start, end, duration, reason, query, transitionType }
+  successScore: integer("success_score").notNull(),
+  userApproved: integer("user_approved").notNull().default(0), // 0 = false, 1 = true
+  selfReviewScore: integer("self_review_score"),
+  context: jsonb("context"), // { videoGenre, videoTone, videoDuration, promptKeywords, motionIntensity, etc. }
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => ({
+  typeIdx: index("editing_patterns_type_idx").on(table.type),
+  genreIdx: index("editing_patterns_genre_idx").on(table.genre),
+  createdAtIdx: index("editing_patterns_created_at_idx").on(table.createdAt),
+}));
+
+export type EditingPattern = typeof editingPatterns.$inferSelect;
+export type InsertEditingPattern = typeof editingPatterns.$inferInsert;
+
 export const insertVideoProjectSchema = createInsertSchema(videoProjects).omit({
   id: true,
   version: true,
@@ -901,6 +948,9 @@ export const reviewDataSchema = z.object({
   userNotes: z.string().optional(),
   editOptions: editOptionsSchema.optional(),
   aiReview: aiReviewResultSchema.optional(),
+  // Post-render self-review (persisted by background processor)
+  selfReviewScore: z.number().min(0).max(100).optional(),
+  selfReviewResult: z.record(z.any()).optional(),
 });
 
 export type ReviewData = z.infer<typeof reviewDataSchema>;

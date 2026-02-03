@@ -1,0 +1,537 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.users": {
+      "name": "users",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "username": {
+          "name": "username",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "uniqueConstraints": {
+        "users_username_unique": {
+          "name": "users_username_unique",
+          "columns": ["username"]
+        }
+      }
+    },
+    "public.video_projects": {
+      "name": "video_projects",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "file_name": {
+          "name": "file_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_path": {
+          "name": "original_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_path": {
+          "name": "output_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "project_status",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "processing_stage": {
+          "name": "processing_stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration": {
+          "name": "duration",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "analysis": {
+          "name": "analysis",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "edit_plan": {
+          "name": "edit_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "transcript": {
+          "name": "transcript",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "transcript_enhanced": {
+          "name": "transcript_enhanced",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stock_media": {
+          "name": "stock_media",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "review_data": {
+          "name": "review_data",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP + INTERVAL '1 hour'"
+        }
+      },
+      "indexes": {
+        "video_projects_status_idx": {
+          "name": "video_projects_status_idx",
+          "columns": ["status"]
+        },
+        "video_projects_created_at_idx": {
+          "name": "video_projects_created_at_idx",
+          "columns": ["created_at"]
+        },
+        "video_projects_expires_at_idx": {
+          "name": "video_projects_expires_at_idx",
+          "columns": ["expires_at"]
+        }
+      },
+      "foreignKeys": {},
+      "uniqueConstraints": {}
+    },
+    "public.cached_assets": {
+      "name": "cached_assets",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cache_type": {
+          "name": "cache_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cache_key": {
+          "name": "cache_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "data": {
+          "name": "data",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP + INTERVAL '1 hour'"
+        }
+      },
+      "indexes": {
+        "cached_assets_type_key_idx": {
+          "name": "cached_assets_type_key_idx",
+          "columns": ["cache_type", "cache_key"]
+        },
+        "cached_assets_expires_at_idx": {
+          "name": "cached_assets_expires_at_idx",
+          "columns": ["expires_at"]
+        }
+      },
+      "foreignKeys": {
+        "cached_assets_project_id_video_projects_id_fk": {
+          "name": "cached_assets_project_id_video_projects_id_fk",
+          "tableFrom": "cached_assets",
+          "columnsFrom": ["project_id"],
+          "tableTo": "video_projects",
+          "columnsTo": ["id"],
+          "onDelete": "cascade"
+        }
+      },
+      "uniqueConstraints": {}
+    },
+    "public.project_autosaves": {
+      "name": "project_autosaves",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "review_data": {
+          "name": "review_data",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "project_autosaves_project_id_idx": {
+          "name": "project_autosaves_project_id_idx",
+          "columns": ["project_id"]
+        }
+      },
+      "foreignKeys": {
+        "project_autosaves_project_id_video_projects_id_fk": {
+          "name": "project_autosaves_project_id_video_projects_id_fk",
+          "tableFrom": "project_autosaves",
+          "columnsFrom": ["project_id"],
+          "tableTo": "video_projects",
+          "columnsTo": ["id"],
+          "onDelete": "cascade"
+        }
+      },
+      "uniqueConstraints": {}
+    },
+    "public.edit_feedback": {
+      "name": "edit_feedback",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "edit_action_id": {
+          "name": "edit_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action_type": {
+          "name": "action_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "was_approved": {
+          "name": "was_approved",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "was_modified": {
+          "name": "was_modified",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "user_reason": {
+          "name": "user_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "original_start": {
+          "name": "original_start",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "original_end": {
+          "name": "original_end",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "modified_start": {
+          "name": "modified_start",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "modified_end": {
+          "name": "modified_end",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_genre": {
+          "name": "context_genre",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_tone": {
+          "name": "context_tone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_duration": {
+          "name": "context_duration",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "edit_feedback_project_id_idx": {
+          "name": "edit_feedback_project_id_idx",
+          "columns": ["project_id"]
+        },
+        "edit_feedback_action_type_idx": {
+          "name": "edit_feedback_action_type_idx",
+          "columns": ["action_type"]
+        }
+      },
+      "foreignKeys": {
+        "edit_feedback_project_id_video_projects_id_fk": {
+          "name": "edit_feedback_project_id_video_projects_id_fk",
+          "tableFrom": "edit_feedback",
+          "columnsFrom": ["project_id"],
+          "tableTo": "video_projects",
+          "columnsTo": ["id"],
+          "onDelete": "cascade"
+        }
+      },
+      "uniqueConstraints": {}
+    },
+    "public.project_chat_messages": {
+      "name": "project_chat_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "chat_message_role",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "chat_message_type",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stage": {
+          "name": "stage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {
+        "project_chat_messages_project_id_idx": {
+          "name": "project_chat_messages_project_id_idx",
+          "columns": ["project_id"]
+        },
+        "project_chat_messages_created_at_idx": {
+          "name": "project_chat_messages_created_at_idx",
+          "columns": ["created_at"]
+        }
+      },
+      "foreignKeys": {
+        "project_chat_messages_project_id_video_projects_id_fk": {
+          "name": "project_chat_messages_project_id_video_projects_id_fk",
+          "tableFrom": "project_chat_messages",
+          "columnsFrom": ["project_id"],
+          "tableTo": "video_projects",
+          "columnsTo": ["id"],
+          "onDelete": "cascade"
+        }
+      },
+      "uniqueConstraints": {}
+    }
+  },
+  "enums": {
+    "public.project_status": {
+      "name": "project_status",
+      "schema": "public",
+      "values": [
+        "pending",
+        "uploading",
+        "analyzing",
+        "transcribing",
+        "planning",
+        "fetching_stock",
+        "generating_ai_images",
+        "awaiting_review",
+        "editing",
+        "rendering",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "public.chat_message_role": {
+      "name": "chat_message_role",
+      "schema": "public",
+      "values": ["companion", "user", "system"]
+    },
+    "public.chat_message_type": {
+      "name": "chat_message_type",
+      "schema": "public",
+      "values": ["update", "explanation", "question", "answer", "milestone", "insight"]
+    }
+  },
+  "schemas": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  }
+}

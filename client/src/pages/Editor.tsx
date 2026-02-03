@@ -1,8 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
-import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp } from "lucide-react";
+import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2 } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
@@ -12,11 +12,22 @@ import { EditPlanPreview } from "@/components/EditPlanPreview";
 import { StockMediaPreview } from "@/components/StockMediaPreview";
 import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { TranscriptEditor } from "@/components/TranscriptEditor";
 import { ActivityLog } from "@/components/ActivityLog";
-import { ReviewPanel } from "@/components/ReviewPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
-import { ChatCompanion } from "@/components/ChatCompanion";
+
+// Lazy-load heavy panels to reduce initial bundle size
+const ReviewPanel = lazy(() => import("@/components/ReviewPanel").then(m => ({ default: m.ReviewPanel })));
+const TranscriptEditor = lazy(() => import("@/components/TranscriptEditor").then(m => ({ default: m.TranscriptEditor })));
+const ChatCompanion = lazy(() => import("@/components/ChatCompanion").then(m => ({ default: m.ChatCompanion })));
+
+// Loading fallback for lazy-loaded components
+function PanelLoadingFallback() {
+  return (
+    <div className="flex items-center justify-center p-8">
+      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +37,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useRenderSSE } from "@/hooks/useRenderSSE";
 import { cn } from "@/lib/utils";
 import { CLIENT_CONFIG } from "@/lib/config";
+import { debugLog, debugError } from "@/lib/debug";
 import type {
   ProcessingStatus as ProcessingStatusType,
   EditPlan,
@@ -144,6 +156,7 @@ export default function Editor() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
   
   // SSE reconnection constants from centralized config
   const MAX_RECONNECT_ATTEMPTS = CLIENT_CONFIG.sse.maxReconnectAttempts;
@@ -232,11 +245,11 @@ export default function Editor() {
               setReviewData(data.reviewData);
             }
           })
-          .catch(err => console.error("Failed to load review data:", err));
+          .catch(err => debugError("Editor", "Failed to load review data:", err));
       }
       // Auto-reconnect to rendering if project is mid-render using renderSSE hook
       if (loadedProject.status === "rendering") {
-        console.log("Reconnecting to in-progress rendering...");
+        debugLog("Editor", "Reconnecting to in-progress rendering...");
         setIsRendering(true);
         renderSSE.startRender(loadedProject.id, editOptions.qualityMode, true);
       }
@@ -244,7 +257,7 @@ export default function Editor() {
       // Auto-reconnect to processing if project is in a processing state
       const processingStates = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images"];
       if (processingStates.includes(loadedProject.status)) {
-        console.log("Reconnecting to in-progress processing...");
+        debugLog("Editor", "Reconnecting to in-progress processing...");
         setIsProcessing(true);
         reconnectAttemptsRef.current = 0;
         
@@ -321,7 +334,7 @@ export default function Editor() {
             } else if (data.type === "transcript") {
               setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
             } else if (data.type === "staleRecovery") {
-              console.log("Processing was interrupted:", data.message);
+              debugLog("Editor", "Processing was interrupted:", data.message);
               setIsProcessing(false);
               // Set status to a visible failure state so UI shows recovery options
               setProject((prev) => prev ? { 
@@ -339,7 +352,7 @@ export default function Editor() {
           };
           
           eventSource.onerror = () => {
-            console.log("Processing SSE connection lost, fetching current status...");
+            debugLog("Editor", "Processing SSE connection lost, fetching current status...");
             eventSource.close();
             eventSourceRef.current = null;
             
@@ -362,21 +375,21 @@ export default function Editor() {
                 } else if (processingStates.includes(data.status)) {
                   // Check retry limit
                   if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-                    console.log("Max reconnection attempts reached");
+                    debugLog("Editor", "Max reconnection attempts reached");
                     setIsProcessing(false);
                     return;
                   }
                   // Still processing - reconnect with exponential backoff
                   reconnectAttemptsRef.current++;
                   const delay = Math.min(2000 * Math.pow(1.5, reconnectAttemptsRef.current - 1), 10000);
-                  console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+                  debugLog("Editor", `Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
                   reconnectTimeoutRef.current = setTimeout(() => {
                     connectProcessSSE(projectId);
                   }, delay);
                 }
               })
               .catch(err => {
-                console.error("Failed to fetch project status:", err);
+                debugError("Editor", "Failed to fetch project status:", err);
                 setIsProcessing(false);
               });
           };
@@ -400,8 +413,6 @@ export default function Editor() {
       }
     };
   }, []);
-
-  const xhrRef = useRef<XMLHttpRequest | null>(null);
 
   const handleUpload = useCallback(
     async (file: File) => {
@@ -573,7 +584,7 @@ export default function Editor() {
             );
           } else if (data.type === "aiImages") {
             // AI images generated notification - aiImageStats will have the full data
-            console.log(`Generated ${data.count} AI images`);
+            debugLog("Editor", `Generated ${data.count} AI images`);
           } else if (data.type === "aiImagesError") {
             // AI image generation failed, continuing with stock media
             toast({
@@ -838,7 +849,7 @@ export default function Editor() {
       };
       
     } catch (error) {
-      console.error("Failed to retry processing:", error);
+      debugError("Editor", "Failed to retry processing:", error);
       toast({
         title: "Retry failed",
         description: "Could not restart processing. Please try uploading a new video.",
@@ -1061,16 +1072,16 @@ export default function Editor() {
                     editActionsCount={project.editPlan?.actions?.length}
                   />
                   
-                  {/* Actions for stuck/interrupted projects */}
+                  {/* Actions for interrupted projects */}
                   {!isProcessing && !isRendering && (
                     <Card className="border-amber-500/50 bg-amber-500/5">
                       <CardContent className="p-4">
                         <div className="flex items-center gap-2 mb-3">
                           <AlertCircle className="h-4 w-4 text-amber-500" />
-                          <span className="text-sm font-medium">Project may be stuck</span>
+                          <span className="text-sm font-medium">Processing was interrupted</span>
                         </div>
                         <p className="text-xs text-muted-foreground mb-3">
-                          This project was interrupted. You can retry processing or start a new project.
+                          Click 'Retry processing' to continue from where we left off, or start a new project.
                         </p>
                         <div className="flex gap-2">
                           <Button 
@@ -1116,18 +1127,22 @@ export default function Editor() {
               
               {/* AI Chat Companion - Shows during processing */}
               {project?.id && project?.status !== "pending" && project?.status !== "uploading" && (
-                <ChatCompanion projectId={project.id} />
+                <Suspense fallback={<PanelLoadingFallback />}>
+                  <ChatCompanion projectId={project.id} />
+                </Suspense>
               )}
 
               {/* Review Panel - User approval step */}
               {project?.status === "awaiting_review" && reviewData && project.id && (
-                <ReviewPanel
-                  projectId={project.id}
-                  reviewData={reviewData}
-                  onApprove={handleReviewApprove}
-                  onCancel={handleReviewCancel}
-                  isLoading={isRendering}
-                />
+                <Suspense fallback={<PanelLoadingFallback />}>
+                  <ReviewPanel
+                    projectId={project.id}
+                    reviewData={reviewData}
+                    onApprove={handleReviewApprove}
+                    onCancel={handleReviewCancel}
+                    isLoading={isRendering}
+                  />
+                </Suspense>
               )}
 
               {/* Completed */}
@@ -1240,15 +1255,17 @@ export default function Editor() {
                     )}
                   </TabsContent>
                   <TabsContent value="manual" className="mt-4">
-                    <TranscriptEditor
-                      transcript={project.transcript || []}
-                      editPlan={project.editPlan}
-                      onEditPlanChange={handleEditPlanChange}
-                      semanticAnalysis={project.semanticAnalysis}
-                      isLoading={project.status === "analyzing"}
-                      currentTime={currentTime}
-                      onSeekTo={setCurrentTime}
-                    />
+                    <Suspense fallback={<PanelLoadingFallback />}>
+                      <TranscriptEditor
+                        transcript={project.transcript || []}
+                        editPlan={project.editPlan}
+                        onEditPlanChange={handleEditPlanChange}
+                        semanticAnalysis={project.semanticAnalysis}
+                        isLoading={project.status === "analyzing"}
+                        currentTime={currentTime}
+                        onSeekTo={setCurrentTime}
+                      />
+                    </Suspense>
                   </TabsContent>
                 </Tabs>
               )}

@@ -45,8 +45,9 @@ export function ChatCompanion({ projectId, className }: ChatCompanionProps) {
       }
       return response.json();
     },
-    enabled: !!projectId,
-    refetchInterval: 2000, // Poll every 2 seconds for real-time updates
+    enabled: !!projectId && isExpanded, // Only poll when chat is expanded
+    refetchInterval: isExpanded ? 2000 : false, // Poll every 2 seconds only when expanded
+    refetchIntervalInBackground: false, // Don't poll when tab is in background
     staleTime: 1000,
   });
 

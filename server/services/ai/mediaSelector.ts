@@ -108,7 +108,7 @@ async function fetchThumbnailAsBase64(url: string): Promise<{ base64: string; mi
 }
 
 // Analyze a single thumbnail using Gemini Vision
-async function analyzeThumbailWithVision(
+async function analyzeThumbnailWithVision(
   thumbnailUrl: string,
   query: string,
   mediaType: "image" | "video"
@@ -256,7 +256,7 @@ async function analyzeMediaThumbnails(
     const batch = stockCandidates.slice(i, i + VISUAL_ANALYSIS_CONCURRENCY);
     
     const batchPromises = batch.map(async (candidate) => {
-      const description = await analyzeThumbailWithVision(
+      const description = await analyzeThumbnailWithVision(
         candidate.thumbnailUrl!,
         candidate.query,
         candidate.type as "image" | "video"

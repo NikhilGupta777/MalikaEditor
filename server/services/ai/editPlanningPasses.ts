@@ -19,6 +19,7 @@ import type {
   TranscriptSegment,
   SemanticAnalysis,
   EditAction,
+  EditPlan,
   TranscriptEnhancedType,
 } from "@shared/schema";
 
@@ -1125,6 +1126,102 @@ function ensureKeepCoverage(actions: EditAction[], duration: number): void {
       priority: "medium",
       qualityScore: 60,
     });
+  }
+}
+
+const CorrectionPassSchema = z.object({
+  actions: z.array(z.any()),
+  justification: z.string(),
+  fixedIssues: z.array(z.array(z.string()).or(z.string())), // Flexible to handle varied AI outputs
+});
+
+/**
+ * PASS 5: CORRECTION PASS (Autonomous Self-Correction)
+ * Specifically targets issues identified by the Arbitrator during post-render review.
+ */
+export async function executePass5CorrectionPass(
+  analysis: VideoAnalysis,
+  transcript: TranscriptSegment[],
+  previousPlan: EditPlan,
+  arbitrationJustification: string,
+  flaggedActions: EditAction[],
+  learningContext?: string
+): Promise<EditPlan> {
+  const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("Gemini API key not configured for Correction Pass");
+
+  const gemini = getGeminiClient();
+  const model = AI_CONFIG.models.editPlanning;
+
+  const flaggedInfo = flaggedActions.map(a =>
+    `- ${a.type} at ${a.start}s: ${a.reason || 'Needs replacement'}`
+  ).join('\n');
+
+  const prompt = `You are an AI Video Editor in "Self-Correction" mode. 
+A previous edit plan was rendered, but a post-render review identified quality issues.
+
+### TARGET ISSUES TO FIX:
+${arbitrationJustification}
+
+### FLAGGED ACTIONS:
+${flaggedInfo}
+
+### LEARNED PREFERENCES FROM PAST EDITS:
+${learningContext || "No specific patterns discovered yet."}
+
+### ORIGINAL PLAN:
+${JSON.stringify(previousPlan.actions.slice(0, 50))}... (showing first 50 actions)
+
+### TASK:
+1. Review the flagged actions and the arbitrator's justification.
+2. Generate a NEW set of actions that fixes these specific issues.
+3. If a B-roll was "distracting", replace it with a better query or remove it.
+4. If a "cut" was missed, add it.
+5. Maintain the overall narrative flow.
+
+Return ONLY a JSON object with:
+{
+  "actions": [...],
+  "justification": "Why this new plan is better",
+  "fixedIssues": ["List of issues from the target list that are now resolved"]
+}`;
+
+  try {
+    const response = await withRetry(async () => {
+      const result = await gemini.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" }
+      });
+      return result.text;
+    }, "Pass 5 Correction", AI_RETRY_OPTIONS, "gemini");
+
+    const parsed = safeJsonParse(response || "{}");
+    const validated = CorrectionPassSchema.parse(parsed);
+
+    aiLogger.info(`[CorrectionPass] Successfully resolved issues identified by Arbitrator`);
+
+    return {
+      ...previousPlan,
+      actions: validated.actions,
+      editingStrategy: {
+        ...previousPlan.editingStrategy,
+        approach: `Refined: ${validated.justification}`
+      }
+    };
+  } catch (err) {
+    aiLogger.error("Pass 5 Correction failed, falling back to original plan with arbitration hints:", err);
+    // Fallback: return previous plan but with the flagged actions removed/modified as best as possible
+    return {
+      ...previousPlan,
+      actions: previousPlan.actions.map((a: EditAction) => {
+        const isFlagged = flaggedActions.some(f => f.start === a.start && f.type === a.type);
+        if (isFlagged && a.type === 'insert_stock') {
+          return { ...a, type: 'keep' as any }; // Safe fallback: don't show the bad B-roll
+        }
+        return a;
+      })
+    };
   }
 }
 

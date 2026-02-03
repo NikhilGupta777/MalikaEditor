@@ -8,6 +8,7 @@ import {
   executePass2QualityAssessment,
   executePass3BrollOptimization,
   executePass4QualityReview,
+  executePass5CorrectionPass,
   executeConsolidatedAnalysis,
   getBrollStyleHint,
   type StructuredPlan,
@@ -18,6 +19,7 @@ import {
   safeJsonParse,
 } from "./editPlanningPasses";
 import { getLearningContext, retrievePatterns, applyLearnedPreferences } from "./learningSystem";
+import { type ArbitrationResult } from "./arbitration";
 import type {
   VideoAnalysis,
   TranscriptSegment,
@@ -697,8 +699,37 @@ export async function generateSmartEditPlan(
   transcript: TranscriptSegment[],
   semanticAnalysis: SemanticAnalysis,
   fillerSegments: { start: number; end: number; word: string }[],
-  enhancedTranscript?: TranscriptEnhancedType
+  enhancedTranscript?: TranscriptEnhancedType,
+  previousPlan?: EditPlan,
+  arbitrationResult?: ArbitrationResult
 ): Promise<EditPlan> {
+  const projectId = (analysis as any).projectId || 0;
+  aiLogger.info(`[SmartEditPlan] Generating autonomous multi-pass edit plan for project ${projectId}...`);
+
+  // --- START AUTONOMOUS CORRECTION LOOP ---
+  // If we have arbitration feedback, trigger Pass 5 (Correction) instead of a fresh plan
+  if (previousPlan && arbitrationResult && arbitrationResult.shouldReRender) {
+    aiLogger.info(`[Self-Correction] Triggering Pass 5 Correction for project ${projectId} based on Arbitrator feedback`);
+
+    // Identify actions flagged for replacement
+    const flaggedActions = (arbitrationResult.correctionPlan || []).filter(a => (a as any).needsReplacement);
+
+    // Apply learned preferences to the correction logic
+    const learningCtx = await getLearningContext(analysis, prompt);
+
+    const correctedPlan = await executePass5CorrectionPass(
+      analysis,
+      transcript,
+      previousPlan,
+      arbitrationResult.justification,
+      flaggedActions,
+      learningCtx
+    );
+
+    return correctedPlan;
+  }
+  // --- END AUTONOMOUS CORRECTION LOOP ---
+
   aiLogger.info("Starting optimized smart edit planning (2-pass consolidated approach)...");
   const startTime = Date.now();
 

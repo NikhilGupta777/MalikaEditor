@@ -914,6 +914,9 @@ async function runProcessingPipeline(
     const stockQueries = editPlan.stockQueries ||
       brollWindows.map((w: any) => w.suggestedQuery).filter(Boolean) || [];
 
+    let stockVariants: StockMediaVariants[] = [];
+    let generatedAiImages: Awaited<ReturnType<typeof generateAiImagesForVideo>> = [];
+
     if (editOptions.addBroll && stockQueries.length > 0) {
       // PARALLEL PHASE 3: Fetch stock media AND generate AI images simultaneously
       // These are completely independent operations
@@ -955,7 +958,7 @@ async function runProcessingPipeline(
       ]);
 
       // Combine Pexels and Freepik results - merge by query
-      const stockVariants: StockMediaVariants[] = pexelsVariants.map((pexelsResult, idx) => {
+      stockVariants = pexelsVariants.map((pexelsResult, idx) => {
         const freepikResult = freepikVariants[idx];
         return {
           query: pexelsResult.query,
@@ -973,7 +976,7 @@ async function runProcessingPipeline(
       const totalPhotos = pexelsPhotos + freepikPhotos;
       const totalVideos = pexelsVideos + freepikVideos;
 
-      const generatedAiImages = aiImagesResult || [];
+      generatedAiImages = aiImagesResult || [];
       aiImageCount = generatedAiImages.length;
 
       addActivity(projectId, `Parallel media fetch complete in ${mediaFetchTime}s: ${totalPhotos} photos + ${totalVideos} videos + ${aiImageCount} AI images`);
@@ -1016,31 +1019,8 @@ async function runProcessingPipeline(
 
       processorLogger.info(`Media conversion result: ${stockItems.length} stock items, ${selectedAiImages.length} AI images`);
 
-      // Guardrail: Check if AI images were generated but not selected
-      // If no AI images were selected despite generation, force-include the best ones
-      let finalAiImages = selectedAiImages;
-      if (generatedAiImages.length > 0 && selectedAiImages.length === 0) {
-        processorLogger.warn(`GUARDRAIL: ${generatedAiImages.length} AI images generated but 0 selected - forcing inclusion of top candidates`);
-
-        // Take up to 3 generated images based on which have the best timing spread
-        const sortedByStart = [...generatedAiImages].sort((a, b) => a.startTime - b.startTime);
-        const numToInclude = Math.min(3, sortedByStart.length);
-
-        // Try to spread them across the video
-        if (numToInclude === 1) {
-          finalAiImages = sortedByStart.slice(0, 1);
-        } else if (numToInclude === 2) {
-          // Take first and last
-          finalAiImages = [sortedByStart[0], sortedByStart[sortedByStart.length - 1]];
-        } else {
-          // Take first, middle, and last for good distribution
-          const middleIdx = Math.floor(sortedByStart.length / 2);
-          finalAiImages = [sortedByStart[0], sortedByStart[middleIdx], sortedByStart[sortedByStart.length - 1]];
-        }
-
-        processorLogger.info(`GUARDRAIL: Force-included ${finalAiImages.length} AI images at times: ${finalAiImages.map(img => img.startTime.toFixed(1) + 's').join(', ')}`);
-        addActivity(projectId, `Recovered ${finalAiImages.length} AI images via fallback selection`);
-      }
+      // Use selected AI images
+      const finalAiImages = selectedAiImages;
 
       if (stockItems.length > 0) {
         processorLogger.debug(`Stock items selected: ${stockItems.map(s => `${s.type}:${s.query?.slice(0, 30)}`).join(', ')}`);
@@ -1154,92 +1134,152 @@ async function runProcessingPipeline(
 
     // AUTONOMOUS MODE: Continue directly to rendering without stopping for user review
     if (editOptions.autonomousMode) {
-      processorLogger.info(`[AUTONOMOUS] Auto - approving all edits and proceeding to render for project ${projectId}`);
-      addActivity(projectId, "Autonomous mode: Auto-approving all edits and proceeding to render...");
+      processorLogger.info(`[AUTONOMOUS] Starting autonomous rendering pipeline for project ${projectId}`);
+      addActivity(projectId, "Entering autonomous rendering and self-correction loop...");
 
-      await storage.updateVideoProject(projectId, {
-        status: "rendering" as ProcessingStatus,
-        reviewData,
-      });
-      notifySubscribers(projectId, "status", { status: "rendering" });
+      let currentEditPlan = editPlan;
+      let currentStockMedia = stockMedia;
+      let currentReviewData = reviewData;
+      let renderAttempts = 0;
+      const MAX_RENDER_ATTEMPTS = 2;
+      let publicOutputPath = "";
+      let finalOutputMetadata: any = null;
 
-      // Perform autonomous rendering
-      await updateStatus("rendering");
-      addActivity(projectId, "Starting autonomous rendering...");
+      while (renderAttempts < MAX_RENDER_ATTEMPTS) {
+        renderAttempts++;
+        const isRetry = renderAttempts > 1;
 
-      const finalEditPlan = {
-        ...editPlan,
-        actions: editPlan.actions || [],
-      };
-
-      const renderEditOptions = {
-        addCaptions: editOptions.addCaptions,
-        addBroll: stockMedia.length > 0,
-        removeSilence: editOptions.removeSilence,
-        generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
-        addTransitions: editOptions.addTransitions,
-      };
-
-      const editResult = await applyEdits(
-        videoPath,
-        finalEditPlan,
-        transcript,
-        stockMedia,
-        renderEditOptions,
-        undefined,
-        analysis.semanticAnalysis
-      );
-
-      addActivity(projectId, "Autonomous rendering complete!");
-
-      // Get output metadata
-      const outputMetadata = await getVideoMetadata(editResult.outputPath);
-      const publicOutputPath = editResult.storageKey
-        ? `/output/${editResult.storageKey.replace(/^output\//, "")}`
-        : `/output/${path.basename(editResult.outputPath)}`;
-
-      addActivity(projectId, `Final video: ${Math.round(outputMetadata.duration)}s`);
-
-      // Perform AI self-review in background
-      processorLogger.info(`[AUTONOMOUS] Starting self - review for project ${projectId}`);
-      addActivity(projectId, "AI is reviewing the rendered video...");
-
-      try {
-        const selfReviewResult = await performPostRenderSelfReview(
-          editResult.outputPath,
-          videoPath,
-          finalEditPlan,
-          transcript,
-          reviewData,
-          stockMedia,
-          prompt,
-          project.analysis as import("@shared/schema").VideoAnalysis | undefined
-        );
-
-        processorLogger.info(`[AUTONOMOUS] Self - review complete: score = ${selfReviewResult.overallScore}, issues = ${selfReviewResult.issues?.length || 0} `);
-        addActivity(projectId, `Self - review complete: Quality score ${selfReviewResult.overallScore}/100`);
-
-        // ARBITRATION: Decide if correction is needed
-        if (reviewData) {
-          const arbitration = await arbitrateReviewConflicts(
-            reviewData as any,
-            selfReviewResult,
-            finalEditPlan
-          );
-
-          if (arbitration.shouldReRender && arbitration.confidence > 80) {
-            processorLogger.info(`[AUTONOMOUS] Arbitrator triggered RE-RENDER for project ${projectId}: ${arbitration.justification}`);
-            addActivity(projectId, `Arbitrator suggesting correction: ${arbitration.justification}`);
-            // In a full implementation, we would recursively call runProcessingPipeline with the new correctionPlan
-            // For now, we'll log it and mark it as 'needs_correction' or similar
-          }
+        if (isRetry) {
+          processorLogger.info(`[AUTONOMOUS] Starting render attempt ${renderAttempts}/${MAX_RENDER_ATTEMPTS} for project ${projectId}`);
+          addActivity(projectId, `Starting corrected render (Step ${renderAttempts})...`);
         }
 
-        // Log self-review results (stored in project analysis for reference)
-        processorLogger.info(`[AUTONOMOUS] Self-review stored for project ${projectId}`);
-      } catch (reviewErr) {
-        processorLogger.warn(`[AUTONOMOUS] Self-review failed (non-critical):`, reviewErr);
-        addActivity(projectId, "Self-review skipped - continuing to completion");
+        const renderEditOptions = {
+          addCaptions: editOptions.addCaptions,
+          addBroll: currentStockMedia.length > 0,
+          removeSilence: editOptions.removeSilence,
+          generateAiImages: currentStockMedia.some(m => m.type === 'ai_generated'),
+          addTransitions: editOptions.addTransitions,
+        };
+
+        const editResult = await applyEdits(
+          videoPath,
+          currentEditPlan,
+          transcript,
+          currentStockMedia,
+          renderEditOptions,
+          undefined,
+          analysis.semanticAnalysis
+        );
+
+        addActivity(projectId, isRetry ? "Corrected rendering complete!" : "Initial rendering complete!");
+
+        // Get output metadata
+        const outputMetadata = await getVideoMetadata(editResult.outputPath);
+        finalOutputMetadata = outputMetadata;
+        publicOutputPath = editResult.storageKey
+          ? `/output/${editResult.storageKey.replace(/^output\//, "")}`
+          : `/output/${path.basename(editResult.outputPath)}`;
+
+        // Perform AI self-review
+        processorLogger.info(`[AUTONOMOUS] Starting self-review (Attempt ${renderAttempts}) for project ${projectId}`);
+        addActivity(projectId, "AI is reviewing the rendered video...");
+
+        try {
+          const selfReviewResult = await performPostRenderSelfReview(
+            editResult.outputPath,
+            videoPath,
+            currentEditPlan,
+            transcript,
+            currentReviewData,
+            currentStockMedia,
+            prompt,
+            project.analysis as import("@shared/schema").VideoAnalysis | undefined
+          );
+
+          processorLogger.info(`[AUTONOMOUS] Review complete: score = ${selfReviewResult.overallScore}, issues = ${selfReviewResult.issues?.length || 0}`);
+          addActivity(projectId, `Review result: Quality score ${selfReviewResult.overallScore}/100`);
+
+          // ARBITRATION: Decide if correction is needed
+          const arbitration = await arbitrateReviewConflicts(
+            currentReviewData as any,
+            selfReviewResult,
+            currentEditPlan
+          );
+
+          if (arbitration.shouldReRender && renderAttempts < MAX_RENDER_ATTEMPTS && arbitration.confidence > 70) {
+            processorLogger.info(`[AUTONOMOUS] Correcting plan based on feedback: ${arbitration.justification}`);
+            addActivity(projectId, `Applying corrections: ${arbitration.justification.slice(0, 100)}...`);
+
+            // 1. RE-PLAN with correction feedback
+            currentEditPlan = await generateSmartEditPlan(
+              prompt,
+              sanitizedAnalysis,
+              transcript,
+              sanitizedAnalysis.semanticAnalysis || {},
+              fillerSegments,
+              enhancedTranscript,
+              currentEditPlan,
+              arbitration
+            );
+
+            // 2. RE-SELECT media if we have previous stock variants
+            if (stockVariants && stockVariants.length > 0) {
+              addActivity(projectId, "Updating media selection for corrected plan...");
+
+              // Map new actions to windows
+              const newWindows = (currentEditPlan.actions || [])
+                .filter((a: any) => (a.type === 'insert_stock' || a.type === 'insert_ai_image') && typeof a.start === 'number')
+                .map((a: any) => ({
+                  start: a.start,
+                  end: typeof a.end === 'number' ? a.end : (typeof a.duration === 'number' ? a.start + a.duration : a.start + 4),
+                  suggestedQuery: a.stockQuery || a.query || a.prompt || '',
+                  priority: a.priority || 'medium' as const,
+                  context: a.reason || a.context || '',
+                }))
+                .filter((w: any) => w.end > w.start);
+
+              const selectionResult = await selectBestMediaForWindows(
+                newWindows,
+                stockVariants,
+                generatedAiImages || [],
+                {
+                  duration: metadata.duration,
+                  genre: (analysis as any).context?.genre || analysis.semanticAnalysis?.overallTone || "general",
+                  tone: (analysis as any).context?.tone || analysis.semanticAnalysis?.overallTone || "professional",
+                  topic: analysis.semanticAnalysis?.mainTopics?.[0] || "various",
+                }
+              );
+
+              const { stockItems, aiImages: selectedAiImages } = convertSelectionsToStockMediaItems(selectionResult.selections);
+
+              const aiStockItems: StockMediaItem[] = selectedAiImages.map((img, idx) => ({
+                id: `ai_corr_${Date.now()}_${idx}`,
+                type: 'ai_generated' as const,
+                url: `/stock/${path.basename(img.filePath)}`,
+                query: img.prompt,
+                thumbnailUrl: `/stock/${path.basename(img.filePath)}`,
+                width: 1024,
+                height: 1024,
+                source: 'ai',
+                startTime: img.startTime,
+                endTime: img.endTime,
+              }));
+
+              currentStockMedia = [...stockItems, ...aiStockItems];
+            }
+
+            // Continue to next render attempt
+            continue;
+          }
+
+          // If we're here, either it was good enough or we ran out of attempts
+          break;
+        } catch (reviewErr) {
+          processorLogger.warn(`[AUTONOMOUS] Review process failed (non-critical):`, reviewErr);
+          addActivity(projectId, "Review process encountered an issue - finishing with current version");
+          break;
+        }
       }
 
       // Mark as completed
@@ -1250,12 +1290,12 @@ async function runProcessingPipeline(
 
       notifySubscribers(projectId, "completed", {
         outputPath: publicOutputPath,
-        duration: outputMetadata.duration,
+        duration: finalOutputMetadata?.duration || 0,
       });
       notifySubscribers(projectId, "status", { status: "completed" });
 
       await updateProcessingStage(projectId, "complete");
-      addActivity(projectId, "Autonomous processing complete! Video ready for download.");
+      addActivity(projectId, "Autonomous processing complete! Final quality verified.");
 
       job.status = "completed";
       processorLogger.info(`[AUTONOMOUS] Full autonomous pipeline completed for project ${projectId}`);

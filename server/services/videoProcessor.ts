@@ -739,7 +739,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
-    const cs = Math.floor((seconds % 1) * 100);
+    const cs = Math.round((seconds % 1) * 100);
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
   };
 
@@ -2272,9 +2272,29 @@ async function applyEditsInternal(
     videoLogger.debug(`Output time mapping: raw=${rawTotalDuration.toFixed(2)}s, reduction=${transitionResult.totalReduction.toFixed(2)}s (${transitionResult.effectiveDurations.length} transitions: [${transitionResult.effectiveDurations.map(d => d.toFixed(2)).join(', ')}]s)`);
   }
 
-  // Get base video duration
+  // Get base video duration and apply CALIBRATION
   const baseMetadata = await getVideoMetadata(baseVideoPath);
-  videoLogger.info(`Base video duration: ${baseMetadata.duration.toFixed(2)}s`);
+  const actualDuration = baseMetadata.duration;
+
+  // Calculate expected duration from mapping for calibration
+  // The last mapping's outputStart + its source segment duration is our expected total
+  const lastMapping = outputTimeMapping[outputTimeMapping.length - 1];
+  const expectedDuration = lastMapping
+    ? lastMapping.outputStart + (lastMapping.sourceEnd - lastMapping.sourceStart)
+    : actualDuration;
+
+  const mappingDrift = actualDuration - expectedDuration;
+  const calibrationScale = expectedDuration > 0 ? actualDuration / expectedDuration : 1.0;
+
+  if (Math.abs(mappingDrift) > 0.001) {
+    videoLogger.info(`[Calibration] Applying scale factor ${calibrationScale.toFixed(8)} to output mapping (drift: ${(mappingDrift * 1000).toFixed(2)}ms)`);
+    outputTimeMapping = outputTimeMapping.map(m => ({
+      ...m,
+      outputStart: m.outputStart * calibrationScale
+    }));
+  }
+
+  videoLogger.info(`Base video duration: ${actualDuration.toFixed(3)}s (Expected: ${expectedDuration.toFixed(3)}s)`);
 
   // STEP 2: Prepare B-roll overlays
   // Map insert_stock times from source to output timeline

@@ -396,11 +396,33 @@ function createSegmentsFromAssemblyAI(
   if (!transcript.words || transcript.words.length === 0) {
     aiLogger.warn("AssemblyAI returned no words, falling back to text-only");
     if (transcript.text) {
-      // Pass audioDuration to ensure timestamps are clamped
       return createSegmentsFromText(transcript.text, effectiveDuration);
     }
     return [];
   }
+
+  // --- START CALIBRATION LOGIC ---
+  // Apply linear calibration if actual word timing differs from expected audio duration
+  // This prevents 100ms+ drift accumulation over long (10min+) videos
+  let wordList = [...transcript.words];
+  if (effectiveDuration && wordList.length > 0) {
+    const lastWordEnd = wordList[wordList.length - 1].end / 1000;
+    const drift = Math.abs(lastWordEnd - effectiveDuration);
+
+    // If drift is > 50ms, apply calibration scale factor
+    if (drift > 0.05 && lastWordEnd > 0) {
+      const scaleFactor = effectiveDuration / lastWordEnd;
+      aiLogger.info(`[Calibration] Applying scale factor ${scaleFactor.toFixed(6)} to ${wordList.length} words (drift: ${(drift * 1000).toFixed(0)}ms)`);
+
+      wordList = wordList.map(w => ({
+        ...w,
+        start: w.start * scaleFactor,
+        end: w.end * scaleFactor
+      }));
+    }
+  }
+  const calibratedWords = wordList;
+  // --- END CALIBRATION LOGIC ---
 
   // Convert to ms for comparison, use Infinity only if no duration available
   const maxTime = effectiveDuration ? effectiveDuration * 1000 : Infinity;
@@ -410,8 +432,8 @@ function createSegmentsFromAssemblyAI(
   const GAP_THRESHOLD_MS = 1000; // 1 second gap triggers new segment
   const MAX_SEGMENT_WORDS = 15; // Prevent overly long segments
 
-  for (let i = 0; i < transcript.words.length; i++) {
-    const word = transcript.words[i];
+  for (let i = 0; i < calibratedWords.length; i++) {
+    const word = calibratedWords[i];
     const prevWord = currentWords.length > 0 ? currentWords[currentWords.length - 1] : null;
 
     // Skip words that exceed audio duration
@@ -437,7 +459,7 @@ function createSegmentsFromAssemblyAI(
     result.push(createSegmentFromAssemblyAIWords(currentWords, maxTime));
   }
 
-  aiLogger.info(`Created ${result.length} segments from AssemblyAI with native word timestamps`);
+  aiLogger.info(`Created ${result.length} segments from AssemblyAI with calibrated native word timestamps`);
   return result;
 }
 

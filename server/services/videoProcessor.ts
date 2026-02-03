@@ -1905,9 +1905,12 @@ async function applyEditsInternal(
   // Second: Process stock media only if addBroll is enabled
   const stockItems = stockMedia.filter(item => item.type !== "ai_generated");
   if (options.addBroll && stockItems.length > 0) {
-    videoLogger.info(`Processing ${Math.min(stockItems.length, 8)} stock media items for overlays...`);
+    // Dynamic limit: allow more stock media for longer videos (1 per 10 seconds, min 10, max 50)
+    const maxStockDownloads = Math.min(50, Math.max(10, Math.ceil(metadata.duration / 10)));
+    const stockToProcess = Math.min(stockItems.length, maxStockDownloads);
+    videoLogger.info(`Processing ${stockToProcess} stock media items for overlays (limit: ${maxStockDownloads} for ${metadata.duration.toFixed(0)}s video)...`);
 
-    for (let i = 0; i < Math.min(stockItems.length, 8); i++) {
+    for (let i = 0; i < stockToProcess; i++) {
       const item = stockItems[i];
       try {
         let localPath: string;
@@ -2207,7 +2210,7 @@ async function applyEditsInternal(
     // Configuration for improved timing validation
     const TIMING_TOLERANCE_MS = 500; // Allow 0.5s tolerance for edge cases
     const DEFAULT_AI_IMAGE_DURATION = 2.5; // Default duration if not specified
-    const MAX_PLACEMENT_DISTANCE = 2.0; // Max distance to nearest segment (seconds)
+    const MAX_PLACEMENT_DISTANCE = 10.0; // Max distance to nearest segment (increased from 2.0 to handle aggressive cuts)
 
     for (const aiMedia of downloadedAiMedia) {
       const sourceTime = aiMedia.item.startTime;

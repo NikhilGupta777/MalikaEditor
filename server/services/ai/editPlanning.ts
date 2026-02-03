@@ -443,8 +443,9 @@ export function validateAndFixBrollActions(
     const start = Math.max(0, action.start || 0);
     const actionDuration = action.duration || 4;
 
-    // Check: must be 3+ seconds after last B-roll AND before video end
-    const hasGap = start >= lastEnd + 3;
+    // Check: must be minBrollGapSeconds after last B-roll AND before video end
+    const minGap = AI_CONFIG.timing.minBrollGapSeconds;
+    const hasGap = start >= lastEnd + minGap;
     const beforeEnd = start < validDuration - 1;
 
     if (hasGap && beforeEnd) {

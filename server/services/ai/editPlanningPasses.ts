@@ -624,7 +624,8 @@ function validateBrollSpacing(
   const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
 
   for (const placement of sorted) {
-    const hasGap = placement.start >= lastEnd + 3;
+    const minGap = AI_CONFIG.timing.minBrollGapSeconds;
+    const hasGap = placement.start >= lastEnd + minGap;
     const beforeEnd = placement.start < validDuration - 1;
 
     if (hasGap && beforeEnd) {

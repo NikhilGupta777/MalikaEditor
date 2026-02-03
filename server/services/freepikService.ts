@@ -92,7 +92,7 @@ export async function searchFreepikPhotos(
 
   try {
     const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
-    
+
     const response = await withRetry(
       async () => axios.get(`${FREEPIK_BASE_URL}/resources`, {
         headers: {
@@ -114,7 +114,7 @@ export async function searchFreepikPhotos(
     );
 
     const resources = response.data?.data || [];
-    
+
     return resources
       .filter((resource: FreepikResource) => resource.image?.source?.url)
       .map((resource: FreepikResource) => ({
@@ -132,9 +132,9 @@ export async function searchFreepikPhotos(
     } else if (axios.isAxiosError(error) && error.response?.status === 429) {
       freepikLogger.warn("Freepik API rate limit reached (after retries)");
     } else {
-      freepikLogger.error("Freepik photo search error", { 
-        query: query.slice(0, 50), 
-        error: error instanceof Error ? error.message : String(error) 
+      freepikLogger.error("Freepik photo search error", {
+        query: query.slice(0, 50),
+        error: error instanceof Error ? error.message : String(error)
       });
     }
     return [];
@@ -152,7 +152,7 @@ export async function searchFreepikVideos(
 
   try {
     const searchQuery = query.length > 80 ? query.substring(0, 80).trim() : query;
-    
+
     const response = await withRetry(
       async () => axios.get(`${FREEPIK_BASE_URL}/videos`, {
         headers: {
@@ -172,10 +172,10 @@ export async function searchFreepikVideos(
     );
 
     const allVideos = response.data?.data || [];
-    
+
     // Freepik API may return more than requested, so slice to respect limit
     const videos = allVideos.slice(0, perPage);
-    
+
     if (videos.length === 0) {
       freepikLogger.debug(`No Freepik videos found for query: "${searchQuery.slice(0, 50)}..."`);
     }
@@ -184,7 +184,7 @@ export async function searchFreepikVideos(
       .map((video: FreepikVideo) => {
         const thumbnail = video.thumbnails?.find(t => t.width >= 400) || video.thumbnails?.[0];
         const preview = video.previews?.[0];
-        
+
         return {
           type: "video" as const,
           query,
@@ -204,9 +204,9 @@ export async function searchFreepikVideos(
     } else if (axios.isAxiosError(error) && error.response?.status === 429) {
       freepikLogger.warn("Freepik API rate limit reached");
     } else {
-      freepikLogger.error("Freepik video search error", { 
-        query: query.slice(0, 50), 
-        error: error instanceof Error ? error.message : String(error) 
+      freepikLogger.error("Freepik video search error", {
+        query: query.slice(0, 50),
+        error: error instanceof Error ? error.message : String(error)
       });
     }
     return [];
@@ -223,10 +223,10 @@ export async function getFreepikDownloadUrl(
   }
 
   try {
-    const endpoint = resourceType === "video" 
+    const endpoint = resourceType === "video"
       ? `${FREEPIK_BASE_URL}/videos/${resourceId}/download`
       : `${FREEPIK_BASE_URL}/resources/${resourceId}/download`;
-    
+
     const response = await withRetry(
       async () => axios.get<FreepikDownloadResponse>(endpoint, {
         headers: {
@@ -241,10 +241,10 @@ export async function getFreepikDownloadUrl(
 
     return response.data?.data?.url || response.data?.data?.signed_url || null;
   } catch (error) {
-    freepikLogger.error("Freepik download URL error", { 
-      resourceId, 
+    freepikLogger.error("Freepik download URL error", {
+      resourceId,
       resourceType,
-      error: error instanceof Error ? error.message : String(error) 
+      error: error instanceof Error ? error.message : String(error)
     });
     return null;
   }
@@ -268,26 +268,36 @@ export async function fetchFreepikMediaWithVariants(
   }
 
   const uniqueQueries = Array.from(new Set(queries));
-  
+
   freepikLogger.info(`Fetching ${photosPerQuery} photos + ${videosPerQuery} videos per query for ${uniqueQueries.length} Freepik queries`);
 
-  const results = await Promise.all(
-    uniqueQueries.map(async (query) => {
-      const [photos, videos] = await Promise.all([
-        searchFreepikPhotos(query, photosPerQuery),
-        searchFreepikVideos(query, videosPerQuery),
-      ]);
-      
+  // Process queries SEQUENTIALLY to avoid rate limiting (Freepik has strict limits)
+  const results: FreepikMediaVariants[] = [];
+
+  for (const query of uniqueQueries) {
+    try {
+      // Small delay between queries to respect rate limits
+      if (results.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 200)); // 200ms between queries
+      }
+
+      // Process photos and videos sequentially within each query too
+      const photos = await searchFreepikPhotos(query, photosPerQuery);
+      const videos = await searchFreepikVideos(query, videosPerQuery);
+
       freepikLogger.debug(`Freepik query "${query.slice(0, 40)}...": ${photos.length} photos, ${videos.length} videos`);
-      
-      return {
+
+      results.push({
         query,
         photos,
         videos,
         allItems: [...photos, ...videos],
-      };
-    })
-  );
+      });
+    } catch (error) {
+      freepikLogger.warn(`Freepik query failed for "${query.slice(0, 30)}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+      results.push({ query, photos: [], videos: [], allItems: [] });
+    }
+  }
 
   const totalPhotos = results.reduce((sum, r) => sum + r.photos.length, 0);
   const totalVideos = results.reduce((sum, r) => sum + r.videos.length, 0);

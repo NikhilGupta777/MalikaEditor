@@ -15,7 +15,7 @@ const MAX_CACHE_SIZE = 500; // Maximum cached thumbnail descriptions
 const visualAnalysisCache = new Map<string, string>();
 const VISUAL_ANALYSIS_CONCURRENCY = 5; // Analyze 5 thumbnails at a time
 const VISUAL_ANALYSIS_TIMEOUT = 8000; // 8 second timeout per thumbnail
-const MAX_VISION_CANDIDATES = 30; // Maximum candidates to analyze with Vision API (cost optimization)
+const MAX_VISION_CANDIDATES = 100; // Maximum candidates to analyze with Vision API (increased for longer videos)
 
 // LRU cache eviction - removes oldest entries when cache exceeds max size
 function addToCacheWithEviction(key: string, value: string): void {
@@ -97,7 +97,7 @@ async function fetchThumbnailAsBase64(url: string): Promise<{ base64: string; mi
         'User-Agent': 'Mozilla/5.0 (compatible; VideoEditor/1.0)',
       },
     });
-    
+
     const contentType = response.headers['content-type'] || 'image/jpeg';
     const base64 = Buffer.from(response.data).toString('base64');
     return { base64, mimeType: contentType };
@@ -117,15 +117,15 @@ async function analyzeThumbnailWithVision(
   if (visualAnalysisCache.has(thumbnailUrl)) {
     return visualAnalysisCache.get(thumbnailUrl)!;
   }
-  
+
   try {
     const gemini = getGeminiClient();
     const thumbnail = await fetchThumbnailAsBase64(thumbnailUrl);
-    
+
     if (!thumbnail) {
       return `Unable to analyze (thumbnail unavailable)`;
     }
-    
+
     const prompt = `Describe this ${mediaType === "video" ? "video thumbnail" : "stock photo"} in 1-2 sentences. 
 Focus on: main subjects, actions, setting, mood, colors, and quality.
 Be specific about what you SEE, not what the search query "${query}" suggests.
@@ -141,12 +141,12 @@ Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
         ]
       }],
     });
-    
+
     const description = result.text?.trim() || "Visual content analyzed";
-    
+
     // Cache the result with LRU eviction
     addToCacheWithEviction(thumbnailUrl, description);
-    
+
     return description;
   } catch (error) {
     selectorLogger.debug(`Vision analysis failed for: ${thumbnailUrl.slice(0, 50)}...`);
@@ -163,28 +163,28 @@ function preFilterCandidatesByMetadata(
   if (candidates.length <= maxCandidates) {
     return candidates; // No filtering needed
   }
-  
+
   // Build a set of all B-roll queries for relevance matching
   const targetQueries = brollWindows.map(w => w.suggestedQuery.toLowerCase());
   const targetKeywords = new Set<string>();
   for (const query of targetQueries) {
     query.split(/\s+/).filter(w => w.length > 2).forEach(w => targetKeywords.add(w));
   }
-  
+
   // Score each candidate based on metadata
   const scoredCandidates = candidates.map(candidate => {
     let score = 0;
     const candidateQuery = candidate.query.toLowerCase();
-    
+
     // 1. Query keyword match (0-30 points)
     const candidateWords = candidateQuery.split(/\s+/).filter(w => w.length > 2);
     const matchingWords = candidateWords.filter(w => targetKeywords.has(w));
     score += Math.min(30, matchingWords.length * 10);
-    
+
     // 2. Source priority - balanced approach (0-15 points)
     // Check if any B-roll window needs motion content
     const hasMotionNeeds = brollWindows.some(w => detectMotionContent(w.suggestedQuery));
-    
+
     if (hasMotionNeeds && candidate.type === "video") {
       score += 18; // Videos strongly preferred when motion is needed
     } else if (candidate.source === "ai") {
@@ -194,7 +194,7 @@ function preFilterCandidatesByMetadata(
     } else {
       score += 8; // Photos as fallback
     }
-    
+
     // 3. Duration appropriateness for videos (0-15 points)
     if (candidate.type === "video" && candidate.duration) {
       // Ideal B-roll duration is 3-8 seconds
@@ -206,28 +206,28 @@ function preFilterCandidatesByMetadata(
         score += 5;
       }
     }
-    
+
     // 4. Provider preference: Freepik (premium) > Pexels (0-10 points)
     if (candidate.provider === "freepik") {
       score += 10;
     } else if (candidate.provider === "pexels") {
       score += 5;
     }
-    
+
     // 5. Already cached in visual analysis (0-25 points) - saves API calls
     if (candidate.thumbnailUrl && visualAnalysisCache.has(candidate.thumbnailUrl)) {
       score += 25;
     }
-    
+
     return { candidate, score };
   });
-  
+
   // Sort by score descending and take top N
   scoredCandidates.sort((a, b) => b.score - a.score);
   const filtered = scoredCandidates.slice(0, maxCandidates).map(s => s.candidate);
-  
+
   selectorLogger.info(`Pre-filtered ${candidates.length} candidates to ${filtered.length} using metadata scoring (saved ${candidates.length - filtered.length} Vision API calls)`);
-  
+
   return filtered;
 }
 
@@ -238,23 +238,23 @@ async function analyzeMediaThumbnails(
 ): Promise<Map<string, string>> {
   const results = new Map<string, string>();
   let stockCandidates = candidates.filter(c => c.source === "stock" && c.thumbnailUrl);
-  
+
   if (stockCandidates.length === 0) {
     return results;
   }
-  
+
   // Apply metadata-based pre-filtering to reduce Vision API calls
   if (brollWindows && stockCandidates.length > MAX_VISION_CANDIDATES) {
     stockCandidates = preFilterCandidatesByMetadata(stockCandidates, brollWindows, MAX_VISION_CANDIDATES);
   }
-  
+
   selectorLogger.info(`Analyzing ${stockCandidates.length} stock media thumbnails with Gemini Vision...`);
   const startTime = Date.now();
-  
+
   // Process in batches for concurrency control
   for (let i = 0; i < stockCandidates.length; i += VISUAL_ANALYSIS_CONCURRENCY) {
     const batch = stockCandidates.slice(i, i + VISUAL_ANALYSIS_CONCURRENCY);
-    
+
     const batchPromises = batch.map(async (candidate) => {
       const description = await analyzeThumbnailWithVision(
         candidate.thumbnailUrl!,
@@ -263,13 +263,13 @@ async function analyzeMediaThumbnails(
       );
       results.set(candidate.id, description);
     });
-    
+
     await Promise.all(batchPromises);
   }
-  
+
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   selectorLogger.info(`Visual analysis complete: ${results.size} thumbnails analyzed in ${elapsed}s`);
-  
+
   return results;
 }
 
@@ -300,12 +300,12 @@ function getOptimalBrollDuration(
   pacingAnalysis?: EnhancedVideoContext["pacingAnalysis"]
 ): number {
   const requestedDuration = windowEnd - windowStart;
-  
+
   if (!pacingAnalysis) {
     // Default: cap at 5 seconds
     return Math.min(requestedDuration, 5);
   }
-  
+
   // Adjust based on overall pacing
   let maxDuration: number;
   switch (pacingAnalysis.overallPacing) {
@@ -320,7 +320,7 @@ function getOptimalBrollDuration(
     default:
       maxDuration = 4;
   }
-  
+
   // Check if this window is near a pacing adjustment point
   // Supports both new format (timestamp/suggestion) and legacy format (start/end/adjustment)
   const adjustments = pacingAnalysis.suggestedPacingAdjustments || [];
@@ -328,7 +328,7 @@ function getOptimalBrollDuration(
     // Support both new (timestamp) and legacy (start/end) formats
     const adjTimestamp = adj.timestamp ?? ((adj as any).start ?? 0);
     const isNearWindow = adjTimestamp >= windowStart - 2 && adjTimestamp <= windowEnd + 2;
-    
+
     if (isNearWindow) {
       // Adjust duration based on pacing recommendation (support both formats)
       const suggestionText = (adj.suggestion || (adj as any).adjustment || "").toLowerCase();
@@ -340,7 +340,7 @@ function getOptimalBrollDuration(
       break;
     }
   }
-  
+
   return Math.min(requestedDuration, maxDuration);
 }
 
@@ -353,12 +353,12 @@ function shouldPreferVideo(
   if (!motionAnalysis) {
     return false; // Default: no strong preference
   }
-  
+
   // High motion intensity = prefer video
   if (motionAnalysis.motionIntensity === "high") {
     return true;
   }
-  
+
   // Check if window overlaps with action sequence
   const actionSequences = motionAnalysis.actionSequences || [];
   for (const action of actionSequences) {
@@ -368,7 +368,7 @@ function shouldPreferVideo(
       return true; // Prefer video during action
     }
   }
-  
+
   return false;
 }
 
@@ -391,7 +391,7 @@ export async function selectBestMediaForWindows(
   }
 
   const allCandidates = buildAllCandidates(stockVariants, aiImages);
-  
+
   // OPTIMIZATION: Early exit if no candidates - skip expensive Vision API calls
   if (allCandidates.length === 0) {
     selectorLogger.info("Visual analysis SKIPPED - no media candidates available");
@@ -411,7 +411,7 @@ export async function selectBestMediaForWindows(
     geminiAvailable = false;
     selectorLogger.warn("Gemini not available, using fallback selection");
   }
-  
+
   if (!geminiAvailable) {
     selectorLogger.info("Visual analysis SKIPPED - Gemini not available, using fallback selection without visual analysis");
     return fallbackSelection(brollWindows, stockVariants, aiImages);
@@ -422,26 +422,26 @@ export async function selectBestMediaForWindows(
   let stockVideosUsed = 0;
   let stockImagesUsed = 0;
   const usedMediaIds = new Set<string>();
-  
+
   const aiCount = allCandidates.filter(c => c.source === 'ai').length;
   const pexelsVideoCount = allCandidates.filter(c => c.provider === 'pexels' && c.type === 'video').length;
   const pexelsPhotoCount = allCandidates.filter(c => c.provider === 'pexels' && c.type === 'image').length;
   const freepikVideoCount = allCandidates.filter(c => c.provider === 'freepik' && c.type === 'video').length;
   const freepikPhotoCount = allCandidates.filter(c => c.provider === 'freepik' && c.type === 'image').length;
-  
+
   selectorLogger.info(`Built ${allCandidates.length} media candidates: ${aiCount} AI, Pexels(${pexelsVideoCount} videos, ${pexelsPhotoCount} photos), Freepik(${freepikVideoCount} videos, ${freepikPhotoCount} photos)`);
 
   // Run visual analysis on stock media thumbnails (AI actually SEES the content)
   // Pre-filters to top candidates based on metadata to reduce Vision API costs
   const visualDescriptions = await analyzeMediaThumbnails(allCandidates, brollWindows);
-  
+
   // Apply visual descriptions to candidates
   for (const candidate of allCandidates) {
     if (visualDescriptions.has(candidate.id)) {
       candidate.visualDescription = visualDescriptions.get(candidate.id);
     }
   }
-  
+
   const analyzedCount = visualDescriptions.size;
   if (analyzedCount > 0) {
     selectorLogger.info(`Applied visual analysis to ${analyzedCount} stock media candidates`);
@@ -454,11 +454,11 @@ export async function selectBestMediaForWindows(
       videoContext,
       usedMediaIds
     );
-    
+
     for (const selection of batchSelection) {
       if (selection.selectedMedia.length > 0) {
         selections.push(selection);
-        
+
         for (const media of selection.selectedMedia) {
           usedMediaIds.add(media.id);
           if (media.source === "ai") aiImagesUsed++;
@@ -473,7 +473,7 @@ export async function selectBestMediaForWindows(
       const window = brollWindows[i];
       const windowDuration = window.end - window.start;
       const availableCandidates = allCandidates.filter(c => !usedMediaIds.has(c.id));
-      
+
       const fallback = fallbackSelectForWindow(window, availableCandidates, windowDuration);
       if (fallback) {
         selections.push({ ...fallback, windowIndex: i });
@@ -489,19 +489,19 @@ export async function selectBestMediaForWindows(
 
   const totalSelected = selections.reduce((sum, s) => sum + s.selectedMedia.length, 0);
   const totalAiAvailable = aiImages.length;
-  
+
   // Count provider-specific selections
   const allSelected = selections.flatMap(s => s.selectedMedia);
   const pexelsUsed = allSelected.filter(m => m.provider === 'pexels').length;
   const freepikUsed = allSelected.filter(m => m.provider === 'freepik').length;
-  
+
   selectorLogger.info(`Media selection complete: ${totalSelected} clips selected (${aiImagesUsed} AI, ${stockVideosUsed} stock videos [${pexelsUsed} Pexels, ${freepikUsed} Freepik], ${stockImagesUsed} stock images)`);
-  
+
   // Guardrail: Warn when AI images were generated but not used
   if (totalAiAvailable > 0 && aiImagesUsed === 0) {
     selectorLogger.warn(`WARNING: ${totalAiAvailable} AI images were generated but NONE were selected. This may indicate a selection bias issue.`);
   } else if (totalAiAvailable > 0 && aiImagesUsed < Math.ceil(totalAiAvailable * 0.3)) {
-    selectorLogger.warn(`Low AI image usage: ${aiImagesUsed}/${totalAiAvailable} AI images used (${((aiImagesUsed/totalAiAvailable)*100).toFixed(0)}%). Consider rebalancing selection.`);
+    selectorLogger.warn(`Low AI image usage: ${aiImagesUsed}/${totalAiAvailable} AI images used (${((aiImagesUsed / totalAiAvailable) * 100).toFixed(0)}%). Consider rebalancing selection.`);
   }
 
   return {
@@ -519,7 +519,7 @@ function buildAllCandidates(
 ): MediaCandidate[] {
   const candidates: MediaCandidate[] = [];
   const seenUrls = new Set<string>();
-  
+
   for (let i = 0; i < aiImages.length; i++) {
     const ai = aiImages[i];
     const id = `ai_${i}_${ai.prompt.slice(0, 15).replace(/\s/g, '_')}`;
@@ -533,16 +533,16 @@ function buildAllCandidates(
       originalAiImage: ai,
     });
   }
-  
+
   for (const variant of stockVariants) {
     for (let i = 0; i < variant.videos.length; i++) {
       const video = variant.videos[i];
       if (seenUrls.has(video.url)) continue;
       seenUrls.add(video.url);
-      
+
       const provider = video.source || "pexels";
       const providerLabel = provider === "freepik" ? "Freepik" : "Pexels";
-      
+
       candidates.push({
         id: `stock_video_${provider}_${variant.query.slice(0, 10)}_${i}_${video.url.slice(-15)}`,
         type: "video",
@@ -555,15 +555,15 @@ function buildAllCandidates(
         description: `${providerLabel} video about "${variant.query}" (${video.duration}s duration)`,
       });
     }
-    
+
     for (let i = 0; i < variant.photos.length; i++) {
       const photo = variant.photos[i];
       if (seenUrls.has(photo.url)) continue;
       seenUrls.add(photo.url);
-      
+
       const provider = photo.source || "pexels";
       const providerLabel = provider === "freepik" ? "Freepik" : "Pexels";
-      
+
       candidates.push({
         id: `stock_photo_${provider}_${variant.query.slice(0, 10)}_${i}_${photo.url.slice(-15)}`,
         type: "image",
@@ -576,7 +576,7 @@ function buildAllCandidates(
       });
     }
   }
-  
+
   return candidates;
 }
 
@@ -587,9 +587,9 @@ async function selectMediaForAllWindowsWithAI(
   alreadyUsed: Set<string>
 ): Promise<SelectedMedia[]> {
   const gemini = getGeminiClient();
-  
+
   const availableCandidates = allCandidates.filter(c => !alreadyUsed.has(c.id));
-  
+
   const candidateDescriptions = availableCandidates.map((c, idx) => {
     let typeLabel: string;
     if (c.source === "ai") {
@@ -600,12 +600,12 @@ async function selectMediaForAllWindowsWithAI(
       typeLabel = c.provider === "freepik" ? "FREEPIK-PHOTO" : "PEXELS-PHOTO";
     }
     const durationInfo = c.duration ? ` [${c.duration}s]` : "";
-    
+
     // Include visual description if available (AI-analyzed content)
-    const visualInfo = c.visualDescription 
-      ? `\n     VISUAL: ${c.visualDescription}` 
+    const visualInfo = c.visualDescription
+      ? `\n     VISUAL: ${c.visualDescription}`
       : "";
-    
+
     return `  ${idx + 1}. [${typeLabel}] Query: "${c.query.slice(0, 50)}"${durationInfo}${visualInfo}`;
   }).join("\n");
 
@@ -622,7 +622,7 @@ async function selectMediaForAllWindowsWithAI(
   const aiImageCount = availableCandidates.filter(c => c.source === 'ai').length;
   const pexelsCount = availableCandidates.filter(c => c.provider === 'pexels').length;
   const freepikCount = availableCandidates.filter(c => c.provider === 'freepik').length;
-  
+
   // Build motion context for AI prompt
   const motionContext = videoContext.motionAnalysis ? `
 MOTION ANALYSIS:
@@ -637,7 +637,7 @@ PACING ANALYSIS:
 - Overall Pacing: ${videoContext.pacingAnalysis.overallPacing}
 - Pacing Variation: ${videoContext.pacingAnalysis.pacingVariation}%
 PACING GUIDANCE: ${videoContext.pacingAnalysis.overallPacing === "fast" ? "Use shorter B-roll clips (2-3s) for fast-paced content" : videoContext.pacingAnalysis.overallPacing === "slow" ? "Can use longer B-roll clips (4-6s) for slower pacing" : "Use moderate B-roll durations (3-4s)"}` : "";
-  
+
   const prompt = `You are a professional video editor selecting B-roll media for a video.
 
 VIDEO CONTEXT:
@@ -711,29 +711,29 @@ RESPOND WITH JSON ONLY:
   try {
     // Robust JSON extraction with multiple fallback strategies
     let parsed: any = null;
-    
+
     // Strategy 1: Find JSON block boundaries
     const jsonStart = response.indexOf('{');
     const jsonEnd = response.lastIndexOf('}');
-    
+
     if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
       throw new Error("No JSON object boundaries found in response");
     }
-    
+
     let jsonText = response.slice(jsonStart, jsonEnd + 1);
-    
+
     // Clean up common AI response issues
     jsonText = jsonText
       .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
       .replace(/\\n/g, " ") // Normalize escaped newlines
       .replace(/,\s*([\]}])/g, '$1') // Remove trailing commas
       .trim();
-    
+
     try {
       parsed = JSON.parse(jsonText);
     } catch (firstParseError) {
       selectorLogger.debug("First JSON parse failed, trying recovery strategies");
-      
+
       const arrayMatch = response.match(/"windowSelections"\s*:\s*\[([\s\S]*?)\]/);
       if (arrayMatch) {
         try {
@@ -745,7 +745,7 @@ RESPOND WITH JSON ONLY:
           selectorLogger.debug("Array extraction failed, trying object-by-object recovery");
         }
       }
-      
+
       if (!parsed) {
         const objectPattern = /\{\s*"windowIndex"\s*:\s*(\d+)\s*,\s*"selectedNumbers"\s*:\s*\[([^\]]*)\]\s*(?:,\s*"reasoning"\s*:\s*"[^"]*")?\s*\}/g;
         const recoveredSelections: { windowIndex: number; selectedNumbers: number[]; reasoning: string }[] = [];
@@ -764,15 +764,15 @@ RESPOND WITH JSON ONLY:
           selectorLogger.debug(`Recovered ${recoveredSelections.length} selections from malformed JSON`);
         }
       }
-      
+
       if (!parsed) {
         const errorMsg = firstParseError instanceof Error ? firstParseError.message : String(firstParseError);
         throw new Error(`JSON parsing failed after all recovery attempts: ${errorMsg}`);
       }
     }
-    
+
     if (!parsed) throw new Error("Failed to parse response as JSON");
-    
+
     if (!parsed.windowSelections || !Array.isArray(parsed.windowSelections)) {
       throw new Error("Invalid response structure");
     }
@@ -785,29 +785,29 @@ RESPOND WITH JSON ONLY:
     for (const windowSelection of parsed.windowSelections) {
       const windowIndex = windowSelection.windowIndex;
       if (windowIndex < 0 || windowIndex >= windows.length) continue;
-      
+
       const window = windows[windowIndex];
-      const selectedNumbers: number[] = Array.isArray(windowSelection.selectedNumbers) 
+      const selectedNumbers: number[] = Array.isArray(windowSelection.selectedNumbers)
         ? windowSelection.selectedNumbers.map((n: unknown) => typeof n === 'number' ? n : parseInt(String(n), 10))
         : [typeof windowSelection.selectedNumbers === 'number' ? windowSelection.selectedNumbers : parseInt(String(windowSelection.selectedNumbers), 10)];
-      
+
       const selectedMedia: MediaCandidate[] = [];
-      
+
       for (const num of selectedNumbers) {
         if (isNaN(num)) continue;
-        
+
         const candidate = candidateByIndex.get(num);
-        
+
         if (!candidate) {
           selectorLogger.debug(`Could not find candidate for number: ${num}`);
           continue;
         }
-        
+
         if (usedInThisBatch.has(candidate.id)) {
           selectorLogger.debug(`Skipping already-used media #${num}: ${candidate.id}`);
           continue;
         }
-        
+
         selectedMedia.push(candidate);
         usedInThisBatch.add(candidate.id);
       }
@@ -837,7 +837,7 @@ RESPOND WITH JSON ONLY:
           reasoning: windowSelection.reasoning || "AI selection",
           allowMultipleClips: selectedMedia.length > 1,
         });
-        
+
         selectorLogger.debug(`Window ${windowIndex}: Selected ${selectedMedia.length} clips - ${selectedMedia.map(m => m.provider ? `${m.provider}:${m.type}` : `${m.source}:${m.type}`).join(", ")}`);
       }
     }
@@ -847,7 +847,7 @@ RESPOND WITH JSON ONLY:
         const window = windows[i];
         const windowDuration = window.end - window.start;
         const unused = availableCandidates.filter(c => !usedInThisBatch.has(c.id));
-        
+
         if (unused.length > 0) {
           const fallback = fallbackSelectForWindow(window, unused, windowDuration);
           if (fallback && fallback.selectedMedia.length > 0) {
@@ -870,11 +870,11 @@ RESPOND WITH JSON ONLY:
   // We no longer force AI images - let the AI make smart decisions based on content type
   const aiCandidates = availableCandidates.filter(c => c.source === 'ai');
   const selectedAiCount = Array.from(usedInThisBatch).filter(id => id.startsWith('ai_')).length;
-  
+
   // Count motion windows that got video vs AI
   let motionWindowsWithVideo = 0;
   let motionWindowsTotal = 0;
-  
+
   for (const selection of selections) {
     const isMotionWindow = detectMotionContent(selection.window.suggestedQuery);
     if (isMotionWindow) {
@@ -884,15 +884,15 @@ RESPOND WITH JSON ONLY:
       }
     }
   }
-  
+
   if (motionWindowsTotal > 0) {
     selectorLogger.info(`Motion content coverage: ${motionWindowsWithVideo}/${motionWindowsTotal} motion windows have video B-roll`);
-    
+
     if (motionWindowsWithVideo < motionWindowsTotal) {
       selectorLogger.debug(`Some motion windows got static images - this may be acceptable if no suitable video was available`);
     }
   }
-  
+
   selectorLogger.info(`Media mix: ${selectedAiCount} AI images, ${selections.length - selectedAiCount} stock media selected`);
 
   return selections;
@@ -902,7 +902,7 @@ RESPOND WITH JSON ONLY:
 function computeSemanticScore(query: string, candidateText: string): number {
   const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
   const candidateWords = candidateText.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-  
+
   // Direct word matches
   let directMatches = 0;
   for (const qw of queryWords) {
@@ -910,7 +910,7 @@ function computeSemanticScore(query: string, candidateText: string): number {
       directMatches += 10;
     }
   }
-  
+
   // Semantic category matching
   const categoryMap: Record<string, string[]> = {
     business: ["office", "corporate", "meeting", "businessman", "professional", "work", "entrepreneur", "startup", "company"],
@@ -924,7 +924,7 @@ function computeSemanticScore(query: string, candidateText: string): number {
     creative: ["art", "design", "creative", "artist", "painting", "drawing", "music", "photography", "film", "studio"],
     medical: ["health", "hospital", "doctor", "medical", "healthcare", "medicine", "wellness", "patient", "clinic", "nurse"],
   };
-  
+
   let categoryScore = 0;
   for (const [category, keywords] of Object.entries(categoryMap)) {
     const queryHasCategory = queryWords.some(w => keywords.includes(w));
@@ -933,7 +933,7 @@ function computeSemanticScore(query: string, candidateText: string): number {
       categoryScore += 8;
     }
   }
-  
+
   return directMatches + categoryScore;
 }
 
@@ -943,17 +943,17 @@ function fallbackSelectForWindow(
   windowDuration: number
 ): SelectedMedia | null {
   if (candidates.length === 0) return null;
-  
+
   // Enhanced scoring with semantic matching AND visual analysis
   const scoredCandidates = candidates.map(c => {
     let score = 0;
-    
+
     // Include visual description in candidate text for better matching
     const candidateText = (c.query + " " + (c.description || "") + " " + (c.visualDescription || "")).toLowerCase();
-    
+
     // Semantic similarity score using query
     score += computeSemanticScore(window.suggestedQuery, candidateText);
-    
+
     // Visual description bonus - reward candidates with visual analysis
     if (c.visualDescription) {
       // Extra points for having visual analysis
@@ -961,19 +961,19 @@ function fallbackSelectForWindow(
       // Additional matching on visual description
       score += computeSemanticScore(window.suggestedQuery, c.visualDescription.toLowerCase()) * 0.8;
     }
-    
+
     // Context matching (if available)
     if (window.context) {
       score += computeSemanticScore(window.context, candidateText) * 0.5;
     }
-    
+
     // Priority bonus
     if (window.priority === "high") score += 3;
     else if (window.priority === "medium") score += 1;
-    
+
     // Motion-aware media selection
     const isMotionQuery = detectMotionContent(window.suggestedQuery);
-    
+
     // For motion content, strongly prefer video over static images
     if (isMotionQuery) {
       if (c.type === "video") {
@@ -989,23 +989,23 @@ function fallbackSelectForWindow(
       else if (c.type === "video") score += 6; // Videos still valuable
       else score += 4; // Photos can work for static scenes
     }
-    
+
     // Duration-appropriate media selection
     if (windowDuration > 4 && c.type === "video") score += 4;
     if (windowDuration <= 3 && c.type !== "video") score += 2;
     if (c.type === "video" && c.duration && c.duration >= windowDuration * 0.8) score += 3;
-    
+
     return { candidate: c, score };
   }).sort((a, b) => b.score - a.score);
-  
+
   const selectedMedia: MediaCandidate[] = [];
   const clipsNeeded = windowDuration > 6 ? Math.min(Math.floor(windowDuration / 3), 3) : 1;
-  
+
   // Select top-scoring candidates without duplicates
   const usedTypes = new Set<string>();
   for (let i = 0; i < scoredCandidates.length && selectedMedia.length < clipsNeeded; i++) {
     const candidate = scoredCandidates[i].candidate;
-    
+
     // For multiple clips, prefer variety in types
     if (selectedMedia.length > 0 && clipsNeeded > 1) {
       const typeKey = `${candidate.source}-${candidate.type}`;
@@ -1014,7 +1014,7 @@ function fallbackSelectForWindow(
       }
       usedTypes.add(typeKey);
     }
-    
+
     selectedMedia.push(candidate);
   }
 
@@ -1027,7 +1027,7 @@ function fallbackSelectForWindow(
   const highThreshold = AI_CONFIG.confidence?.highConfidenceScore ?? 20;
   const minThreshold = AI_CONFIG.confidence?.minMediaSelectionScore ?? 10;
   const confidence = bestScore > highThreshold ? "high" : bestScore > minThreshold ? "medium" : "low";
-  
+
   // Filter out low-confidence selections if below minimum threshold
   if (bestScore < minThreshold && selectedMedia.length > 0) {
     selectorLogger.debug(`Skipping low-confidence selection (score ${bestScore} < threshold ${minThreshold})`);
@@ -1059,11 +1059,11 @@ function fallbackSelection(
     const window = brollWindows[i];
     const windowDuration = window.end - window.start;
     const available = allCandidates.filter(c => !usedIds.has(c.id));
-    
+
     const fallback = fallbackSelectForWindow(window, available, windowDuration);
     if (fallback && fallback.selectedMedia.length > 0) {
       selections.push({ ...fallback, windowIndex: i });
-      
+
       for (const media of fallback.selectedMedia) {
         usedIds.add(media.id);
         if (media.source === "ai") aiImagesUsed++;
@@ -1087,18 +1087,18 @@ export function convertSelectionsToStockMediaItems(
 ): { stockItems: StockMediaItem[]; aiImages: GeneratedAiImage[] } {
   const stockItems: StockMediaItem[] = [];
   const aiImages: GeneratedAiImage[] = [];
-  
+
   for (const selection of selections) {
     const windowDuration = selection.window.end - selection.window.start;
     const clipCount = selection.selectedMedia.length;
     const clipDuration = clipCount > 1 ? Math.min(windowDuration / clipCount, 4) : windowDuration;
-    
+
     let currentOffset = 0;
     for (let i = 0; i < selection.selectedMedia.length; i++) {
       const media = selection.selectedMedia[i];
       const staggeredStart = selection.window.start + currentOffset;
       const staggeredEnd = Math.min(staggeredStart + clipDuration, selection.window.end);
-      
+
       if (media.source === "ai" && media.originalAiImage) {
         const staggeredAiImage: GeneratedAiImage = {
           ...media.originalAiImage,
@@ -1119,10 +1119,10 @@ export function convertSelectionsToStockMediaItems(
           endTime: staggeredEnd,
         });
       }
-      
+
       currentOffset += clipDuration;
     }
   }
-  
+
   return { stockItems, aiImages };
 }

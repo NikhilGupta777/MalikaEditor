@@ -73,7 +73,7 @@ export async function searchPhotos(
     // Pexels photo search error often occurs with very long or complex queries
     const maxLength = AI_CONFIG.network.pexelsQueryMaxLength;
     const searchQuery = query.length > maxLength ? query.substring(0, maxLength).trim() : query;
-    
+
     const response = await axios.get(`${PEXELS_BASE_URL}/v1/search`, {
       headers: {
         Authorization: PEXELS_API_KEY,
@@ -117,7 +117,7 @@ export async function searchVideos(
     // Use full query for AI-driven searches - Pexels handles long queries well
     // Only truncate extremely long queries (>100 chars) to prevent API issues
     const searchQuery = query.length > 100 ? query.substring(0, 100).trim() : query;
-    
+
     const response = await axios.get(`${PEXELS_BASE_URL}/videos/search`, {
       headers: {
         Authorization: PEXELS_API_KEY,
@@ -130,7 +130,7 @@ export async function searchVideos(
     });
 
     const videos = response.data.videos || [];
-    
+
     if (videos.length === 0) {
       pexelsLogger.debug(`No videos found for query: "${searchQuery.slice(0, 50)}..."`);
     }
@@ -155,9 +155,9 @@ export async function searchVideos(
       })
       .filter((item: StockMediaItem | null): item is StockMediaItem => item !== null);
   } catch (error) {
-    pexelsLogger.error("Pexels video search error", { 
-      query: query.slice(0, 50), 
-      error: error instanceof Error ? error.message : String(error) 
+    pexelsLogger.error("Pexels video search error", {
+      query: query.slice(0, 50),
+      error: error instanceof Error ? error.message : String(error)
     });
     return [];
   }
@@ -177,26 +177,38 @@ export async function fetchStockMediaWithVariants(
 ): Promise<StockMediaVariants[]> {
   // No artificial limits - process all unique queries from AI
   const uniqueQueries = Array.from(new Set(queries));
-  
+
   pexelsLogger.info(`Fetching ${photosPerQuery} photos + ${videosPerQuery} videos per query for ${uniqueQueries.length} queries (no limit)`);
 
-  const results = await Promise.all(
-    uniqueQueries.map(async (query) => {
+  // Process queries SEQUENTIALLY to avoid potential rate limiting
+  const results: StockMediaVariants[] = [];
+
+  for (const query of uniqueQueries) {
+    try {
+      // Small delay between queries to respect rate limits
+      if (results.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 150)); // 150ms between queries
+      }
+
+      // Fetch photos and videos in parallel per query (safe for single query)
       const [photos, videos] = await Promise.all([
         searchPhotos(query, photosPerQuery),
         searchVideos(query, videosPerQuery),
       ]);
-      
+
       pexelsLogger.debug(`Query "${query.slice(0, 40)}...": ${photos.length} photos, ${videos.length} videos`);
-      
-      return {
+
+      results.push({
         query,
         photos,
         videos,
         allItems: [...photos, ...videos],
-      };
-    })
-  );
+      });
+    } catch (error) {
+      pexelsLogger.warn(`Pexels query failed for "${query.slice(0, 30)}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+      results.push({ query, photos: [], videos: [], allItems: [] });
+    }
+  }
 
   const totalPhotos = results.reduce((sum, r) => sum + r.photos.length, 0);
   const totalVideos = results.reduce((sum, r) => sum + r.videos.length, 0);

@@ -27,7 +27,7 @@ interface CircuitBreakerState {
 const circuitBreakers = new Map<string, CircuitBreakerState>();
 
 const CIRCUIT_BREAKER_CONFIG = {
-  failureThreshold: 5,
+  failureThreshold: 3, // Open circuit after 3 failures (lowered from 5 for faster rate limit response)
   resetTimeMs: 60000,
   halfOpenMaxRequests: 2,
 };
@@ -49,7 +49,7 @@ export function recordFailure(serviceName: string): void {
   const state = getCircuitState(serviceName);
   state.failures++;
   state.lastFailure = Date.now();
-  
+
   if (state.failures >= CIRCUIT_BREAKER_CONFIG.failureThreshold) {
     state.isOpen = true;
     retryLogger.warn(`Circuit breaker OPEN for ${serviceName} after ${state.failures} failures`);
@@ -58,9 +58,9 @@ export function recordFailure(serviceName: string): void {
 
 export function isCircuitOpen(serviceName: string): boolean {
   const state = getCircuitState(serviceName);
-  
+
   if (!state.isOpen) return false;
-  
+
   const timeSinceLastFailure = Date.now() - state.lastFailure;
   if (timeSinceLastFailure >= CIRCUIT_BREAKER_CONFIG.resetTimeMs) {
     retryLogger.info(`Circuit breaker HALF-OPEN for ${serviceName} (reset timeout elapsed)`);
@@ -68,7 +68,7 @@ export function isCircuitOpen(serviceName: string): boolean {
     state.failures = Math.floor(CIRCUIT_BREAKER_CONFIG.failureThreshold / 2);
     return false;
   }
-  
+
   return true;
 }
 
@@ -87,19 +87,19 @@ function isRetryableError(error: unknown): boolean {
   if (error instanceof Error) {
     const errWithStatus = error as ErrorWithStatus;
     const status = errWithStatus.status || errWithStatus.statusCode || errWithStatus.code;
-    
+
     if (typeof status === "number" && (status === 429 || status === 503 || status === 502 || status === 500)) {
       return true;
     }
-    
+
     const message = error.message.toLowerCase();
     const statusMatch = message.match(/status[:\s]*(\d+)/);
     const parsedStatus = statusMatch ? parseInt(statusMatch[1]) : null;
-    
+
     if (parsedStatus && (parsedStatus === 429 || parsedStatus === 503 || parsedStatus === 502 || parsedStatus === 500)) {
       return true;
     }
-    
+
     const retryablePatterns = [
       "rate limit",
       "too many requests",
@@ -117,7 +117,7 @@ function isRetryableError(error: unknown): boolean {
       "resource_exhausted",
       "deadline_exceeded",
     ];
-    
+
     return retryablePatterns.some(pattern => message.includes(pattern));
   }
   return false;
@@ -136,13 +136,13 @@ export async function withRetry<T>(
   const config = { ...DEFAULT_OPTIONS, ...options };
   let lastError: unknown;
   let delay = config.initialDelayMs;
-  
+
   const circuitName = serviceName || operationName.split(" ")[0];
-  
+
   if (isCircuitOpen(circuitName)) {
     throw new Error(`Circuit breaker is open for ${circuitName} - service temporarily unavailable`);
   }
-  
+
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
       const result = await operation();
@@ -150,25 +150,25 @@ export async function withRetry<T>(
       return result;
     } catch (error) {
       lastError = error;
-      
+
       if (attempt > config.maxRetries || !config.retryableErrors(error)) {
         if (serviceName) recordFailure(circuitName);
         break;
       }
-      
+
       const jitter = Math.random() * 0.2 * delay;
       const waitTime = Math.min(delay + jitter, config.maxDelayMs);
-      
+
       retryLogger.warn(
         `${operationName} failed (attempt ${attempt}/${config.maxRetries + 1}), ` +
         `retrying in ${Math.round(waitTime)}ms: ${error instanceof Error ? error.message : String(error)}`
       );
-      
+
       await sleep(waitTime);
       delay = Math.min(delay * config.backoffMultiplier, config.maxDelayMs);
     }
   }
-  
+
   throw lastError;
 }
 

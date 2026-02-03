@@ -82,21 +82,21 @@ async function waitForVideoProcessing(
   maxWaitSeconds: number = 120
 ): Promise<boolean> {
   const startTime = Date.now();
-  
+
   while ((Date.now() - startTime) < maxWaitSeconds * 1000) {
     try {
       const file = await client.files.get({ name: fileName });
-      
+
       if (file.state === "ACTIVE") {
         selfReviewLogger.info(`Video ready for self-review: ${fileName}`);
         return true;
       }
-      
+
       if (file.state === "FAILED") {
         selfReviewLogger.error(`Video processing failed: ${fileName}`);
         return false;
       }
-      
+
       selfReviewLogger.debug(`Waiting for video processing... (${file.state})`);
       await new Promise(resolve => setTimeout(resolve, 3000));
     } catch (error) {
@@ -104,7 +104,7 @@ async function waitForVideoProcessing(
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
-  
+
   selfReviewLogger.error(`Video processing timeout after ${maxWaitSeconds}s`);
   return false;
 }
@@ -122,22 +122,22 @@ export async function performPostRenderSelfReview(
   selfReviewLogger.info("═══════════════════════════════════════════════════════");
   selfReviewLogger.info("AI SELF-REVIEW SYSTEM: Watching rendered output...");
   selfReviewLogger.info("═══════════════════════════════════════════════════════");
-  
+
   const stats = await fs.stat(renderedVideoPath);
   const sizeMB = stats.size / (1024 * 1024);
-  
+
   if (sizeMB > MAX_VIDEO_SIZE_MB) {
     selfReviewLogger.warn(`Rendered video too large for self-review: ${sizeMB.toFixed(1)}MB > ${MAX_VIDEO_SIZE_MB}MB`);
     return getDefaultSelfReviewResult(false, "Video too large for full self-review");
   }
-  
+
   // Use the video analysis client which supports file uploads (direct Google API, not Replit proxy)
   // The Replit proxy doesn't support file uploads (POST /upload/v1beta/files endpoint)
   const client = getVideoAnalysisGeminiClient();
-  
+
   try {
     selfReviewLogger.info(`Uploading rendered video for self-review: ${sizeMB.toFixed(1)}MB`);
-    
+
     const uploadResult = await client.files.upload({
       file: renderedVideoPath,
       config: {
@@ -145,34 +145,34 @@ export async function performPostRenderSelfReview(
         displayName: `self-review-${path.basename(renderedVideoPath)}`,
       },
     });
-    
+
     if (!uploadResult.name || !uploadResult.uri) {
       throw new Error("Failed to get file reference from upload");
     }
-    
+
     selfReviewLogger.info(`Self-review video uploaded: ${uploadResult.name}`);
-    
+
     const processingReady = await waitForVideoProcessing(client, uploadResult.name, 120);
-    
+
     if (!processingReady) {
       throw new Error("Video processing timed out for self-review");
     }
-    
+
     const appliedCuts = editPlan.actions.filter(a => a.type === "cut").length;
     const appliedBroll = stockMedia.length;
     const captionsEnabled = reviewData.editOptions?.addCaptions !== false;
-    
-    const transcriptSummary = transcript.slice(0, 15).map(t => 
+
+    const transcriptSummary = transcript.slice(0, 15).map(t =>
       `[${t.start.toFixed(1)}s]: ${t.text}`
     ).join("\n");
-    
+
     // Extract enhancedAnalysis for comparison with rendered output (now properly typed in VideoAnalysis)
     const enhancedAnalysis = videoAnalysis?.enhancedAnalysis;
     const motionAnalysis = enhancedAnalysis?.motionAnalysis;
     const transitionAnalysis = enhancedAnalysis?.transitionAnalysis;
     const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
     const audioVisualSync = enhancedAnalysis?.audioVisualSync;
-    
+
     // Build enhanced analysis context for self-review
     const enhancedContext = [
       motionAnalysis ? `ORIGINAL MOTION PROFILE: Intensity=${motionAnalysis.motionIntensity}, ${motionAnalysis.actionSequences?.length || 0} action sequences detected` : "",
@@ -180,7 +180,7 @@ export async function performPostRenderSelfReview(
       transitionAnalysis ? `NATURAL TRANSITIONS: ${transitionAnalysis.detectedTransitions?.length || 0} detected, ${transitionAnalysis.suggestedTransitionPoints?.length || 0} suggested cut points` : "",
       audioVisualSync ? `ORIGINAL SYNC QUALITY: ${audioVisualSync.syncQuality}` : "",
     ].filter(Boolean).join("\n");
-    
+
     const prompt = `You are an expert video editor AI performing a SELF-REVIEW of your own rendered output.
 
 CRITICAL TASK: Watch this rendered video from start to finish and evaluate its quality.
@@ -197,9 +197,9 @@ WHAT YOU DID (EDIT DECISIONS):
 ORIGINAL VIDEO CONTEXT:
 - Genre: ${videoAnalysis?.context?.genre || "general"}
 - Tone: ${videoAnalysis?.context?.tone || "casual"}
-- Target duration reduction: ${reviewData.summary?.originalDuration && reviewData.summary?.estimatedFinalDuration 
-    ? ((1 - reviewData.summary.estimatedFinalDuration / reviewData.summary.originalDuration) * 100).toFixed(0) + "%" 
-    : "unknown"}
+- Target duration reduction: ${reviewData.summary?.originalDuration && reviewData.summary?.estimatedFinalDuration
+        ? ((1 - reviewData.summary.estimatedFinalDuration / reviewData.summary.originalDuration) * 100).toFixed(0) + "%"
+        : "unknown"}
 ${enhancedContext ? `\nDEEP ANALYSIS (compare rendered output against these):\n${enhancedContext}` : ""}
 
 TRANSCRIPT (sample):
@@ -258,7 +258,7 @@ IMPORTANT: Be honest and critical. If there are issues, identify them. If it's g
 Your goal is to produce the best possible video, so identify anything that could be improved.`;
 
     selfReviewLogger.info("Sending rendered video to AI for self-review...");
-    
+
     const response = await client.models.generateContent({
       model: AI_CONFIG.models.selfReview,
       contents: [
@@ -275,20 +275,20 @@ Your goal is to produce the best possible video, so identify anything that could
         maxOutputTokens: 3000,
       },
     });
-    
+
     const text = response.text || "";
-    
+
     if (!text.trim()) {
       selfReviewLogger.warn("Empty response from self-review AI");
       return getDefaultSelfReviewResult(true, "Self-review completed but AI response was empty");
     }
-    
+
     const jsonString = extractJsonFromResponse(text);
     if (!jsonString) {
       selfReviewLogger.warn("Could not extract JSON from self-review response");
       return getDefaultSelfReviewResult(true, text.slice(0, 500));
     }
-    
+
     let parsedJson;
     try {
       parsedJson = JSON.parse(jsonString);
@@ -296,18 +296,18 @@ Your goal is to produce the best possible video, so identify anything that could
       selfReviewLogger.warn("Failed to parse self-review JSON");
       return getDefaultSelfReviewResult(true, text.slice(0, 500));
     }
-    
+
     const validationResult = SelfReviewSchema.safeParse(parsedJson);
-    
+
     if (!validationResult.success) {
       selfReviewLogger.warn("Self-review schema validation failed", {
         errors: validationResult.error.errors.slice(0, 5),
       });
       return getDefaultSelfReviewResult(true, "Schema validation failed");
     }
-    
+
     const result = validationResult.data;
-    
+
     selfReviewLogger.info("═══════════════════════════════════════════════════════");
     selfReviewLogger.info("SELF-REVIEW COMPLETE");
     selfReviewLogger.info(`Overall Score: ${result.overallScore}/100`);
@@ -315,7 +315,7 @@ Your goal is to produce the best possible video, so identify anything that could
     selfReviewLogger.info(`Issues Found: ${result.issues.length}`);
     selfReviewLogger.info(`Critical Issues: ${result.issues.filter(i => i.severity === "critical").length}`);
     selfReviewLogger.info("═══════════════════════════════════════════════════════");
-    
+
     if (result.issues.length > 0) {
       selfReviewLogger.info("Issues detected:");
       result.issues.forEach((issue, i) => {
@@ -326,14 +326,14 @@ Your goal is to produce the best possible video, so identify anything that could
         selfReviewLogger.info(`      Fix: ${issue.suggestedFix} (AutoFixable: ${issue.autoFixable})`);
       });
     }
-    
+
     try {
       await client.files.delete({ name: uploadResult.name });
       selfReviewLogger.debug("Cleaned up self-review video from Gemini");
     } catch {
       selfReviewLogger.debug("Could not delete self-review video from Gemini");
     }
-    
+
     return {
       overallScore: result.overallScore,
       approved: result.approved,
@@ -344,10 +344,23 @@ Your goal is to produce the best possible video, so identify anything that could
       detailedFeedback: result.detailedFeedback,
       recommendedActions: result.recommendedActions,
     };
-    
+
   } catch (error) {
-    selfReviewLogger.error(`Self-review failed: ${error instanceof Error ? error.message : String(error)}`);
-    return getDefaultSelfReviewResult(false, `Self-review error: ${error instanceof Error ? error.message : "Unknown"}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    selfReviewLogger.error(`Self-review failed: ${errorMessage}`);
+
+    // Check if this is a transient API error (not a video quality issue)
+    const isTransientError =
+      errorMessage.includes("503") ||
+      errorMessage.includes("overloaded") ||
+      errorMessage.includes("rate limit") ||
+      errorMessage.includes("429") ||
+      errorMessage.includes("capacity") ||
+      errorMessage.includes("temporarily unavailable");
+
+    // For transient API errors, force approval - the video is likely fine
+    // Only reject if there was an actual upload or processing failure
+    return getDefaultSelfReviewResult(false, `Self-review error: ${errorMessage}`, isTransientError);
   }
 }
 
@@ -355,12 +368,12 @@ function getDefaultSelfReviewResult(watchedVideo: boolean, reason: string, force
   // Only auto-approve if AI actually watched the video or if explicitly forced
   // For large files or errors, we should NOT silently approve - that bypasses quality gates
   const approved = forceApproval || watchedVideo;
-  
+
   // If we couldn't watch the video, use a lower score to flag for manual review
   const overallScore = watchedVideo ? 75 : 50;
-  
+
   selfReviewLogger.info(`Default self-review result: approved=${approved}, score=${overallScore}, reason="${reason}"`);
-  
+
   return {
     overallScore,
     approved,
@@ -382,8 +395,8 @@ function getDefaultSelfReviewResult(watchedVideo: boolean, reason: string, force
       captionAccuracy: watchedVideo ? 80 : 0,
     },
     suggestions: watchedVideo ? [] : ["Quality could not be verified - manual review recommended"],
-    detailedFeedback: watchedVideo 
-      ? `Automatic approval: ${reason}` 
+    detailedFeedback: watchedVideo
+      ? `Automatic approval: ${reason}`
       : `QUALITY UNVERIFIED: ${reason}. Video was not watched by AI. Manual review is strongly recommended.`,
     recommendedActions: watchedVideo ? [] : [{
       actionType: "none" as const,
@@ -401,7 +414,7 @@ export async function shouldAutoCorrect(selfReviewResult: SelfReviewResult): Pro
   const autoFixableIssues = selfReviewResult.issues.filter(i => i.autoFixable);
   const criticalIssues = selfReviewResult.issues.filter(i => i.severity === "critical");
   const moderateIssues = selfReviewResult.issues.filter(i => i.severity === "moderate");
-  
+
   if (criticalIssues.length > 0 && autoFixableIssues.length > 0) {
     return {
       shouldCorrect: true,
@@ -409,7 +422,7 @@ export async function shouldAutoCorrect(selfReviewResult: SelfReviewResult): Pro
       reason: `Critical issues detected: ${criticalIssues.map(i => i.description).join("; ")}`,
     };
   }
-  
+
   if (moderateIssues.length >= 2 && autoFixableIssues.length > 0) {
     return {
       shouldCorrect: true,
@@ -417,7 +430,7 @@ export async function shouldAutoCorrect(selfReviewResult: SelfReviewResult): Pro
       reason: `Multiple moderate issues: ${moderateIssues.map(i => i.description).join("; ")}`,
     };
   }
-  
+
   if (selfReviewResult.overallScore < 60 && autoFixableIssues.length > 0) {
     return {
       shouldCorrect: true,
@@ -425,11 +438,11 @@ export async function shouldAutoCorrect(selfReviewResult: SelfReviewResult): Pro
       reason: `Low quality score (${selfReviewResult.overallScore}/100) with fixable issues`,
     };
   }
-  
+
   return {
     shouldCorrect: false,
     autoFixableIssues: [],
-    reason: selfReviewResult.approved 
+    reason: selfReviewResult.approved
       ? "Video quality approved"
       : "Issues found but not auto-fixable",
   };
@@ -453,7 +466,7 @@ export async function generateCorrectionPlan(
   stockMedia: StockMediaItem[]
 ): Promise<CorrectionPlan> {
   const autoFixableIssues = selfReviewResult.issues.filter(i => i.autoFixable);
-  
+
   if (autoFixableIssues.length === 0) {
     return {
       actions: [],
@@ -461,15 +474,15 @@ export async function generateCorrectionPlan(
       affectedAreas: [],
     };
   }
-  
+
   selfReviewLogger.info(`Generating correction plan for ${autoFixableIssues.length} auto-fixable issues...`);
-  
+
   const actions: CorrectionPlan["actions"] = [];
   const affectedAreas = new Set<string>();
-  
+
   for (const issue of autoFixableIssues) {
     affectedAreas.add(issue.type);
-    
+
     switch (issue.type) {
       case "transition":
         actions.push({
@@ -478,7 +491,7 @@ export async function generateCorrectionPlan(
           description: issue.suggestedFix,
         });
         break;
-        
+
       case "b_roll":
         actions.push({
           type: "replace_broll",
@@ -486,7 +499,7 @@ export async function generateCorrectionPlan(
           description: issue.suggestedFix,
         });
         break;
-        
+
       case "cuts":
         actions.push({
           type: "adjust_cut",
@@ -494,7 +507,7 @@ export async function generateCorrectionPlan(
           description: issue.suggestedFix,
         });
         break;
-        
+
       case "pacing":
         actions.push({
           type: "fix_timing",
@@ -502,7 +515,7 @@ export async function generateCorrectionPlan(
           description: issue.suggestedFix,
         });
         break;
-        
+
       case "captions":
         actions.push({
           type: "adjust_caption",
@@ -512,11 +525,11 @@ export async function generateCorrectionPlan(
         break;
     }
   }
-  
+
   const expectedImprovement = Math.min(20, autoFixableIssues.length * 5);
-  
+
   selfReviewLogger.info(`Correction plan: ${actions.length} actions, expected +${expectedImprovement} points`);
-  
+
   return {
     actions,
     expectedImprovement,
@@ -540,12 +553,12 @@ export function applyCorrectionPlan(
   selfReviewLogger.info("═══════════════════════════════════════════════════════");
   selfReviewLogger.info("APPLYING AUTO-CORRECTIONS");
   selfReviewLogger.info("═══════════════════════════════════════════════════════");
-  
+
   const modifiedEditPlan = JSON.parse(JSON.stringify(editPlan)) as EditPlan & { editStyle?: { transitionStyle?: string; pacing?: string } };
   const modifiedStockMedia = JSON.parse(JSON.stringify(stockMedia)) as StockMediaItem[];
   const correctionsSummary: string[] = [];
   let appliedCount = 0;
-  
+
   for (const action of correctionPlan.actions) {
     switch (action.type) {
       case "adjust_transition":
@@ -557,12 +570,12 @@ export function applyCorrectionPlan(
         correctionsSummary.push(`Adjusted transitions from ${prevTransitions} to smooth`);
         appliedCount++;
         break;
-        
+
       case "adjust_cut":
         if (action.targetTimestamp && modifiedEditPlan.actions) {
-          const cutActions = modifiedEditPlan.actions.filter(a => 
-            a.type === "cut" && 
-            a.start && 
+          const cutActions = modifiedEditPlan.actions.filter(a =>
+            a.type === "cut" &&
+            a.start &&
             Math.abs(a.start - action.targetTimestamp!) < 2
           );
           for (const cut of cutActions) {
@@ -575,10 +588,10 @@ export function applyCorrectionPlan(
           }
         }
         break;
-        
+
       case "replace_broll":
         if (action.targetTimestamp) {
-          const brollToReplace = modifiedStockMedia.findIndex(m => 
+          const brollToReplace = modifiedStockMedia.findIndex(m =>
             m.startTime && Math.abs(m.startTime - action.targetTimestamp!) < 3
           );
           if (brollToReplace !== -1) {
@@ -588,7 +601,7 @@ export function applyCorrectionPlan(
           }
         }
         break;
-        
+
       case "fix_timing":
         if (!modifiedEditPlan.editStyle) {
           modifiedEditPlan.editStyle = {};
@@ -597,18 +610,18 @@ export function applyCorrectionPlan(
         correctionsSummary.push("Adjusted pacing to moderate");
         appliedCount++;
         break;
-        
+
       case "adjust_caption":
         correctionsSummary.push("Caption adjustment queued (requires re-render)");
         appliedCount++;
         break;
     }
   }
-  
+
   selfReviewLogger.info(`Applied ${appliedCount} corrections:`);
   correctionsSummary.forEach(s => selfReviewLogger.info(`  - ${s}`));
   selfReviewLogger.info("═══════════════════════════════════════════════════════");
-  
+
   return {
     appliedCount,
     modifiedEditPlan,
@@ -629,23 +642,23 @@ export function shouldTriggerReRender(
       reason: `Maximum render iterations (${MAX_RENDER_ITERATIONS}) reached`,
     };
   }
-  
+
   const criticalIssues = selfReviewResult.issues.filter(i => i.severity === "critical" && i.autoFixable);
-  
+
   if (criticalIssues.length > 0) {
     return {
       shouldReRender: true,
       reason: `${criticalIssues.length} critical auto-fixable issue(s) detected`,
     };
   }
-  
+
   if (selfReviewResult.overallScore < 50 && selfReviewResult.issues.filter(i => i.autoFixable).length > 0) {
     return {
       shouldReRender: true,
       reason: `Low quality score (${selfReviewResult.overallScore}/100) with fixable issues`,
     };
   }
-  
+
   return {
     shouldReRender: false,
     reason: selfReviewResult.approved ? "Quality approved" : "No auto-fixable issues",

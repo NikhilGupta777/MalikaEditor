@@ -10,6 +10,7 @@ import { createLogger } from "./utils/logger";
 import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
 import { validateVideoMagicBytes } from "./utils/fileValidation";
 import { AI_CONFIG } from "./config/ai";
+import { STOCK_DIR } from "./config/paths";
 
 // Zod schemas for query/path parameter validation
 const idParamSchema = z.object({
@@ -96,10 +97,10 @@ import {
   sendCompletionUpdate,
   sendErrorUpdate,
 } from "./services/chatCompanion";
-import { 
-  startProcessingJob as startBackgroundProcessing, 
-  subscribeToJob, 
-  getJobActivities, 
+import {
+  startProcessingJob as startBackgroundProcessing,
+  subscribeToJob,
+  getJobActivities,
   isJobActive,
   isRenderActive,
   setOnJobComplete,
@@ -322,12 +323,12 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   await ensureDirs();
-  
+
   // Log when background processor jobs complete (slots are managed internally now)
   setOnJobComplete((projectId) => {
     routesLogger.info(`Processing job completed for project ${projectId}`);
   });
-  
+
   // Health check endpoint - no authentication required for load balancer checks
   app.get("/api/health", (req, res) => {
     res.json({
@@ -337,7 +338,7 @@ export async function registerRoutes(
       version: "1.0.0",
     });
   });
-  
+
   registerAuthRoutes(app);
 
   app.use("/uploads", async (req, res, next) => {
@@ -375,6 +376,20 @@ export async function registerRoutes(
     }
   });
 
+  app.use("/stock", async (req, res, next) => {
+    const filePath = getSecurePath(STOCK_DIR, req.path);
+    if (!filePath) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    try {
+      await fs.access(filePath);
+      // Let express determine content type based on extension
+      res.sendFile(filePath);
+    } catch {
+      next();
+    }
+  });
+
   app.post(
     "/api/videos/upload",
     requireAuth,
@@ -386,10 +401,10 @@ export async function registerRoutes(
         }
 
         const filePath = req.file.path;
-        
+
         const magicBytesResult = await validateVideoMagicBytes(filePath);
         if (!magicBytesResult.valid) {
-          await fs.unlink(filePath).catch(() => {});
+          await fs.unlink(filePath).catch(() => { });
           return res.status(400).json({
             error: magicBytesResult.error || "Invalid video file format",
             suggestion: "Please upload a valid video file (MP4, MOV, WebM, or AVI)",
@@ -402,7 +417,7 @@ export async function registerRoutes(
         const maxDurationSeconds = parseInt(process.env.MAX_VIDEO_DURATION_SECONDS || "1800", 10);
         if (metadata.duration > maxDurationSeconds) {
           // Clean up the uploaded file since it exceeds the limit
-          await fs.unlink(filePath).catch(() => {});
+          await fs.unlink(filePath).catch(() => { });
           const maxMinutes = Math.floor(maxDurationSeconds / 60);
           const videoMinutes = Math.floor(metadata.duration / 60);
           const videoSeconds = Math.round(metadata.duration % 60);
@@ -463,7 +478,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: formatZodError(paramResult.error) });
       }
       const { id } = paramResult.data;
-      
+
       const project = await storage.getVideoProject(id);
 
       if (!project) {
@@ -503,7 +518,7 @@ export async function registerRoutes(
       }
 
       await storage.updateVideoProject(id, { editPlan: editPlanResult.data });
-      
+
       const updatedProject = await storage.getVideoProject(id);
       res.json({ editPlan: updatedProject?.editPlan });
     } catch (error) {
@@ -521,24 +536,24 @@ export async function registerRoutes(
       return res.status(400).json({ error: formatZodError(paramResult.error) });
     }
     const { id } = paramResult.data;
-    
+
     // Check multi-processing limit
     if (!canStartProcessing() && !isJobActive(id)) {
       const status = getProcessingStatus();
-      return res.status(429).json({ 
+      return res.status(429).json({
         error: `Maximum ${MAX_CONCURRENT_JOBS} videos can be processed at once. Please wait for a slot.`,
         processingStatus: status
       });
     }
-    
+
     // Validate query parameters
     const queryResult = processQuerySchema.safeParse(req.query);
     if (!queryResult.success) {
       return res.status(400).json({ error: formatZodError(queryResult.error) });
     }
-    
+
     const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions, reconnect } = queryResult.data;
-    
+
     const editOptions = {
       addCaptions,
       addBroll,
@@ -556,7 +571,7 @@ export async function registerRoutes(
       UPLOADS_DIR,
       path.basename(project.originalPath)
     );
-    
+
     try {
       await fs.access(videoPath);
     } catch {
@@ -568,12 +583,12 @@ export async function registerRoutes(
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
-    
+
     // Disable request timeout for long-running SSE connection
     req.setTimeout(0);
 
     let connectionClosed = false;
-    
+
     // Parse Last-Event-ID from header or query param for replay support
     // (EventSource API doesn't support custom headers, so we also check query param)
     const lastEventIdHeader = req.headers["last-event-id"];
@@ -592,7 +607,7 @@ export async function registerRoutes(
         res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
       }
     };
-    
+
     // Send event without ID (for initial messages)
     const sendEvent = (type: string, data: Record<string, unknown>) => {
       if (!connectionClosed) {
@@ -609,7 +624,7 @@ export async function registerRoutes(
     const jobAlreadyRunning = isJobActive(id);
     const completedStatuses = ["awaiting_review", "completed", "failed", "cancelled"];
     const isAlreadyCompleted = completedStatuses.includes(project.status);
-    
+
     // Detect stale processing state: DB shows in-progress but no job in memory
     // This happens when server restarts while processing was ongoing
     const inProgressStatuses = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images", "editing"];
@@ -618,18 +633,18 @@ export async function registerRoutes(
     // Handle stale processing state - don't restart from scratch silently
     if (isStaleProcessing) {
       routesLogger.info(`Detected stale processing state for project ${id} (status: ${project.status}, no active job)`);
-      
+
       // Check what data we already have to determine recovery options
       const hasTranscript = project.transcript && Array.isArray(project.transcript) && project.transcript.length > 0;
       const hasEditPlan = project.editPlan && typeof project.editPlan === 'object';
       const hasStockMedia = project.stockMedia && Array.isArray(project.stockMedia) && project.stockMedia.length > 0;
-      
+
       // Always inform user about interrupted processing - whether reconnect or not
       // This prevents silent restart from scratch
       sendEvent("activity", { message: "Processing was interrupted and needs to be restarted.", timestamp: Date.now() });
       sendEvent("status", { status: project.status });
-      
-      sendEvent("staleRecovery", { 
+
+      sendEvent("staleRecovery", {
         interrupted: true,
         lastStatus: project.status,
         hasTranscript,
@@ -637,7 +652,7 @@ export async function registerRoutes(
         hasStockMedia,
         message: "Processing was interrupted (e.g. server restarted). Click 'Retry processing' to continue from where we left off."
       });
-      
+
       clearInterval(heartbeatInterval);
       res.end();
       return;
@@ -647,10 +662,10 @@ export async function registerRoutes(
     if (reconnect && jobAlreadyRunning) {
       routesLogger.info(`Reconnecting to existing processing job for project ${id}, lastEventId: ${clientLastEventId}`);
       sendEvent("activity", { message: "Reconnecting to your processing session...", timestamp: Date.now() });
-      
+
       // Send current project status
       sendEvent("status", { status: project.status });
-      
+
       // Replay missed events since client's last known event ID
       if (clientLastEventId > 0) {
         const missedEvents = getEventsSince(id, clientLastEventId);
@@ -679,12 +694,12 @@ export async function registerRoutes(
       // Start new background processing job only if not already completed
       if (!canStartProcessing()) {
         clearInterval(heartbeatInterval);
-        return res.status(429).json({ 
+        return res.status(429).json({
           error: "Processing slot no longer available. Please try again.",
           processingStatus: getProcessingStatus()
         });
       }
-      
+
       routesLogger.info(`Starting background processing for project ${id}`);
       startBackgroundProcessing(id, prompt, editOptions);
     } else if (jobAlreadyRunning) {
@@ -705,10 +720,10 @@ export async function registerRoutes(
       if (!connectionClosed) {
         // Send event with ID for client-side tracking and replay support
         sendEventWithId(event.id, event.type, event.data);
-        
+
         // End SSE when processing is complete or failed
-        if (event.type === "status" && 
-            ["awaiting_review", "completed", "failed"].includes(event.data.status as string)) {
+        if (event.type === "status" &&
+          ["awaiting_review", "completed", "failed"].includes(event.data.status as string)) {
           setTimeout(() => {
             if (!connectionClosed) {
               connectionClosed = true; // Mark as closed BEFORE ending
@@ -750,35 +765,35 @@ export async function registerRoutes(
 
     // Get the updated review data from request body
     const { reviewData: updatedReviewData } = req.body;
-    
+
     if (updatedReviewData) {
       // Validate the review data
       const parseResult = reviewDataSchema.safeParse(updatedReviewData);
       if (!parseResult.success) {
         return res.status(400).json({ error: "Invalid review data", details: parseResult.error });
       }
-      
+
       // DETAILED LOGGING: Track what user approved
       const validatedData = parseResult.data;
       const allActions = validatedData.editPlan.actions;
       const cutActions = allActions.filter(a => a.type === 'cut');
       const approvedCuts = cutActions.filter(a => a.approved);
-      
+
       routesLogger.info(`[Approve-Review] ========== STORING REVIEW DATA ==========`);
       routesLogger.info(`[Approve-Review] Project ID: ${id}`);
       routesLogger.info(`[Approve-Review] Total actions: ${allActions.length}`);
       routesLogger.info(`[Approve-Review] Cut actions: ${cutActions.length} total`);
       routesLogger.info(`[Approve-Review] Approved cuts: ${approvedCuts.length}`);
       if (approvedCuts.length > 0) {
-        approvedCuts.forEach((c, i) => 
+        approvedCuts.forEach((c, i) =>
           routesLogger.info(`  [Approved Cut ${i}] ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s`)
         );
       } else {
         routesLogger.info(`[Approve-Review] NO CUTS APPROVED - Video will remain at original length`);
       }
-      
+
       // Store the updated review data with userApproved=true
-      await storage.updateVideoProject(id, { 
+      await storage.updateVideoProject(id, {
         reviewData: { ...parseResult.data, userApproved: true },
       });
     } else {
@@ -799,11 +814,11 @@ export async function registerRoutes(
     startBackgroundRender(id).catch(err => {
       routesLogger.error(`[Approve-Review] Failed to start background render for ${id}:`, err);
     });
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: "Review approved. Rendering has started automatically.",
-      projectId: id 
+      projectId: id
     });
   });
 
@@ -814,11 +829,11 @@ export async function registerRoutes(
       return res.status(400).json({ error: formatZodError(paramResult.error) });
     }
     const { id } = paramResult.data;
-    
+
     // Parse quality mode from query params
     const qualityMode = (req.query.qualityMode as string) || "balanced";
     const validQualities = ["preview", "balanced", "quality"] as const;
-    const renderQuality = validQualities.includes(qualityMode as any) 
+    const renderQuality = validQualities.includes(qualityMode as any)
       ? (qualityMode as "preview" | "balanced" | "quality")
       : "balanced";
 
@@ -829,46 +844,46 @@ export async function registerRoutes(
 
     // Check if this is a reconnection request
     const reconnect = req.query.reconnect === "true";
-    
+
     // GUARD: If project is already rendering (from background render or previous call),
     // automatically treat this as a reconnect to prevent duplicate renders
     if (project.status === "rendering") {
       routesLogger.info(`Render endpoint called for project ${id} already in rendering status - treating as reconnection`);
       // Fall through to reconnection logic
     }
-    
+
     // Allow reconnection if project is mid-render
     if (project.status === "rendering") {
       routesLogger.info(`Render reconnection for project ${id} (status: rendering)`);
-      
+
       // Set up SSE for status updates
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
-      
+
       let connectionClosed = false;
-      
+
       const sendEvent = (type: string, data: Record<string, unknown>) => {
         if (!connectionClosed) {
           res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
         }
       };
-      
+
       const heartbeatInterval = setInterval(() => {
         if (!connectionClosed) {
           res.write(": heartbeat\n\n");
         }
       }, AI_CONFIG.processing.sseHeartbeatMs);
-      
+
       // Send current status
       sendEvent("status", { status: project.status });
       sendEvent("activity", { message: "Reconnected to render in progress...", timestamp: Date.now() });
-      
+
       // Poll for status changes since we can't subscribe to a running render job
       const pollInterval = setInterval(async () => {
         if (connectionClosed) return;
-        
+
         try {
           const currentProject = await storage.getVideoProject(id);
           if (!currentProject) {
@@ -878,7 +893,7 @@ export async function registerRoutes(
             res.end();
             return;
           }
-          
+
           if (currentProject.status === "completed") {
             const publicOutputPath = currentProject.outputPath || "";
             sendEvent("complete", {
@@ -900,17 +915,17 @@ export async function registerRoutes(
           routesLogger.error(`Render poll error for project ${id}:`, err);
         }
       }, 2000); // Poll every 2 seconds
-      
+
       req.on("close", () => {
         connectionClosed = true;
         clearInterval(pollInterval);
         clearInterval(heartbeatInterval);
         routesLogger.info(`Render reconnection closed for project ${id}`);
       });
-      
+
       return;
     }
-    
+
     // Allow rendering from awaiting_review or completed status (re-render)
     if (project.status !== "awaiting_review" && project.status !== "completed") {
       return res.status(400).json({ error: "Project must be awaiting review or completed to render" });
@@ -925,61 +940,61 @@ export async function registerRoutes(
       if (!reviewData.userApproved) {
         return res.status(409).json({ error: "Please approve the review before rendering." });
       }
-      
+
       // RACE CONDITION GUARD: If userApproved is true and a background render is active,
       // the background render was already triggered by approve-review endpoint.
       // Switch to SSE polling mode - do NOT start another parallel render.
       if (isRenderActive(id)) {
         routesLogger.info(`[Render] Background render already active for project ${id} - switching to SSE polling mode`);
-        
+
         // Set up SSE response for polling
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         req.setTimeout(0);
-        
+
         let connectionClosed = false;
         let pollInterval: NodeJS.Timeout | null = null;
         let heartbeatInterval: NodeJS.Timeout | null = null;
-        
+
         req.on("close", () => {
           connectionClosed = true;
           if (pollInterval) clearInterval(pollInterval);
           if (heartbeatInterval) clearInterval(heartbeatInterval);
           routesLogger.info(`[Render] SSE polling client disconnected for project ${id}`);
         });
-        
+
         const sendPollingEvent = (type: string, data: Record<string, unknown>) => {
           if (!connectionClosed) {
             res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
           }
         };
-        
+
         // Send heartbeat to keep connection alive
         heartbeatInterval = setInterval(() => {
           if (!connectionClosed) {
             res.write(": heartbeat\n\n");
           }
         }, AI_CONFIG.processing.sseHeartbeatMs);
-        
+
         // Send initial status
         sendPollingEvent("status", { status: "rendering" });
         sendPollingEvent("activity", { message: "Render in progress (already started by background processor)..." });
-        
+
         // Helper to clear intervals safely
         const cleanupIntervals = () => {
           if (pollInterval) clearInterval(pollInterval);
           if (heartbeatInterval) clearInterval(heartbeatInterval);
         };
-        
+
         // Poll for render completion
         pollInterval = setInterval(async () => {
           if (connectionClosed) {
             cleanupIntervals();
             return;
           }
-          
+
           const currentProject = await storage.getVideoProject(id);
           if (!currentProject) {
             sendPollingEvent("error", { error: "Project not found" });
@@ -988,9 +1003,9 @@ export async function registerRoutes(
             res.end();
             return;
           }
-          
+
           if (currentProject.status === "completed" && currentProject.outputPath) {
-            sendPollingEvent("complete", { 
+            sendPollingEvent("complete", {
               outputPath: currentProject.outputPath,
               duration: currentProject.duration
             });
@@ -999,7 +1014,7 @@ export async function registerRoutes(
             res.end();
             return;
           }
-          
+
           if (currentProject.status === "failed") {
             sendPollingEvent("error", { error: "Render failed" });
             cleanupIntervals();
@@ -1007,21 +1022,21 @@ export async function registerRoutes(
             res.end();
             return;
           }
-          
+
           // Send heartbeat with status update
-          sendPollingEvent("activity", { 
+          sendPollingEvent("activity", {
             message: "Rendering in progress...",
             status: currentProject.status
           });
         }, 2000);
-        
+
         // Don't continue to start another render
         return;
       }
     }
 
     const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
-    
+
     try {
       await fs.access(videoPath);
     } catch {
@@ -1033,7 +1048,7 @@ export async function registerRoutes(
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
-    
+
     // Disable request timeout for long-running render SSE connection
     req.setTimeout(0);
 
@@ -1069,7 +1084,7 @@ export async function registerRoutes(
       let transcript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
       const reviewData = project.reviewData as ReviewData | null;
       let stockMedia = project.stockMedia as StockMediaItem[] || [];
-      
+
       // If we have review data, apply user modifications
       if (reviewData && reviewData.userApproved) {
         // VALIDATION: Ensure reviewData has required arrays before accessing
@@ -1091,41 +1106,41 @@ export async function registerRoutes(
         if (!Array.isArray(reviewData.aiImages)) {
           reviewData.aiImages = [];
         }
-        
+
         // DETAILED LOGGING: Track exactly what we received
         const allActions = reviewData.editPlan.actions;
         const cutActions = allActions.filter(a => a.type === 'cut');
         const approvedCutActions = cutActions.filter(a => a.approved);
         const rejectedCutActions = cutActions.filter(a => !a.approved);
-        
+
         routesLogger.info(`[Render] ========== REVIEW DATA RECEIVED ==========`);
         routesLogger.info(`[Render] Total actions: ${allActions.length}`);
         routesLogger.info(`[Render] Cut actions: ${cutActions.length} (${approvedCutActions.length} approved, ${rejectedCutActions.length} rejected)`);
         if (approvedCutActions.length > 0) {
           routesLogger.info(`[Render] APPROVED CUTS that WILL be applied:`);
-          approvedCutActions.forEach((c, i) => 
+          approvedCutActions.forEach((c, i) =>
             routesLogger.info(`  [${i}] ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s: ${c.reason || 'no reason'}`)
           );
         }
         if (rejectedCutActions.length > 0) {
           routesLogger.info(`[Render] REJECTED cuts that will be IGNORED:`);
-          rejectedCutActions.forEach((c, i) => 
+          rejectedCutActions.forEach((c, i) =>
             routesLogger.info(`  [${i}] ${c.start?.toFixed(2)}s - ${c.end?.toFixed(2)}s: ${c.reason || 'no reason'}`)
           );
         }
         sendActivity(`Review data: ${approvedCutActions.length}/${cutActions.length} cuts approved`);
-        
+
         // Filter out rejected items
         const approvedActions = reviewData.editPlan.actions.filter(a => a.approved);
         const approvedStockMedia = reviewData.stockMedia.filter(m => m.approved);
         const approvedAiImages = reviewData.aiImages.filter(m => m.approved);
-        
+
         // Apply transcript edits from user (approved segments with updated text)
         // Use start+end timestamps as stable identifiers for matching
         const reviewTranscriptByTime = new Map(
           reviewData.transcript.map(t => [`${t.start.toFixed(3)}_${t.end.toFixed(3)}`, t])
         );
-        
+
         // Update transcript with user edits and filter out rejected segments
         transcript = transcript
           .map((seg) => {
@@ -1144,14 +1159,14 @@ export async function registerRoutes(
             return seg;
           })
           .filter((seg): seg is NonNullable<typeof seg> => seg !== null);
-        
+
         sendActivity(`Applied transcript edits: ${reviewData.transcript.filter(t => t.edited).length} segments modified, ${reviewData.transcript.filter(t => !t.approved).length} rejected`);
-        
+
         // Update edit plan with only approved actions
         if (editPlan) {
           editPlan.actions = approvedActions;
         }
-        
+
         // Update stock media with only approved items
         stockMedia = [
           ...approvedStockMedia.map(m => ({
@@ -1173,26 +1188,26 @@ export async function registerRoutes(
             endTime: m.endTime,
           } as StockMediaItem)),
         ];
-        
+
         sendActivity(`Applying ${approvedActions.length} approved edit actions...`);
-        
+
         // Handle edge case: all actions rejected - keep original video without cuts
         if (approvedActions.length === 0) {
           sendActivity("All edit actions were rejected. Output will be the original video with captions only.");
         }
-        
+
         // Handle edge case: all transcript rejected - use original transcript for captions
         if (transcript.length === 0) {
           const originalTranscript = project.transcript as Array<{ start: number; end: number; text: string; words?: any[] }> || [];
           transcript = originalTranscript;
           sendActivity("All transcript segments were rejected. Using original transcript for captions.");
         }
-        
+
         // Handle edge case: all media rejected - proceed without b-roll
         if (stockMedia.length === 0) {
           sendActivity("All media was rejected. Proceeding without B-roll overlays.");
         }
-        
+
         // Record user feedback for AI learning (persisted to database)
         // Stored project.analysis is flattened (context/duration at top level)
         try {
@@ -1221,7 +1236,7 @@ export async function registerRoutes(
         } catch (feedbackErr) {
           routesLogger.warn("[Render] Failed to persist feedback (non-critical):", feedbackErr);
         }
-        
+
         // Perform AI pre-render review (project.analysis is flattened VideoAnalysis)
         try {
           const videoAnalysis = project.analysis as import("@shared/schema").VideoAnalysis | null;
@@ -1234,7 +1249,7 @@ export async function registerRoutes(
               reviewData,
               project.prompt || ""
             );
-            
+
             // Store AI review result in review data (fetch latest to avoid overwriting)
             const latestProject = await storage.getVideoProject(id);
             const latestReviewData = latestProject?.reviewData as ReviewData | null;
@@ -1243,13 +1258,13 @@ export async function registerRoutes(
                 reviewData: { ...latestReviewData, aiReview } as any,
               });
             }
-            
+
             if (aiReview.confidence < 50) {
               sendActivity(`AI Review: Low confidence (${aiReview.confidence}%) - ${aiReview.summary}`);
             } else {
               sendActivity(`AI Review: ${aiReview.confidence}% confidence - ${aiReview.summary}`);
             }
-            
+
             if (aiReview.issues && aiReview.issues.length > 0) {
               const highIssues = aiReview.issues.filter(i => i.severity === "high");
               if (highIssues.length > 0) {
@@ -1266,7 +1281,7 @@ export async function registerRoutes(
       if (!editPlan || !editPlan.actions) {
         throw new Error("No edit plan found. Please run analysis first.");
       }
-      
+
       // Ensure editPlan has proper structure for applyEdits
       const finalEditPlan = {
         ...editPlan,
@@ -1285,19 +1300,19 @@ export async function registerRoutes(
       sendEvent("status", { status: "rendering" });
       sendActivity("Starting FFmpeg rendering engine...");
       sendActivity("Cutting segments, adding overlays, and encoding video...");
-      
+
       // Send rendering update to chat companion
       sendRenderingUpdate(id);
       updateProjectContext(id, { status: "rendering" });
 
       // Get original editOptions from review data, or use defaults
       const storedOptions: Partial<EditOptionsType> = reviewData?.editOptions || {};
-      
+
       // CRITICAL: Only apply cuts if there are explicitly approved cut actions
       // If user rejected all cut actions, we keep the entire video
       const hasApprovedCuts = finalEditPlan.actions?.some(a => a.type === 'cut') ?? false;
       const hasApprovedKeeps = finalEditPlan.actions?.some(a => a.type === 'keep') ?? false;
-      
+
       routesLogger.info(`[Render] Cut decisions - hasApprovedCuts: ${hasApprovedCuts}, hasApprovedKeeps: ${hasApprovedKeeps}, totalActions: ${finalEditPlan.actions?.length || 0}`);
       if (hasApprovedCuts) {
         const cutActions = finalEditPlan.actions?.filter(a => a.type === 'cut') || [];
@@ -1306,7 +1321,7 @@ export async function registerRoutes(
       } else {
         routesLogger.info(`[Render] No cut actions approved - keeping entire video`);
       }
-      
+
       const editOptions: EditOptions = {
         addCaptions: storedOptions.addCaptions ?? true,
         addBroll: stockMedia.length > 0,
@@ -1315,7 +1330,7 @@ export async function registerRoutes(
         addTransitions: storedOptions.addTransitions ?? false,
         renderQuality,
       };
-      
+
       routesLogger.info(`[Render] Final editOptions: ${JSON.stringify(editOptions)}`);
 
       const editResult = await applyEdits(
@@ -1333,10 +1348,10 @@ export async function registerRoutes(
       // Verify output
       const outputMetadata = await getVideoMetadata(editResult.outputPath);
       const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
-      
+
       sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s`);
       sendActivity("Video ready for download!");
-      
+
       // AI SELF-REVIEW: Fire-and-forget background task (truly non-blocking)
       // Store the output path for background self-review
       const outputPathForReview = editResult.outputPath;
@@ -1344,14 +1359,14 @@ export async function registerRoutes(
       const promptForReview = project.prompt || "Edit this video";
       // Stored project.analysis is flattened VideoAnalysis
       const videoAnalysisForReview = project.analysis as import("@shared/schema").VideoAnalysis | undefined;
-      
+
       // Only run self-review if we have valid reviewData
       if (reviewData && reviewData.userApproved) {
         // Fire-and-forget: don't await this
         (async () => {
           try {
             routesLogger.info(`[SelfReview] Starting background self-review for project ${projectIdForReview}`);
-            
+
             const selfReviewResult = await performPostRenderSelfReview(
               outputPathForReview,
               videoPath,
@@ -1362,12 +1377,12 @@ export async function registerRoutes(
               promptForReview,
               videoAnalysisForReview
             );
-            
+
             routesLogger.info(`[SelfReview] Completed: Score ${selfReviewResult.overallScore}/100, Approved: ${selfReviewResult.approved}, Issues: ${selfReviewResult.issues.length}`);
-            
+
             // Send self-review update to chat companion
             sendSelfReviewUpdate(projectIdForReview, selfReviewResult.overallScore, selfReviewResult.issues.length);
-            
+
             // PHASE 3: Iterative Correction Loop with Actual Re-Rendering
             const MAX_ITERATIONS = 2;
             let currentIteration = 1;
@@ -1375,20 +1390,20 @@ export async function registerRoutes(
             let currentEditPlan = finalEditPlan;
             let currentStockMedia = stockMedia;
             let lastSelfReview = selfReviewResult;
-            
+
             while (currentIteration < MAX_ITERATIONS) {
               const reRenderCheck = shouldTriggerReRender(lastSelfReview, currentIteration);
-              
+
               if (!reRenderCheck.shouldReRender) {
                 routesLogger.info(`[SelfReview] No re-render needed: ${reRenderCheck.reason}`);
                 break;
               }
-              
+
               routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
               routesLogger.info(`[SelfReview] AUTO-CORRECTION ITERATION ${currentIteration + 1}/${MAX_ITERATIONS}`);
               routesLogger.info(`[SelfReview] Reason: ${reRenderCheck.reason}`);
               routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
-              
+
               try {
                 // Generate correction plan based on self-review issues
                 const correctionPlan = await generateCorrectionPlan(
@@ -1396,12 +1411,12 @@ export async function registerRoutes(
                   currentEditPlan,
                   currentStockMedia
                 );
-                
+
                 if (correctionPlan.actions.length === 0) {
                   routesLogger.info(`[SelfReview] No actionable corrections - stopping iteration`);
                   break;
                 }
-                
+
                 // Apply corrections to edit plan and stock media
                 const appliedCorrections = applyCorrectionPlan(
                   correctionPlan,
@@ -1409,15 +1424,15 @@ export async function registerRoutes(
                   currentStockMedia,
                   lastSelfReview
                 );
-                
+
                 // Send correction update to chat companion with actual correction count
                 sendCorrectionUpdate(projectIdForReview, currentIteration + 1, appliedCorrections.appliedCount);
-                
+
                 routesLogger.info(`[SelfReview] Applied ${appliedCorrections.appliedCount} corrections`);
-                
+
                 // Actually re-render with corrected data
                 routesLogger.info(`[SelfReview] Starting corrected re-render...`);
-                
+
                 const correctedEditResult = await applyEdits(
                   videoPath,
                   appliedCorrections.modifiedEditPlan,
@@ -1427,18 +1442,18 @@ export async function registerRoutes(
                   undefined,
                   semanticAnalysis
                 );
-                
+
                 routesLogger.info(`[SelfReview] Re-render complete: ${correctedEditResult.outputPath}`);
-                
+
                 // Update project with new output
                 const newPublicPath = `/output/${path.basename(correctedEditResult.outputPath)}`;
                 await storage.updateVideoProject(projectIdForReview, {
                   outputPath: newPublicPath,
                 });
-                
+
                 // Run self-review on new output
                 routesLogger.info(`[SelfReview] Running self-review on corrected output...`);
-                
+
                 const newSelfReview = await performPostRenderSelfReview(
                   correctedEditResult.outputPath,
                   videoPath,
@@ -1449,17 +1464,17 @@ export async function registerRoutes(
                   promptForReview,
                   videoAnalysisForReview
                 );
-                
+
                 const improvement = newSelfReview.overallScore - lastSelfReview.overallScore;
                 routesLogger.info(`[SelfReview] Iteration ${currentIteration + 1} result: ${newSelfReview.overallScore}/100 (${improvement >= 0 ? "+" : ""}${improvement} points)`);
-                
+
                 // Update state for next iteration
                 currentOutputPath = correctedEditResult.outputPath;
                 currentEditPlan = appliedCorrections.modifiedEditPlan;
                 currentStockMedia = appliedCorrections.modifiedStockMedia;
                 lastSelfReview = newSelfReview;
                 currentIteration++;
-                
+
                 // Store iteration results
                 const existingAnalysis = (await storage.getVideoProject(projectIdForReview))?.analysis || {};
                 await storage.updateVideoProject(projectIdForReview, {
@@ -1483,21 +1498,21 @@ export async function registerRoutes(
                     },
                   },
                 });
-                
+
               } catch (correctionError) {
                 routesLogger.warn(`[SelfReview] Correction iteration failed: ${correctionError instanceof Error ? correctionError.message : String(correctionError)}`);
                 break;
               }
             }
-            
+
             if (currentIteration >= MAX_ITERATIONS) {
               routesLogger.info(`[SelfReview] Maximum iterations (${MAX_ITERATIONS}) reached`);
             }
-            
+
             routesLogger.info(`[SelfReview] Final score after ${currentIteration} iteration(s): ${lastSelfReview.overallScore}/100`);
             routesLogger.info(`[SelfReview] Approved: ${lastSelfReview.approved}`);
             routesLogger.info(`[SelfReview] ═══════════════════════════════════════════════════════`);
-            
+
             // Persist self-review results to project for future reference and Phase 3 correction loop
             try {
               const existingAnalysis = (await storage.getVideoProject(projectIdForReview))?.analysis || {};
@@ -1520,9 +1535,9 @@ export async function registerRoutes(
             } catch (persistError) {
               routesLogger.warn(`[SelfReview] Could not persist results: ${persistError}`);
             }
-            
+
             routesLogger.info(`[SelfReview] Quality metrics: audioSync=${selfReviewResult.qualityMetrics.audioVideoSync}, visual=${selfReviewResult.qualityMetrics.visualQuality}, pacing=${selfReviewResult.qualityMetrics.pacingFlow}`);
-            
+
             // PHASE 4: AI Learning System - Store successful patterns when score is good
             const finalScore = lastSelfReview?.overallScore ?? selfReviewResult.overallScore;
             if (finalScore >= 70 && reviewData) {
@@ -1541,19 +1556,19 @@ export async function registerRoutes(
             } else {
               routesLogger.debug(`[Learning] Skipped pattern storage: score ${finalScore}/100 below threshold or reviewData unavailable`);
             }
-            
+
           } catch (selfReviewError) {
             routesLogger.warn(`[SelfReview] Background self-review failed: ${selfReviewError instanceof Error ? selfReviewError.message : String(selfReviewError)}`);
           }
         })().catch(err => {
           routesLogger.debug(`[SelfReview] Background task error: ${err}`);
         });
-        
+
         sendActivity("Self-review started in background...");
       } else {
         routesLogger.debug(`[SelfReview] Skipped: reviewData not available or not approved`);
       }
-      
+
       await storage.updateVideoProject(id, {
         status: "completed" as ProcessingStatus,
         outputPath: publicOutputPath,
@@ -1569,14 +1584,14 @@ export async function registerRoutes(
           skipped: editResult.aiImagesSkipped,
         } : undefined,
       });
-      
+
       // Send completion update to chat companion
       sendCompletionUpdate(id);
       updateProjectContext(id, { status: "completed" });
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Rendering failed";
-      
+
       // Client disconnect should NOT cancel rendering - it continues in background
       // Only treat as actual error if it's not a disconnect-related issue
       if (connectionClosed) {
@@ -1586,9 +1601,9 @@ export async function registerRoutes(
       } else {
         // Actual rendering error
         routesLogger.error("Render error:", error);
-        
+
         const friendlyError = formatErrorForSSE(error instanceof Error ? error : new Error(errorMessage));
-        
+
         await storage.updateVideoProject(id, {
           status: "failed" as ProcessingStatus,
           errorMessage: friendlyError.error,
@@ -1690,8 +1705,8 @@ export async function registerRoutes(
 
       // Compute quality insights
       const hookMoments = semanticAnalysis?.hookMoments as { timestamp: number; score: number; reason: string }[] || [];
-      const hookStrength = hookMoments.length > 0 
-        ? Math.max(...hookMoments.map(h => h.score)) 
+      const hookStrength = hookMoments.length > 0
+        ? Math.max(...hookMoments.map(h => h.score))
         : 50;
 
       const qualityInsights = {
@@ -1801,12 +1816,12 @@ export async function registerRoutes(
         return res.status(400).json({ error: formatZodError(paramResult.error) });
       }
       const { id } = paramResult.data;
-      
+
       const project = await storage.getVideoProject(id);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
-      
+
       await storage.deleteVideoProject(id);
       res.json({ success: true, message: "Video project deleted" });
     } catch (error) {
@@ -1844,16 +1859,16 @@ export async function registerRoutes(
   app.post("/api/videos/:id/autosave", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      
+
       // Validate the request body with Zod schema
       const bodyResult = autosaveBodySchema.safeParse(req.body);
       if (!bodyResult.success) {
-        return res.status(400).json({ 
-          error: "Invalid autosave data", 
-          details: formatZodError(bodyResult.error) 
+        return res.status(400).json({
+          error: "Invalid autosave data",
+          details: formatZodError(bodyResult.error)
         });
       }
-      
+
       await storage.saveAutosave(id, bodyResult.data.reviewData);
       res.json({ success: true });
     } catch (error) {
@@ -1884,12 +1899,12 @@ export async function registerRoutes(
       // Validate cache params to prevent injection or path traversal
       const paramsResult = cacheParamsSchema.safeParse(req.params);
       if (!paramsResult.success) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           error: "Invalid cache parameters",
           details: formatZodError(paramsResult.error)
         });
       }
-      
+
       const { type, key } = paramsResult.data;
       const cached = await storage.getCachedAsset(type, key);
       if (cached) {
@@ -1922,27 +1937,27 @@ export async function registerRoutes(
   app.post("/api/videos/:id/chat", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      
+
       // Validate message with length check
       const messageResult = chatMessageSchema.safeParse(req.body);
       if (!messageResult.success) {
-        return res.status(400).json({ 
-          error: formatZodError(messageResult.error) 
+        return res.status(400).json({
+          error: formatZodError(messageResult.error)
         });
       }
       const { message } = messageResult.data;
-      
+
       const project = await storage.getVideoProject(id);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
-      
+
       // Add user message
       await addUserMessage(id, message);
-      
+
       // Get AI response
       const answerMessage = await answerUserQuestion(id, message);
-      
+
       // Return the new messages
       const recentMessages = await getProjectMessages(id, 2);
       res.json({ messages: recentMessages });
@@ -1960,36 +1975,36 @@ export async function registerRoutes(
   app.post("/api/videos/:id/retry", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      
+
       // Validate stage against allowed values
       const rawStage = req.body?.stage;
       let stage: "transcription" | "analysis" | "planning" | "stock" | "ai_images" | "full" = 'full';
-      
+
       if (rawStage !== undefined) {
         const stageResult = retryStageSchema.safeParse(rawStage);
         if (!stageResult.success) {
-          return res.status(400).json({ 
-            error: `Invalid stage. Must be one of: transcription, analysis, planning, stock, ai_images, full, all` 
+          return res.status(400).json({
+            error: `Invalid stage. Must be one of: transcription, analysis, planning, stock, ai_images, full, all`
           });
         }
         stage = stageResult.data;
       }
-      
+
       const project = await storage.getVideoProject(id);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
-      
+
       const result = await retryProcessingFromStage(id, stage as RetryStage);
-      
+
       if (!result.started) {
-        return res.status(409).json({ 
+        return res.status(409).json({
           error: result.reason || "Could not start retry",
         });
       }
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         message: "Retry started. Connect to process SSE to receive updates.",
         projectId: id,
         stage
@@ -2004,14 +2019,14 @@ export async function registerRoutes(
   app.post("/api/videos/:id/retry-transcription", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
       const { id } = idParamSchema.parse(req.params);
-      
+
       const project = await storage.getVideoProject(id);
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
 
       const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
-      
+
       try {
         await fs.access(videoPath);
       } catch {
@@ -2037,7 +2052,7 @@ export async function registerRoutes(
 
       try {
         // Update status to transcribing
-        await storage.updateVideoProject(id, { 
+        await storage.updateVideoProject(id, {
           status: "transcribing",
           errorMessage: null,
         });
@@ -2046,16 +2061,16 @@ export async function registerRoutes(
 
         // Extract audio
         const audioPath = await extractAudio(videoPath);
-        
+
         // Get video duration for enhanced transcription (use stored duration or default)
         const videoDuration = project.duration || 60;
-        
+
         // Run enhanced transcription (same as main pipeline) for consistent transcript shape
         const transcriptResult = await transcribeAudioEnhanced(audioPath, videoDuration);
         const transcript = transcriptResult.segments;
-        
+
         // Clean up audio file
-        await fs.unlink(audioPath).catch(() => {});
+        await fs.unlink(audioPath).catch(() => { });
 
         // Update project with new transcript (including enhanced data if available)
         await storage.updateVideoProject(id, {
@@ -2072,22 +2087,22 @@ export async function registerRoutes(
 
         sendEvent("transcript", { transcript });
         sendEvent("activity", { message: "Transcription complete!", timestamp: Date.now() });
-        sendEvent("complete", { 
-          success: true, 
+        sendEvent("complete", {
+          success: true,
           transcript,
-          message: "Transcription re-run successfully. You can now process the video again." 
+          message: "Transcription re-run successfully. You can now process the video again."
         });
 
       } catch (error) {
         routesLogger.error("Retry transcription failed:", error);
         const errorMsg = error instanceof Error ? error.message : "Transcription retry failed";
-        
+
         await storage.updateVideoProject(id, {
           status: "failed",
           errorMessage: errorMsg,
         });
-        
-        sendEvent("error", { 
+
+        sendEvent("error", {
           error: errorMsg,
           suggestion: "Please try again or upload a video with clearer audio"
         });

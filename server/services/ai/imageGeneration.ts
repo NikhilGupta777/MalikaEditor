@@ -3,12 +3,16 @@ import { createLogger } from "../../utils/logger";
 import { getGeminiClient } from "./clients";
 import { AI_CONFIG } from "../../config/ai";
 import type { VideoContext, SemanticAnalysis } from "@shared/schema";
+import fs from "fs/promises";
+import path from "path";
+import { v4 as uuidv4 } from "uuid";
+import { STOCK_DIR } from "../../config/paths";
 
 const aiLogger = createLogger("ai-service");
 
 export interface GeneratedAiImage {
   prompt: string;
-  base64Data: string;
+  filePath: string; // Changed from base64Data to filePath for memory optimization
   mimeType: string;
   startTime: number;
   endTime: number;
@@ -19,14 +23,14 @@ export interface GeneratedAiImage {
 export async function generateAiImage(
   prompt: string,
   videoContext?: VideoContext,
-): Promise<{ base64Data: string; mimeType: string }> {
+): Promise<{ filePath: string; mimeType: string }> {
   try {
     // Sanitize prompt to remove conflicting style instructions that could break consistency
     const sanitizedPrompt = prompt
       .replace(/\b(abstract|digital animation|cartoon|animated|illustration|graphic design|3d render|cgi|vector|stylized|anime|pixel art)\b/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
-    
+
     const contextualPrompt = videoContext
       ? `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for ${videoContext.genre} video content with a ${videoContext.tone} tone. 
          The image should visually represent: ${sanitizedPrompt}
@@ -82,38 +86,34 @@ export async function generateAiImage(
 
     const base64Data = imagePart.inlineData.data;
     const mimeType = imagePart.inlineData.mimeType || "image/png";
-    
+
     // Validate base64 data
     if (typeof base64Data !== "string" || base64Data.length === 0) {
       throw new Error("AI image generation returned empty or invalid base64 data");
     }
-    
+
     // Validate mime type (only allow image types)
     const allowedMimeTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
     if (!allowedMimeTypes.includes(mimeType.toLowerCase())) {
       aiLogger.warn(`AI image has unexpected mime type: ${mimeType}, defaulting to image/png`);
     }
-    
-    // Check base64 size (limit to ~10MB decoded, base64 is ~1.33x)
-    const MAX_BASE64_SIZE = 15 * 1024 * 1024; // 15MB base64 = ~10MB image
-    if (base64Data.length > MAX_BASE64_SIZE) {
-      aiLogger.warn(`AI image is very large (${(base64Data.length / 1024 / 1024).toFixed(2)}MB), may cause memory issues`);
-    }
-    
-    // Verify base64 is valid by attempting a decode test (first 100 chars)
-    try {
-      const testDecode = Buffer.from(base64Data.substring(0, 100), "base64");
-      if (testDecode.length === 0) {
-        throw new Error("Base64 decode test failed");
-      }
-    } catch (e) {
-      throw new Error("AI image generation returned invalid base64 data");
-    }
-    
-    aiLogger.debug(`AI image generated successfully: ${mimeType}, size: ${(base64Data.length / 1024).toFixed(1)}KB`);
+
+    // Decode and save to file immediately to free memory
+    const buffer = Buffer.from(base64Data, "base64");
+
+    // Ensure STOCK_DIR exists
+    await fs.mkdir(STOCK_DIR, { recursive: true });
+
+    const ext = mimeType.split('/')[1] || 'png';
+    const filename = `ai_gen_${uuidv4()}.${ext}`;
+    const filePath = path.join(STOCK_DIR, filename);
+
+    await fs.writeFile(filePath, buffer);
+
+    aiLogger.debug(`AI image generated and saved: ${filePath}, size: ${(buffer.length / 1024).toFixed(1)}KB`);
 
     return {
-      base64Data,
+      filePath, // Return path instead of data
       mimeType: allowedMimeTypes.includes(mimeType.toLowerCase()) ? mimeType : "image/png",
     };
   } catch (error) {
@@ -136,10 +136,10 @@ export async function generateAiImagesForVideo(
   const generatedImages: GeneratedAiImage[] = [];
 
   // Use explicit B-roll windows from edit plan if provided, otherwise fall back to semantic analysis
-  const sourceWindows = explicitBrollWindows && explicitBrollWindows.length > 0 
-    ? explicitBrollWindows 
+  const sourceWindows = explicitBrollWindows && explicitBrollWindows.length > 0
+    ? explicitBrollWindows
     : semanticAnalysis.brollWindows;
-  
+
   aiLogger.debug(`Using ${explicitBrollWindows?.length || 0} explicit windows, ${semanticAnalysis.brollWindows?.length || 0} semantic windows`);
 
   // Use all valid B-roll windows - no slicing or limiting
@@ -200,7 +200,7 @@ export async function generateAiImagesForVideo(
 
         return {
           prompt: candidate.suggestedQuery,
-          base64Data: result.base64Data,
+          filePath: result.filePath, // Use filePath
           mimeType: result.mimeType,
           startTime: candidate.start,
           endTime: candidate.end,

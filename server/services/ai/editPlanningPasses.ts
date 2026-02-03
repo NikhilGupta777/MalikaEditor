@@ -37,23 +37,48 @@ const normalizeQualityLevel = normalizeVisualImportance;
 const normalizePacing = normalizeMetricPacing;
 const normalizeActionType = normalizeEditActionType;
 
+// Safe JSON parser with repair capabilities
+export function safeJsonParse(text: string, logger?: any): any {
+  if (!text) return null;
+  const jsonStart = text.indexOf('{');
+  const jsonEnd = text.lastIndexOf('}');
+  if (jsonStart === -1 || jsonEnd === -1) return null;
+
+  const jsonText = text.slice(jsonStart, jsonEnd + 1);
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (e) {
+    try {
+      // Repair: remove control chars, fix trailing commas, fix unescaped quotes if possible
+      let cleaned = jsonText
+        .replace(/[\u0000-\u001F\u007F-\u009F]/g, "")
+        .replace(/,\s*([\]}])/g, '$1');
+      return JSON.parse(cleaned);
+    } catch (innerE) {
+      if (logger) logger.warn("JSON parse failed after cleanup:", innerE);
+      return null;
+    }
+  }
+}
+
 // Pre-process AI responses to normalize enum values before validation
 function normalizeQualityMapResponse(parsed: any): any {
   if (!parsed) return parsed;
-  
+
   if (parsed.segmentScores && Array.isArray(parsed.segmentScores)) {
     parsed.segmentScores = parsed.segmentScores.map((s: any) => ({
       ...s,
       valueLevel: normalizeValueLevel(s.valueLevel),
     }));
   }
-  
+
   return parsed;
 }
 
 function normalizeReviewedPlanResponse(parsed: any): any {
   if (!parsed) return parsed;
-  
+
   if (parsed.qualityMetrics) {
     parsed.qualityMetrics = {
       ...parsed.qualityMetrics,
@@ -63,7 +88,7 @@ function normalizeReviewedPlanResponse(parsed: any): any {
       overallScore: typeof parsed.qualityMetrics.overallScore === 'number' ? parsed.qualityMetrics.overallScore : 60,
     };
   }
-  
+
   if (parsed.actions && Array.isArray(parsed.actions)) {
     parsed.actions = parsed.actions.map((a: any) => ({
       ...a,
@@ -71,20 +96,20 @@ function normalizeReviewedPlanResponse(parsed: any): any {
       priority: a.priority ? normalizePriority(a.priority) : undefined,
     }));
   }
-  
+
   return parsed;
 }
 
 function normalizeBrollPlanResponse(parsed: any): any {
   if (!parsed) return parsed;
-  
+
   if (parsed.brollPlacements && Array.isArray(parsed.brollPlacements)) {
     parsed.brollPlacements = parsed.brollPlacements.map((b: any) => ({
       ...b,
       priority: normalizePriority(b.priority),
     }));
   }
-  
+
   return parsed;
 }
 
@@ -250,7 +275,7 @@ export async function executePass1StructureAnalysis(
   semanticAnalysis: SemanticAnalysis
 ): Promise<StructuredPlan> {
   const duration = analysis.duration || 0;
-  const transcriptText = transcript.slice(0, 30).map(t => 
+  const transcriptText = transcript.slice(0, 30).map(t =>
     `[${safeFixed(t.start)}s]: ${t.text}`
   ).join("\n");
 
@@ -294,26 +319,24 @@ Respond in JSON format only (no markdown):
       () => getGeminiClient().models.generateContent({
         model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" },
       }),
       "pass1StructureAnalysis",
       AI_RETRY_OPTIONS
     );
 
     const text = response.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    
-    if (!jsonMatch) {
-      aiLogger.warn("Pass 1: Failed to parse structure analysis, using defaults");
+    const parsed = safeJsonParse(text, aiLogger);
+    if (!parsed) {
+      aiLogger.warn("Pass 1: Failed to parse structure analysis (invalid JSON), using defaults");
       return getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
     }
-
-    const parsed = JSON.parse(jsonMatch[0]);
     const validated = StructuredPlanSchema.safeParse(parsed);
     if (!validated.success) {
       aiLogger.warn("Pass 1: Schema validation failed, using defaults:", validated.error.issues);
       return getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
     }
-    
+
     return {
       introSection: validated.data.introSection || null,
       mainContentSection: validated.data.mainContentSection || { start: 0, end: duration },
@@ -332,17 +355,17 @@ Respond in JSON format only (no markdown):
 }
 
 function getDefaultStructuredPlan(
-  duration: number, 
-  analysis: VideoAnalysis, 
+  duration: number,
+  analysis: VideoAnalysis,
   semanticAnalysis: SemanticAnalysis
 ): StructuredPlan {
-  const introEnd = semanticAnalysis.structureAnalysis?.introEnd || 
-                   analysis.narrativeStructure?.introEnd || 
-                   Math.min(10, duration * 0.1);
-  const outroStart = semanticAnalysis.structureAnalysis?.outroStart || 
-                     analysis.narrativeStructure?.outroStart || 
-                     Math.max(duration - 15, duration * 0.9);
-  
+  const introEnd = semanticAnalysis.structureAnalysis?.introEnd ||
+    analysis.narrativeStructure?.introEnd ||
+    Math.min(10, duration * 0.1);
+  const outroStart = semanticAnalysis.structureAnalysis?.outroStart ||
+    analysis.narrativeStructure?.outroStart ||
+    Math.max(duration - 15, duration * 0.9);
+
   return {
     introSection: introEnd > 3 ? { start: 0, end: introEnd } : null,
     mainContentSection: { start: introEnd || 0, end: outroStart || duration },
@@ -360,13 +383,13 @@ export async function executePass2QualityAssessment(
   fillerSegments: { start: number; end: number; word: string }[]
 ): Promise<QualityMap> {
   const duration = analysis.duration;
-  
+
   const keyMomentsSummary = [
     ...(analysis.keyMoments || []).map(k => `[${safeFixed(k.timestamp)}s] ${k.type}: ${k.description} (${k.importance})`),
     ...(semanticAnalysis.keyMoments || []).map(k => `[${safeFixed(k.timestamp)}s] ${k.description} (${k.importance})`),
   ].slice(0, 15).join("\n");
 
-  const scenesSummary = (analysis.scenes || []).slice(0, 10).map(s => 
+  const scenesSummary = (analysis.scenes || []).slice(0, 10).map(s =>
     `[${safeFixed(s.start)}s-${safeFixed(s.end)}s] ${s.sceneType} - ${s.emotionalTone}, visual importance: ${s.visualImportance}`
   ).join("\n");
 
@@ -425,39 +448,17 @@ Respond in JSON format only (no markdown):
       () => getGeminiClient().models.generateContent({
         model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" },
       }),
       "pass2QualityAssessment",
       AI_RETRY_OPTIONS
     );
 
     const text = response.text || "";
-    // Robust JSON extraction for potential malformed AI responses
-    const jsonStart = text.indexOf('{');
-    const jsonEnd = text.lastIndexOf('}');
-    
-    if (jsonStart === -1 || jsonEnd === -1) {
-      aiLogger.warn("Pass 2: No JSON block found in response, using defaults");
+    const parsed = safeJsonParse(text, aiLogger);
+    if (!parsed) {
+      aiLogger.warn("Pass 2: Failed to parse quality assessment (invalid JSON), using defaults");
       return getDefaultQualityMap(duration, semanticAnalysis);
-    }
-
-    const jsonText = text.slice(jsonStart, jsonEnd + 1)
-      .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
-      .replace(/\\n/g, " ") // Normalize newlines inside strings
-      .trim();
-    
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch (e) {
-      aiLogger.error("Pass 2: JSON.parse failed on cleaned text:", e);
-      // Fallback: try to clean up trailing commas which is a common AI error
-      try {
-        const cleanedJson = jsonText.replace(/,\s*([\]}])/g, '$1');
-        parsed = JSON.parse(cleanedJson);
-      } catch (innerE) {
-        aiLogger.error("Pass 2: JSON.parse failed even after cleanup, using defaults");
-        return getDefaultQualityMap(duration, semanticAnalysis);
-      }
     }
 
     const normalized = normalizeQualityMapResponse(parsed);
@@ -466,7 +467,7 @@ Respond in JSON format only (no markdown):
       aiLogger.warn("Pass 2: Schema validation failed, using defaults:", validated.error.issues);
       return getDefaultQualityMap(duration, semanticAnalysis);
     }
-    
+
     return {
       segmentScores: validated.data.segmentScores,
       hookStrength: validated.data.hookStrength,
@@ -502,7 +503,7 @@ export async function executePass3BrollOptimization(
   const duration = analysis.duration;
   const genre = analysis.context?.genre || "general";
   const tone = analysis.context?.tone || "casual";
-  
+
   const lowImportanceScenes = (analysis.scenes || [])
     .filter(s => s.visualImportance === "low" || s.visualImportance === "medium")
     .map(s => `[${safeFixed(s.start)}s-${safeFixed(s.end)}s] ${s.visualDescription || s.sceneType}`);
@@ -569,27 +570,25 @@ Respond in JSON format only (no markdown):
       () => getGeminiClient().models.generateContent({
         model: AI_CONFIG.models.editPlanning,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { responseMimeType: "application/json" },
       }),
       "pass3BrollOptimization",
       AI_RETRY_OPTIONS
     );
 
     const text = response.text || "";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    
-    if (!jsonMatch) {
-      aiLogger.warn("Pass 3: Failed to parse B-roll optimization, using defaults");
+    const parsed = safeJsonParse(text, aiLogger);
+    if (!parsed) {
+      aiLogger.warn("Pass 3: Failed to parse B-roll optimization (invalid JSON), using defaults");
       return getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
     }
-
-    const parsed = JSON.parse(jsonMatch[0]);
     const normalized = normalizeBrollPlanResponse(parsed);
     const validated = OptimizedBrollPlanSchema.safeParse(normalized);
     if (!validated.success) {
       aiLogger.warn("Pass 3: Schema validation failed, using defaults:", validated.error.issues);
       return getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
     }
-    
+
     const brollPlacements = validateBrollSpacing(
       validated.data.brollPlacements.map((b) => ({
         start: Math.max(0, b.start),
@@ -620,14 +619,14 @@ function validateBrollSpacing(
   const sorted = [...placements].sort((a, b) => a.start - b.start);
   const validated: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> = [];
   let lastEnd = -5;
-  
+
   // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
   const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
 
   for (const placement of sorted) {
     const hasGap = placement.start >= lastEnd + 3;
     const beforeEnd = placement.start < validDuration - 1;
-    
+
     if (hasGap && beforeEnd) {
       validated.push({ ...placement, priority: placement.priority as "high" | "medium" | "low" });
       lastEnd = placement.start + placement.duration;
@@ -676,29 +675,29 @@ export async function executeConsolidatedAnalysis(
   const duration = analysis.duration || 0;
   const genre = analysis.context?.genre || "general";
   const tone = analysis.context?.tone || "casual";
-  
+
   // Create context aggregator to unify all analysis data
   const contextAggregator = createContextAggregator(
-    analysis, 
-    transcript, 
+    analysis,
+    transcript,
     semanticAnalysis,
     enhancedTranscript
   );
-  
+
   // Generate rich context from all underused data sources
   const richContextData = contextAggregator.generateEditPlanningContext();
   const unifiedContext = contextAggregator.getUnifiedContext();
-  
+
   aiLogger.info(`[Context Aggregator] Data sources available: ${Object.entries(unifiedContext.hasData).filter(([_, v]) => v).map(([k]) => k).join(", ")}`);
-  
+
   // Extract enhancedAnalysis data for intelligent editing decisions (now properly typed in VideoAnalysis)
   const enhancedAnalysis = analysis.enhancedAnalysis;
   const motionAnalysis = enhancedAnalysis?.motionAnalysis;
   const transitionAnalysis = enhancedAnalysis?.transitionAnalysis;
   const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
   const audioVisualSync = enhancedAnalysis?.audioVisualSync;
-  
-  const transcriptText = transcript.slice(0, 40).map(t => 
+
+  const transcriptText = transcript.slice(0, 40).map(t =>
     `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
   ).join("\n");
 
@@ -790,6 +789,8 @@ INTELLIGENT EDITING RULES (use the rich context data above):
 - USE ENTITY DATA: When entities (people, places, things) are mentioned, use them in B-roll queries
 - USE SENTIMENT DATA: Match B-roll mood to sentiment (positive = upbeat, negative = subdued)
 - USE CHAPTER DATA: Respect chapter boundaries for natural section breaks
+- AUTONOMOUS CONFLICT RESOLUTION: If different data sources suggest conflicting edits (e.g., motion says 'cut' but speaker says 'keep'), prioritize SPEAKER data for informative content and MOTION data for entertainment/b-roll.
+- SELF-CORRECTION: Your first priority is narrative continuity. Ensure every cut has a justification rooted in quality assessment.
 
 B-ROLL PLACEMENT DECISIONS (explain your reasoning):
 - DECIDE IF B-roll is needed at each point (not always yes!)
@@ -806,6 +807,8 @@ B-ROLL RULES:
 - Minimum 3 second spacing between clips
 - Match ${genre} content with ${tone} imagery
 - Use ${getBrollStyleHint(genre)}
+- NO PLACEHOLDERS: All search queries must be real, descriptive, and content-relevant.
+- JSON STRICTNESS: Respond ONLY with a valid JSON object. No markdown, no backticks, no explanatory text outside the JSON.
 
 Respond in JSON only (no markdown):
 {
@@ -849,7 +852,7 @@ Respond in JSON only (no markdown):
     const text = response.text || "";
     const jsonStart = text.indexOf('{');
     const jsonEnd = text.lastIndexOf('}');
-    
+
     if (jsonStart === -1 || jsonEnd === -1) {
       aiLogger.warn("Consolidated analysis: No JSON found, using defaults");
       return getDefaultConsolidatedResult(duration, analysis, semanticAnalysis, fillerSegments);
@@ -859,7 +862,7 @@ Respond in JSON only (no markdown):
       .replace(/[\u0000-\u001F\u007F-\u009F]/g, "")
       .replace(/\\n/g, " ")
       .trim();
-    
+
     let parsed;
     try {
       parsed = JSON.parse(jsonText);
@@ -945,7 +948,7 @@ function getDefaultConsolidatedResult(
   const structuredPlan = getDefaultStructuredPlan(duration, analysis, semanticAnalysis);
   const qualityMap = getDefaultQualityMap(duration, semanticAnalysis);
   const brollPlan = getDefaultBrollPlan(duration, semanticAnalysis, fillerSegments);
-  
+
   return { structuredPlan, qualityMap, brollPlan };
 }
 
@@ -1043,7 +1046,7 @@ Respond in JSON format only (no markdown):
     // Robust JSON extraction for potential malformed AI responses
     const jsonStart = text.indexOf('{');
     const jsonEnd = text.lastIndexOf('}');
-    
+
     if (jsonStart === -1 || jsonEnd === -1) {
       aiLogger.warn("Pass 4: No JSON block found in response, using preliminary actions");
       return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
@@ -1053,7 +1056,7 @@ Respond in JSON format only (no markdown):
       .replace(/[\u0000-\u001F\u007F-\u009F]/g, "") // Remove control characters
       .replace(/\\n/g, " ") // Normalize newlines inside strings
       .trim();
-    
+
     let parsed;
     try {
       parsed = JSON.parse(jsonText);
@@ -1073,7 +1076,7 @@ Respond in JSON format only (no markdown):
       aiLogger.warn("Pass 4: Schema validation failed, using preliminary actions:", validated.error.issues);
       return getDefaultReviewedPlan(preliminaryActions, qualityMap, duration);
     }
-    
+
     const reviewedActions: EditAction[] = validated.data.actions.map(a => {
       const rawAction = a as Record<string, unknown>;
       return {
@@ -1107,7 +1110,7 @@ function ensureKeepCoverage(actions: EditAction[], duration: number): void {
   const keepActions = actions.filter(a => a.type === "keep" && a.start !== undefined && a.end !== undefined);
   const totalKeepDuration = keepActions.reduce((sum, a) => sum + ((a.end || 0) - (a.start || 0)), 0);
   const keepPercentage = (totalKeepDuration / duration) * 100;
-  
+
   if (keepPercentage < 40 || keepActions.length === 0) {
     aiLogger.warn(`Keep actions only cover ${safeFixed(keepPercentage)}% - adding full video keep`);
     const nonKeepActions = actions.filter(a => a.type !== "keep");

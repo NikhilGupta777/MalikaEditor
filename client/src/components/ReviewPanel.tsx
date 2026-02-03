@@ -8,14 +8,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
-import { 
-  Check, 
-  X, 
-  Play, 
-  Clock, 
-  Scissors, 
-  Image, 
-  Video, 
+import {
+  Check,
+  X,
+  Play,
+  Clock,
+  Scissors,
+  Image,
+  Video,
   Sparkles,
   AlertTriangle,
   CheckCircle2,
@@ -87,19 +87,19 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     editPlan: true,
     media: true,
   });
-  const [timeRemaining, setTimeRemaining] = useState(AUTO_ACCEPT_SECONDS);
+  const [timeRemaining, setTimeRemaining] = useState<number>(AUTO_ACCEPT_SECONDS);
   const [userHasInteracted, setUserHasInteracted] = useState(false);
   const [hasHydratedAutosave, setHasHydratedAutosave] = useState(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasAutoApprovedRef = useRef(false);
-  
+
   // Keep a ref to the latest reviewData to avoid stale closure in timer
   // Updates run on every render to keep ref synchronized with latest state
   const latestReviewDataRef = useRef<ReviewData>(localReviewData);
   useEffect(() => {
     latestReviewDataRef.current = localReviewData;
   });
-  
+
   // Stable callback for auto-approve to prevent stale closures
   const onApproveRef = useRef(onApprove);
   useEffect(() => {
@@ -169,7 +169,7 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
     if (isLoading || hasAutoApprovedRef.current || !hasHydratedAutosave) return;
 
     timerRef.current = setInterval(() => {
-      setTimeRemaining(prev => {
+      setTimeRemaining((prev: number) => {
         if (prev <= 1) {
           // Timer expired - use short timeout to ensure refs are updated
           if (!hasAutoApprovedRef.current) {
@@ -319,7 +319,7 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
           </div>
           <div className="flex items-center gap-3">
             {(isSaving || lastSaved) && (
-              <div 
+              <div
                 className="flex items-center gap-1.5 text-xs text-muted-foreground"
                 data-testid="autosave-status"
               >
@@ -390,13 +390,13 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                     {approvedCuts.length} cuts will shorten your video
                   </p>
                   <p className="text-xs text-muted-foreground mt-1" data-testid="text-cuts-warning-details">
-                    These cuts will remove {formatTime(totalCutDuration)} from your {formatTime(localReviewData.summary.originalDuration)} video, 
+                    These cuts will remove {formatTime(totalCutDuration)} from your {formatTime(localReviewData.summary.originalDuration)} video,
                     resulting in a ~{formatTime(Math.max(0, estimatedDuration))} final video.
                   </p>
                   <ul className="text-xs text-muted-foreground mt-2 space-y-0.5 max-h-20 overflow-y-auto" data-testid="list-approved-cuts">
                     {approvedCuts.slice(0, 5).map((cut, i) => (
                       <li key={cut.id} data-testid={`text-cut-item-${cut.id}`}>
-                        Cut #{i+1}: {formatTime(cut.start || 0)} - {formatTime(cut.end || 0)} 
+                        Cut #{i + 1}: {formatTime(cut.start || 0)} - {formatTime(cut.end || 0)}
                         <span className="opacity-70"> ({((cut.end || 0) - (cut.start || 0)).toFixed(1)}s{cut.reason ? ` - ${cut.reason}` : ''})</span>
                       </li>
                     ))}
@@ -406,9 +406,9 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                   </ul>
                 </div>
               </div>
-              <Button 
-                variant="outline" 
-                size="sm" 
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={disableAllCuts}
                 data-testid="button-disable-all-cuts"
               >
@@ -504,8 +504,8 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                         key={segment.id}
                         className={cn(
                           "flex items-start gap-3 p-3 rounded-lg border transition-colors",
-                          segment.approved 
-                            ? "bg-background border-border" 
+                          segment.approved
+                            ? "bg-background border-border"
                             : "bg-muted/50 border-muted opacity-60"
                         )}
                       >
@@ -562,18 +562,18 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                     </Badge>
                     {allCutActions.length > 0 && (
                       approvedCuts.length > 0 ? (
-                        <Button 
-                          variant="ghost" 
-                          size="sm" 
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={disableAllCuts}
                           data-testid="button-uncheck-all-cuts"
                         >
                           Uncheck All Cuts
                         </Button>
                       ) : (
-                        <Button 
-                          variant="ghost" 
-                          size="sm" 
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={enableAllCuts}
                           data-testid="button-check-all-cuts"
                         >
@@ -592,9 +592,9 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                         key={action.id}
                         className={cn(
                           "flex items-start gap-3 p-3 rounded-lg border transition-colors",
-                          action.approved 
-                            ? action.type === 'cut' 
-                              ? "bg-destructive/5 border-destructive/20" 
+                          action.approved
+                            ? action.type === 'cut'
+                              ? "bg-destructive/5 border-destructive/20"
                               : "bg-background border-border"
                             : "bg-muted/50 border-muted opacity-60"
                         )}
@@ -607,7 +607,7 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
                             {getActionIcon(action.type)}
-                            <Badge 
+                            <Badge
                               variant={action.type === 'cut' ? 'destructive' : 'secondary'}
                               className="text-xs"
                             >
@@ -662,8 +662,8 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                             />
                             <div className="flex-1 min-w-0">
                               {media.thumbnailUrl && (
-                                <img 
-                                  src={media.thumbnailUrl} 
+                                <img
+                                  src={media.thumbnailUrl}
                                   alt={media.query}
                                   className="w-full h-16 object-cover rounded mb-1"
                                 />

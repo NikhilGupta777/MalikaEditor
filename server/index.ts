@@ -11,7 +11,7 @@ if (LOG_FILE) {
       fn(...args);
       try {
         logFileStream?.write(args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ") + "\n");
-      } catch {}
+      } catch { }
     };
     console.log = tee(orig.log);
     console.error = tee(orig.error);
@@ -23,7 +23,7 @@ if (LOG_FILE) {
     process.on("unhandledRejection", (reason: unknown) => {
       logFileStream?.write(`\n[CRASH] unhandledRejection: ${String(reason)}\n`);
     });
-  } catch {}
+  } catch { }
 }
 
 import express, { type Request, Response, NextFunction } from "express";
@@ -108,20 +108,20 @@ app.get("/ready", async (_req, res) => {
 // Always return 200 for root to pass Cloud Run health checks
 app.get("/", (req, res, next) => {
   // Check for health check indicators
-  const isHealthCheck = 
+  const isHealthCheck =
     req.query.health === "1" ||
     req.headers["x-health-check"] === "true" ||
     (req.headers["user-agent"] || "").includes("GoogleHC") ||
     (req.headers["user-agent"] || "").includes("kube-probe");
-  
+
   // In production, always respond quickly for root GET requests that look like health checks
   // or if there's no accept header for text/html (likely a health check, not a browser)
   const acceptsHtml = (req.headers.accept || "").includes("text/html");
-  
+
   if (isHealthCheck || (process.env.NODE_ENV === "production" && !acceptsHtml)) {
     return res.status(200).send("OK");
   }
-  
+
   // Otherwise, let it fall through to static file serving
   next();
 });
@@ -238,14 +238,14 @@ app.use(compression({
 
 app.use(
   express.json({
-    limit: "20mb", // Reduced from 70mb - most API payloads should be under this; specific routes can override if needed
+    limit: "200mb", // Increased from 100mb to provide a safe margin for very long videos with extensive word timings
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false, limit: "20mb" })); // Reduced from 1gb
+app.use(express.urlencoded({ extended: false, limit: "200mb" })); // Increased from 100mb
 
 // Session middleware - skip for health check routes to avoid DB dependency
 app.use((req, res, next) => {
@@ -297,7 +297,7 @@ app.use((req, res, next) => {
 async function runStartupTasks() {
   // Validate environment variables (non-strict mode - logs warnings, doesn't fail)
   validateEnvAtStartup(false);
-  
+
   // Clean up stale temp files from previous runs (files older than 2 hours)
   try {
     const cleanup = await cleanupStaleTempFiles(2);
@@ -416,11 +416,11 @@ async function runStartupTasks() {
   // Graceful shutdown handler - cleanup temp files and resources
   const gracefulShutdown = async (signal: string) => {
     expressLogger.info(`Received ${signal}, starting graceful shutdown...`);
-    
+
     // Stop accepting new connections
     httpServer.close(async () => {
       expressLogger.info("HTTP server closed");
-      
+
       // Clean up temp files
       try {
         const { cleaned, errors } = await cleanupStaleTempFiles(0); // 0 = cleanup all temp files
@@ -428,24 +428,43 @@ async function runStartupTasks() {
       } catch (error) {
         expressLogger.warn("Failed to cleanup temp files during shutdown:", error);
       }
-      
+
       // Stop cleanup interval
       if (cleanupIntervalId) {
         clearInterval(cleanupIntervalId);
         cleanupIntervalId = null;
       }
-      
+
+      // Stop all AI service cleanup intervals to prevent memory leaks
+      try {
+        const { stopStaleJobCleanup } = await import("./services/backgroundProcessor");
+        stopStaleJobCleanup();
+        expressLogger.debug("Stopped background processor cleanup interval");
+      } catch { }
+
+      try {
+        const { stopSpeechCacheCleanup } = await import("./services/ai/transcription");
+        stopSpeechCacheCleanup();
+        expressLogger.debug("Stopped transcription cache cleanup interval");
+      } catch { }
+
+      try {
+        const { stopFeedbackCacheCleanup } = await import("./services/ai/preRenderReview");
+        stopFeedbackCacheCleanup();
+        expressLogger.debug("Stopped feedback cache cleanup interval");
+      } catch { }
+
       expressLogger.info("Graceful shutdown complete");
       process.exit(0);
     });
-    
+
     // Force exit after 30 seconds if graceful shutdown takes too long
     setTimeout(() => {
       expressLogger.warn("Graceful shutdown timed out, forcing exit");
       process.exit(1);
     }, 30000);
   };
-  
+
   // Register shutdown handlers
   process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
   process.on("SIGINT", () => gracefulShutdown("SIGINT"));

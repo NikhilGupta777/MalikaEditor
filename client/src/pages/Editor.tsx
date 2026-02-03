@@ -80,7 +80,7 @@ interface ActivityItem {
   details?: Record<string, unknown>;
 }
 
-type ErrorType = 
+type ErrorType =
   | "upload_failed"
   | "file_not_found"
   | "video_processing"
@@ -134,7 +134,7 @@ export default function Editor() {
   const [, setLocation] = useLocation();
   const [matchProject, params] = useRoute("/project/:id");
   const projectIdFromUrl = matchProject && params?.id ? parseInt(params.id, 10) : null;
-  
+
   const [project, setProject] = useState<VideoProject | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -157,15 +157,15 @@ export default function Editor() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
-  
+
   // SSE reconnection constants from centralized config
   const MAX_RECONNECT_ATTEMPTS = CLIENT_CONFIG.sse.maxReconnectAttempts;
   const SSE_BASE_DELAY = CLIENT_CONFIG.sse.baseReconnectDelayMs;
   const SSE_BACKOFF_MULTIPLIER = CLIENT_CONFIG.sse.reconnectBackoffMultiplier;
-  
+
   // Render SSE hook for cleaner connection management
   const renderSSE = useRenderSSE({
-    onStatusUpdate: (status) => {
+    onStatusUpdate: (status: ProcessingStatusType) => {
       setProject((prev) => prev ? { ...prev, status } : null);
     },
     onActivity: (activity) => {
@@ -215,7 +215,7 @@ export default function Editor() {
       });
     },
   });
-  
+
   // Load project from URL if project ID is present
   const { data: loadedProject, isLoading: isLoadingProject } = useQuery<VideoProject>({
     queryKey: ["/api/videos", projectIdFromUrl],
@@ -228,7 +228,7 @@ export default function Editor() {
     },
     enabled: !!projectIdFromUrl && !project,
   });
-  
+
   // Set project from loaded data
   useEffect(() => {
     if (loadedProject && !project) {
@@ -253,51 +253,51 @@ export default function Editor() {
         setIsRendering(true);
         renderSSE.startRender(loadedProject.id, editOptions.qualityMode, true);
       }
-      
+
       // Auto-reconnect to processing if project is in a processing state
       const processingStates = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images"];
       if (processingStates.includes(loadedProject.status)) {
         debugLog("Editor", "Reconnecting to in-progress processing...");
         setIsProcessing(true);
         reconnectAttemptsRef.current = 0;
-        
+
         const storedOptions = loadedProject.reviewData?.editOptions;
         const sessionKey = `sse_lastEventId_process_${loadedProject.id}`;
-        
+
         const connectProcessSSE = (projectId: number) => {
           // Clear any pending reconnect timeout
           if (reconnectTimeoutRef.current) {
             clearTimeout(reconnectTimeoutRef.current);
             reconnectTimeoutRef.current = null;
           }
-          
+
           const params = new URLSearchParams({
             prompt: loadedProject.prompt || "",
             addCaptions: String(storedOptions?.addCaptions ?? true),
-            addBroll: String(storedOptions?.addBroll ?? true), 
+            addBroll: String(storedOptions?.addBroll ?? true),
             removeSilence: String(storedOptions?.removeSilence ?? true),
             generateAiImages: String(storedOptions?.generateAiImages ?? false),
             addTransitions: String(storedOptions?.addTransitions ?? false),
             reconnect: "true",
           });
-          
+
           const storedLastEventId = sessionStorage.getItem(sessionKey);
           if (storedLastEventId) {
             params.append("lastEventId", storedLastEventId);
           }
-          
+
           const eventSource = new EventSource(
             `/api/videos/${projectId}/process?${params.toString()}`
           );
           eventSourceRef.current = eventSource;
-          
+
           eventSource.onmessage = (event) => {
             reconnectAttemptsRef.current = 0; // Reset on successful message
             if (event.lastEventId) {
               sessionStorage.setItem(sessionKey, event.lastEventId);
             }
             const data = JSON.parse(event.data);
-            
+
             if (data.type === "status") {
               setProject((prev) => prev ? { ...prev, status: data.status } : null);
             } else if (data.type === "activity") {
@@ -315,13 +315,13 @@ export default function Editor() {
             } else if (data.type === "error") {
               setProject((prev) =>
                 prev
-                  ? { 
-                      ...prev, 
-                      status: "failed", 
-                      errorMessage: data.error,
-                      errorSuggestion: data.suggestion,
-                      errorType: data.errorType,
-                    }
+                  ? {
+                    ...prev,
+                    status: "failed",
+                    errorMessage: data.error,
+                    errorSuggestion: data.suggestion,
+                    errorType: data.errorType,
+                  }
                   : null
               );
               setIsProcessing(false);
@@ -337,12 +337,12 @@ export default function Editor() {
               debugLog("Editor", "Processing was interrupted:", data.message);
               setIsProcessing(false);
               // Set status to a visible failure state so UI shows recovery options
-              setProject((prev) => prev ? { 
-                ...prev, 
+              setProject((prev) => prev ? {
+                ...prev,
                 status: "failed" as ProcessingStatusType,
                 errorMessage: data.message,
                 errorType: "interrupted" as ErrorType,
-                errorSuggestion: data.hasTranscript 
+                errorSuggestion: data.hasTranscript
                   ? "Some progress was saved (transcript ready). Click 'Retry Processing' to continue."
                   : "Click 'Retry Processing' to start again."
               } : null);
@@ -350,12 +350,12 @@ export default function Editor() {
               eventSourceRef.current = null;
             }
           };
-          
+
           eventSource.onerror = () => {
             debugLog("Editor", "Processing SSE connection lost, fetching current status...");
             eventSource.close();
             eventSourceRef.current = null;
-            
+
             fetch(`/api/videos/${projectId}`)
               .then(res => res.json())
               .then(data => {
@@ -394,7 +394,7 @@ export default function Editor() {
               });
           };
         };
-        
+
         connectProcessSSE(loadedProject.id);
       }
     }
@@ -468,7 +468,7 @@ export default function Editor() {
       } catch (error) {
         let errorMessage = "Please try again";
         let suggestion = "Check your file and internet connection";
-        
+
         if (error instanceof Error) {
           errorMessage = error.message;
           if (error.message.toLowerCase().includes("size") || error.message.toLowerCase().includes("large")) {
@@ -479,7 +479,7 @@ export default function Editor() {
             suggestion = "Check your internet connection and try again";
           }
         }
-        
+
         toast({
           title: "Upload failed",
           description: `${errorMessage}. ${suggestion}`,
@@ -564,18 +564,18 @@ export default function Editor() {
             setProject((prev) =>
               prev
                 ? {
-                    ...prev,
-                    fillerSegments: data.fillerSegments,
-                    qualityInsights: data.qualityInsights,
+                  ...prev,
+                  fillerSegments: data.fillerSegments,
+                  qualityInsights: data.qualityInsights,
+                  structureAnalysis: data.structureAnalysis,
+                  semanticAnalysis: {
+                    ...(prev.semanticAnalysis || {}),
+                    hookMoments: data.hookMoments,
+                    topicFlow: data.topicFlow,
                     structureAnalysis: data.structureAnalysis,
-                    semanticAnalysis: {
-                      ...(prev.semanticAnalysis || {}),
-                      hookMoments: data.hookMoments,
-                      topicFlow: data.topicFlow,
-                      structureAnalysis: data.structureAnalysis,
-                      keyMoments: data.keyMoments,
-                    } as SemanticAnalysis,
-                  }
+                    keyMoments: data.keyMoments,
+                  } as SemanticAnalysis,
+                }
                 : null
             );
           } else if (data.type === "transcript") {
@@ -610,7 +610,7 @@ export default function Editor() {
             setIsProcessing(false);
             eventSource.close();
             eventSourceRef.current = null;
-            
+
             toast({
               title: "Review Your Edit Plan",
               description: "Analysis complete! Review and approve before rendering.",
@@ -623,12 +623,12 @@ export default function Editor() {
             setProject((prev) =>
               prev
                 ? {
-                    ...prev,
-                    status: "completed",
-                    outputPath: data.outputPath,
-                    duration: data.duration,
-                    aiImageStats: data.aiImageStats || prev.aiImageStats,
-                  }
+                  ...prev,
+                  status: "completed",
+                  outputPath: data.outputPath,
+                  duration: data.duration,
+                  aiImageStats: data.aiImageStats || prev.aiImageStats,
+                }
                 : null
             );
             setPreviewUrl(data.outputPath);
@@ -638,20 +638,20 @@ export default function Editor() {
 
             toast({
               title: "Your video is ready!",
-              description: data.aiImageStats 
+              description: data.aiImageStats
                 ? `Applied ${data.aiImageStats.applied} AI images to your video`
                 : "Download your edited video below",
             });
           } else if (data.type === "error") {
             setProject((prev) =>
               prev
-                ? { 
-                    ...prev, 
-                    status: "failed", 
-                    errorMessage: data.error,
-                    errorSuggestion: data.suggestion,
-                    errorType: data.errorType,
-                  }
+                ? {
+                  ...prev,
+                  status: "failed",
+                  errorMessage: data.error,
+                  errorSuggestion: data.suggestion,
+                  errorType: data.errorType,
+                }
                 : null
             );
             setIsProcessing(false);
@@ -706,22 +706,22 @@ export default function Editor() {
 
   const handleReviewApprove = useCallback(async (updatedReviewData: ReviewData) => {
     if (!project) return;
-    
+
     setIsRendering(true);
     setActivities([]); // Clear activities from processing phase
-    
+
     try {
       // First, approve the review with any user modifications
       await apiRequest("POST", `/api/videos/${project.id}/approve-review`, {
         reviewData: updatedReviewData,
       });
-      
+
       // Close any existing SSE connections
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
-      
+
       // Use the useRenderSSE hook for cleaner SSE management
       renderSSE.startRender(project.id, editOptions.qualityMode);
     } catch (error) {
@@ -766,15 +766,15 @@ export default function Editor() {
 
   const handleRetryProcessing = useCallback(async () => {
     if (!project) return;
-    
+
     try {
       // First, call backend to reset project status in database
       await apiRequest("POST", `/api/videos/${project.id}/retry`, { stage: "all" });
-      
+
       // Reset local state
-      setProject((prev) => prev ? { 
-        ...prev, 
-        status: "pending", 
+      setProject((prev) => prev ? {
+        ...prev,
+        status: "pending",
         errorMessage: undefined,
         errorSuggestion: undefined,
         errorType: undefined,
@@ -782,10 +782,10 @@ export default function Editor() {
       setActivities([]);
       setIsProcessing(true);
       setIsRendering(false); // Reset rendering state in case we're retrying from a failed render
-      
+
       // Get stored edit options from reviewData or use defaults
       const storedOptions = project.reviewData?.editOptions || editOptions;
-      
+
       // Restart processing SSE connection with same prompt
       const params = new URLSearchParams({
         prompt: project.prompt || "Edit my video",
@@ -795,25 +795,25 @@ export default function Editor() {
         generateAiImages: String(storedOptions.generateAiImages ?? true),
         addTransitions: String(storedOptions.addTransitions ?? true),
       });
-      
+
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
-      
+
       // Clear any stored lastEventId for this project (starting fresh retry)
       const sessionKey = `sse_lastEventId_process_${project.id}`;
       sessionStorage.removeItem(sessionKey);
-      
+
       const eventSource = new EventSource(`/api/videos/${project.id}/process?${params.toString()}`);
       eventSourceRef.current = eventSource;
-      
+
       eventSource.onmessage = (event) => {
         // Store lastEventId for reconnection support
         if (event.lastEventId) {
           sessionStorage.setItem(sessionKey, event.lastEventId);
         }
         const data = JSON.parse(event.data);
-        
+
         if (data.type === "status") {
           setProject((prev) => prev ? { ...prev, status: data.status } : null);
         } else if (data.type === "editPlan") {
@@ -830,9 +830,9 @@ export default function Editor() {
         } else if (data.type === "activity") {
           setActivities((prev) => [...prev, { message: data.message, timestamp: Date.now() }]);
         } else if (data.type === "error") {
-          setProject((prev) => prev ? { 
-            ...prev, 
-            status: "failed", 
+          setProject((prev) => prev ? {
+            ...prev,
+            status: "failed",
             errorMessage: data.message,
             errorSuggestion: data.suggestion,
             errorType: data.errorType,
@@ -842,12 +842,12 @@ export default function Editor() {
           eventSource.close();
         }
       };
-      
+
       eventSource.onerror = () => {
         eventSource.close();
         setIsProcessing(false);
       };
-      
+
     } catch (error) {
       debugError("Editor", "Failed to retry processing:", error);
       toast({
@@ -860,19 +860,19 @@ export default function Editor() {
 
   const handleTranscriptionRetryStart = useCallback(() => {
     if (!project) return;
-    
+
     setActivities([]);
-    
+
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
-    
+
     const eventSource = new EventSource(`/api/videos/${project.id}/retry-transcription`);
     eventSourceRef.current = eventSource;
-    
+
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      
+
       if (data.type === "status") {
         setProject((prev) => prev ? { ...prev, status: data.status } : null);
       } else if (data.type === "activity") {
@@ -888,8 +888,8 @@ export default function Editor() {
       } else if (data.type === "transcript") {
         setProject((prev) => prev ? { ...prev, transcript: data.transcript } : null);
       } else if (data.type === "complete") {
-        setProject((prev) => prev ? { 
-          ...prev, 
+        setProject((prev) => prev ? {
+          ...prev,
           status: "pending",
           transcript: data.transcript,
           errorMessage: undefined,
@@ -898,21 +898,21 @@ export default function Editor() {
         } : null);
         eventSource.close();
         eventSourceRef.current = null;
-        
+
         toast({
           title: "Transcription complete",
           description: "You can now process your video again",
         });
       } else if (data.type === "error") {
-        setProject((prev) => prev ? { 
-          ...prev, 
-          status: "failed", 
+        setProject((prev) => prev ? {
+          ...prev,
+          status: "failed",
           errorMessage: data.error,
           errorSuggestion: data.suggestion,
         } : null);
         eventSource.close();
         eventSourceRef.current = null;
-        
+
         toast({
           title: "Transcription failed",
           description: data.error || "Please try again",
@@ -920,11 +920,11 @@ export default function Editor() {
         });
       }
     };
-    
+
     eventSource.onerror = () => {
       eventSource.close();
       eventSourceRef.current = null;
-      
+
       toast({
         title: "Connection lost",
         description: "The server connection was interrupted. Please try again.",
@@ -996,7 +996,7 @@ export default function Editor() {
               </div>
             )}
           </div>
-          
+
           {/* Video info bar */}
           {project && (
             <div className="flex items-center justify-between mt-3 px-1">
@@ -1006,7 +1006,7 @@ export default function Editor() {
                   <Badge variant="secondary">{formatDuration(project.duration)}</Badge>
                 )}
               </div>
-              <Badge 
+              <Badge
                 variant={project.status === "completed" ? "default" : "outline"}
                 className="capitalize"
               >
@@ -1018,267 +1018,267 @@ export default function Editor() {
 
         {/* Control Panel - Right/Bottom */}
         <div className="w-full lg:w-[480px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto h-[50vh] lg:h-[calc(100vh-56px)]">
-            <div className="p-4 space-y-4">
-              
-              {/* Step 1: Upload */}
-              {!project && (
-                <div className="space-y-4">
-                  <div className="text-center py-4">
-                    <Sparkles className="h-10 w-10 text-primary mx-auto mb-3" />
-                    <h2 className="text-xl font-bold mb-1">AI Video Editing</h2>
-                    <p className="text-sm text-muted-foreground">
-                      Upload your video and let AI do the editing
-                    </p>
-                  </div>
-                  
-                  <VideoUploader
-                    onUpload={handleUpload}
-                    onCancel={handleCancelUpload}
-                    isUploading={isUploading}
-                    uploadProgress={uploadProgress}
-                  />
-                  
-                  <HistoryPanel 
-                    onViewProject={(projectId) => {
-                      setLocation(`/project/${projectId}`);
-                    }}
-                    className="mt-4"
-                  />
-                </div>
-              )}
+          <div className="p-4 space-y-4">
 
-              {/* Step 2: Configure & Process */}
-              {project && project.status === "pending" && (
-                <PromptInput
-                  onSubmit={handleProcessVideo}
-                  isProcessing={isProcessing}
-                  editOptions={editOptions}
-                  onEditOptionsChange={setEditOptions}
+            {/* Step 1: Upload */}
+            {!project && (
+              <div className="space-y-4">
+                <div className="text-center py-4">
+                  <Sparkles className="h-10 w-10 text-primary mx-auto mb-3" />
+                  <h2 className="text-xl font-bold mb-1">AI Video Editing</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Upload your video and let AI do the editing
+                  </p>
+                </div>
+
+                <VideoUploader
+                  onUpload={handleUpload}
+                  onCancel={handleCancelUpload}
+                  isUploading={isUploading}
+                  uploadProgress={uploadProgress}
                 />
-              )}
 
-              {/* Processing Status - for non-failed states */}
-              {project && project.status !== "pending" && project.status !== "completed" && project.status !== "awaiting_review" && project.status !== "failed" && (
-                <div className="space-y-4">
-                  <ProcessingStatus
-                    status={project.status}
-                    error={project.errorMessage ?? undefined}
-                    errorSuggestion={project.errorSuggestion ?? undefined}
-                    errorType={project.errorType ?? undefined}
-                    aiImageStats={project.aiImageStats}
-                    transcriptSegments={project.transcript?.length}
-                    scenesDetected={project.semanticAnalysis?.keyMoments?.length}
-                    stockMediaCount={project.stockMedia?.length}
-                    editActionsCount={project.editPlan?.actions?.length}
-                  />
-                  
-                  {/* Actions for interrupted projects */}
-                  {!isProcessing && !isRendering && (
-                    <Card className="border-amber-500/50 bg-amber-500/5">
-                      <CardContent className="p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                          <AlertCircle className="h-4 w-4 text-amber-500" />
-                          <span className="text-sm font-medium">Processing was interrupted</span>
-                        </div>
-                        <p className="text-xs text-muted-foreground mb-3">
-                          Click 'Retry processing' to continue from where we left off, or start a new project.
-                        </p>
-                        <div className="flex gap-2">
-                          <Button 
-                            size="sm" 
-                            onClick={handleRetryProcessing}
-                            data-testid="button-retry-stuck"
-                          >
-                            <RotateCcw className="h-4 w-4 mr-1" />
-                            Retry Processing
-                          </Button>
-                          <Button 
-                            size="sm" 
-                            variant="outline" 
-                            onClick={handleNewProject}
-                            data-testid="button-new-project"
-                          >
-                            New Project
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-                </div>
-              )}
+                <HistoryPanel
+                  onViewProject={(projectId) => {
+                    setLocation(`/project/${projectId}`);
+                  }}
+                  className="mt-4"
+                />
+              </div>
+            )}
 
-              {/* Error Display with recovery buttons - for failed state */}
-              {project && project.status === "failed" && (
-                <ErrorDisplay
-                  projectId={project.id}
-                  errorMessage={project.errorMessage ?? undefined}
+            {/* Step 2: Configure & Process */}
+            {project && project.status === "pending" && (
+              <PromptInput
+                onSubmit={handleProcessVideo}
+                isProcessing={isProcessing}
+                editOptions={editOptions}
+                onEditOptionsChange={setEditOptions}
+              />
+            )}
+
+            {/* Processing Status - for non-failed states */}
+            {project && project.status !== "pending" && project.status !== "completed" && project.status !== "awaiting_review" && project.status !== "failed" && (
+              <div className="space-y-4">
+                <ProcessingStatus
+                  status={project.status}
+                  error={project.errorMessage ?? undefined}
                   errorSuggestion={project.errorSuggestion ?? undefined}
                   errorType={project.errorType ?? undefined}
-                  onRetrySuccess={handleRetryProcessing}
-                  onTranscriptionRetryStart={handleTranscriptionRetryStart}
-                  onUploadNew={handleNewProject}
+                  aiImageStats={project.aiImageStats}
+                  transcriptSegments={project.transcript?.length}
+                  scenesDetected={project.semanticAnalysis?.keyMoments?.length}
+                  stockMediaCount={project.stockMedia?.length}
+                  editActionsCount={project.editPlan?.actions?.length}
                 />
-              )}
 
-              {/* AI Activity Log */}
-              {(isProcessing || isRendering || activities.length > 0) && project?.status !== "completed" && project?.status !== "awaiting_review" && (
-                <ActivityLog activities={activities} isProcessing={isProcessing || isRendering} />
-              )}
-              
-              {/* AI Chat Companion - Shows during processing */}
-              {project?.id && project?.status !== "pending" && project?.status !== "uploading" && (
-                <Suspense fallback={<PanelLoadingFallback />}>
-                  <ChatCompanion projectId={project.id} />
-                </Suspense>
-              )}
+                {/* Actions for interrupted projects */}
+                {!isProcessing && !isRendering && (
+                  <Card className="border-amber-500/50 bg-amber-500/5">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-3">
+                        <AlertCircle className="h-4 w-4 text-amber-500" />
+                        <span className="text-sm font-medium">Processing was interrupted</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        Click 'Retry processing' to continue from where we left off, or start a new project.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={handleRetryProcessing}
+                          data-testid="button-retry-stuck"
+                        >
+                          <RotateCcw className="h-4 w-4 mr-1" />
+                          Retry Processing
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleNewProject}
+                          data-testid="button-new-project"
+                        >
+                          New Project
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            )}
 
-              {/* Review Panel - User approval step */}
-              {project?.status === "awaiting_review" && reviewData && project.id && (
-                <Suspense fallback={<PanelLoadingFallback />}>
-                  <ReviewPanel
-                    projectId={project.id}
-                    reviewData={reviewData}
-                    onApprove={handleReviewApprove}
-                    onCancel={handleReviewCancel}
-                    isLoading={isRendering}
+            {/* Error Display with recovery buttons - for failed state */}
+            {project && project.status === "failed" && (
+              <ErrorDisplay
+                projectId={project.id}
+                errorMessage={project.errorMessage ?? undefined}
+                errorSuggestion={project.errorSuggestion ?? undefined}
+                errorType={project.errorType ?? undefined}
+                onRetrySuccess={handleRetryProcessing}
+                onTranscriptionRetryStart={handleTranscriptionRetryStart}
+                onUploadNew={handleNewProject}
+              />
+            )}
+
+            {/* AI Activity Log */}
+            {(isProcessing || isRendering || activities.length > 0) && project?.status !== "completed" && project?.status !== "awaiting_review" && (
+              <ActivityLog activities={activities} isProcessing={isProcessing || isRendering} />
+            )}
+
+            {/* AI Chat Companion - Shows during processing */}
+            {project?.id && project?.status !== "pending" && project?.status !== "uploading" && (
+              <Suspense fallback={<PanelLoadingFallback />}>
+                <ChatCompanion projectId={project.id} />
+              </Suspense>
+            )}
+
+            {/* Review Panel - User approval step */}
+            {project?.status === "awaiting_review" && reviewData && project.id && (
+              <Suspense fallback={<PanelLoadingFallback />}>
+                <ReviewPanel
+                  projectId={project.id}
+                  reviewData={reviewData}
+                  onApprove={handleReviewApprove}
+                  onCancel={handleReviewCancel}
+                  isLoading={isRendering}
+                />
+              </Suspense>
+            )}
+
+            {/* Completed */}
+            {project?.status === "completed" && (
+              <Card className="border-secondary bg-secondary/5">
+                <CardContent className="p-4 text-center">
+                  <CheckCircle2 className="h-12 w-12 text-secondary mx-auto mb-3" />
+                  <h3 className="text-lg font-bold mb-1">Video Ready!</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Your edited video is ready to download
+                  </p>
+                  <DownloadButton
+                    outputPath={project.outputPath ?? undefined}
+                    isProcessing={false}
+                    isComplete={true}
                   />
-                </Suspense>
-              )}
+                </CardContent>
+              </Card>
+            )}
 
-              {/* Completed */}
-              {project?.status === "completed" && (
-                <Card className="border-secondary bg-secondary/5">
-                  <CardContent className="p-4 text-center">
-                    <CheckCircle2 className="h-12 w-12 text-secondary mx-auto mb-3" />
-                    <h3 className="text-lg font-bold mb-1">Video Ready!</h3>
-                    <p className="text-sm text-muted-foreground mb-4">
-                      Your edited video is ready to download
-                    </p>
-                    <DownloadButton
-                      outputPath={project.outputPath ?? undefined}
-                      isProcessing={false}
-                      isComplete={true}
+            {/* Quality Insights Card */}
+            {project?.qualityInsights && (
+              <Card data-testid="quality-insights-card">
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <TrendingUp className="h-4 w-4" />
+                    Quality Insights
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Hook Strength</span>
+                      <span className="font-medium">{project.qualityInsights.hookStrength}%</span>
+                    </div>
+                    <Progress
+                      value={project.qualityInsights.hookStrength}
+                      className="h-2"
+                      data-testid="progress-hook-strength"
                     />
-                  </CardContent>
-                </Card>
-              )}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Pacing Score</span>
+                      <span className="font-medium">{project.qualityInsights.pacingScore}%</span>
+                    </div>
+                    <Progress
+                      value={project.qualityInsights.pacingScore}
+                      className="h-2"
+                      data-testid="progress-pacing-score"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Engagement Prediction</span>
+                      <span className="font-medium">{project.qualityInsights.engagementPrediction}%</span>
+                    </div>
+                    <Progress
+                      value={project.qualityInsights.engagementPrediction}
+                      className="h-2"
+                      data-testid="progress-engagement"
+                    />
+                  </div>
+                  {project.fillerSegments && project.fillerSegments.length > 0 && (
+                    <div className="flex items-center gap-2 pt-2">
+                      <Badge variant="outline" className="border-yellow-500/60 text-yellow-700 dark:text-yellow-400">
+                        <AlertCircle className="h-3 w-3 mr-1" />
+                        {project.fillerSegments.length} filler words detected
+                      </Badge>
+                    </div>
+                  )}
+                  {project.qualityInsights.recommendations.length > 0 && (
+                    <div className="pt-2 space-y-1">
+                      <span className="text-xs text-muted-foreground">Recommendations:</span>
+                      {project.qualityInsights.recommendations.slice(0, 3).map((rec, idx) => (
+                        <p key={idx} className="text-xs text-muted-foreground flex items-start gap-1">
+                          <Zap className="h-3 w-3 text-primary shrink-0 mt-0.5" />
+                          {rec}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
-              {/* Quality Insights Card */}
-              {project?.qualityInsights && (
-                <Card data-testid="quality-insights-card">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <TrendingUp className="h-4 w-4" />
-                      Quality Insights
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Hook Strength</span>
-                        <span className="font-medium">{project.qualityInsights.hookStrength}%</span>
-                      </div>
-                      <Progress 
-                        value={project.qualityInsights.hookStrength} 
-                        className="h-2"
-                        data-testid="progress-hook-strength"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Pacing Score</span>
-                        <span className="font-medium">{project.qualityInsights.pacingScore}%</span>
-                      </div>
-                      <Progress 
-                        value={project.qualityInsights.pacingScore} 
-                        className="h-2"
-                        data-testid="progress-pacing-score"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-muted-foreground">Engagement Prediction</span>
-                        <span className="font-medium">{project.qualityInsights.engagementPrediction}%</span>
-                      </div>
-                      <Progress 
-                        value={project.qualityInsights.engagementPrediction} 
-                        className="h-2"
-                        data-testid="progress-engagement"
-                      />
-                    </div>
-                    {project.fillerSegments && project.fillerSegments.length > 0 && (
-                      <div className="flex items-center gap-2 pt-2">
-                        <Badge variant="outline" className="border-yellow-500/60 text-yellow-700 dark:text-yellow-400">
-                          <AlertCircle className="h-3 w-3 mr-1" />
-                          {project.fillerSegments.length} filler words detected
-                        </Badge>
-                      </div>
-                    )}
-                    {project.qualityInsights.recommendations.length > 0 && (
-                      <div className="pt-2 space-y-1">
-                        <span className="text-xs text-muted-foreground">Recommendations:</span>
-                        {project.qualityInsights.recommendations.slice(0, 3).map((rec, idx) => (
-                          <p key={idx} className="text-xs text-muted-foreground flex items-start gap-1">
-                            <Zap className="h-3 w-3 text-primary shrink-0 mt-0.5" />
-                            {rec}
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Edit Mode Tabs */}
-              {project?.editPlan && (
-                <Tabs value={editMode} onValueChange={(v) => setEditMode(v as EditMode)}>
-                  <TabsList className="grid w-full grid-cols-2" data-testid="edit-mode-tabs">
-                    <TabsTrigger value="ai" className="gap-2" data-testid="tab-ai-mode">
-                      <Wand2 className="h-3.5 w-3.5" />
-                      AI Edit
-                    </TabsTrigger>
-                    <TabsTrigger value="manual" className="gap-2" data-testid="tab-manual-mode">
-                      <Edit3 className="h-3.5 w-3.5" />
-                      Manual Edit
-                    </TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="ai" className="space-y-4 mt-4">
-                    <EditPlanPreview
+            {/* Edit Mode Tabs */}
+            {project?.editPlan && (
+              <Tabs value={editMode} onValueChange={(v) => setEditMode(v as EditMode)}>
+                <TabsList className="grid w-full grid-cols-2" data-testid="edit-mode-tabs">
+                  <TabsTrigger value="ai" className="gap-2" data-testid="tab-ai-mode">
+                    <Wand2 className="h-3.5 w-3.5" />
+                    AI Edit
+                  </TabsTrigger>
+                  <TabsTrigger value="manual" className="gap-2" data-testid="tab-manual-mode">
+                    <Edit3 className="h-3.5 w-3.5" />
+                    Manual Edit
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value="ai" className="space-y-4 mt-4">
+                  <EditPlanPreview
+                    editPlan={project.editPlan}
+                    isLoading={project.status === "planning"}
+                  />
+                  {project.stockMedia && project.stockMedia.length > 0 && (
+                    <StockMediaPreview
+                      stockMedia={project.stockMedia}
+                      isLoading={project.status === "fetching_stock"}
+                    />
+                  )}
+                </TabsContent>
+                <TabsContent value="manual" className="mt-4">
+                  <Suspense fallback={<PanelLoadingFallback />}>
+                    <TranscriptEditor
+                      transcript={project.transcript || []}
                       editPlan={project.editPlan}
-                      isLoading={project.status === "planning"}
+                      onEditPlanChange={handleEditPlanChange}
+                      semanticAnalysis={project.semanticAnalysis}
+                      isLoading={project.status === "analyzing"}
+                      currentTime={currentTime}
+                      onSeekTo={setCurrentTime}
                     />
-                    {project.stockMedia && project.stockMedia.length > 0 && (
-                      <StockMediaPreview
-                        stockMedia={project.stockMedia}
-                        isLoading={project.status === "fetching_stock"}
-                      />
-                    )}
-                  </TabsContent>
-                  <TabsContent value="manual" className="mt-4">
-                    <Suspense fallback={<PanelLoadingFallback />}>
-                      <TranscriptEditor
-                        transcript={project.transcript || []}
-                        editPlan={project.editPlan}
-                        onEditPlanChange={handleEditPlanChange}
-                        semanticAnalysis={project.semanticAnalysis}
-                        isLoading={project.status === "analyzing"}
-                        currentTime={currentTime}
-                        onSeekTo={setCurrentTime}
-                      />
-                    </Suspense>
-                  </TabsContent>
-                </Tabs>
-              )}
+                  </Suspense>
+                </TabsContent>
+              </Tabs>
+            )}
 
 
-              {/* Stock Media (when no tabs visible) */}
-              {!project?.editPlan && project?.stockMedia && project.stockMedia.length > 0 && (
-                <StockMediaPreview
-                  stockMedia={project.stockMedia}
-                  isLoading={project.status === "fetching_stock"}
-                />
-              )}
-            </div>
+            {/* Stock Media (when no tabs visible) */}
+            {!project?.editPlan && project?.stockMedia && project.stockMedia.length > 0 && (
+              <StockMediaPreview
+                stockMedia={project.stockMedia}
+                isLoading={project.status === "fetching_stock"}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

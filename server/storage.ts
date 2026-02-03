@@ -104,7 +104,7 @@ export interface IStorage {
 
 function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<VideoProject> {
   const normalized = { ...data };
-  
+
   if (data.analysis !== undefined && data.analysis !== null) {
     const result = videoAnalysisSchema.safeParse(data.analysis);
     if (!result.success) {
@@ -115,7 +115,7 @@ function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<V
       normalized.analysis = result.data;
     }
   }
-  
+
   if (data.editPlan !== undefined && data.editPlan !== null) {
     const result = editPlanSchema.safeParse(data.editPlan);
     if (!result.success) {
@@ -126,7 +126,7 @@ function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<V
       normalized.editPlan = result.data;
     }
   }
-  
+
   if (data.transcript !== undefined && data.transcript !== null) {
     const result = z.array(transcriptSegmentSchema).safeParse(data.transcript);
     if (!result.success) {
@@ -137,7 +137,7 @@ function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<V
       normalized.transcript = result.data;
     }
   }
-  
+
   if (data.stockMedia !== undefined && data.stockMedia !== null) {
     const result = z.array(stockMediaItemSchema).safeParse(data.stockMedia);
     if (!result.success) {
@@ -148,7 +148,7 @@ function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<V
       normalized.stockMedia = result.data;
     }
   }
-  
+
   if (data.reviewData !== undefined && data.reviewData !== null) {
     const result = reviewDataSchema.safeParse(data.reviewData);
     if (!result.success) {
@@ -159,7 +159,7 @@ function validateAndNormalizeJsonbFields(data: Partial<VideoProject>): Partial<V
       normalized.reviewData = result.data;
     }
   }
-  
+
   return normalized;
 }
 
@@ -192,7 +192,7 @@ export class DatabaseStorage {
   async createVideoProject(project: InsertVideoProject): Promise<VideoProject> {
     try {
       const normalizedProject = validateAndNormalizeJsonbFields(project as Partial<VideoProject>);
-      
+
       const [result] = await db.insert(videoProjects).values({
         fileName: project.fileName,
         originalPath: project.originalPath,
@@ -207,7 +207,7 @@ export class DatabaseStorage {
         reviewData: normalizedProject.reviewData || null,
         errorMessage: project.errorMessage || null,
       }).returning();
-      
+
       logger.info("Created video project", { id: result.id, fileName: result.fileName });
       return result;
     } catch (error) {
@@ -242,14 +242,14 @@ export class DatabaseStorage {
       }
 
       const normalizedUpdates = validateAndNormalizeJsonbFields(updates);
-      
+
       const updateData: any = {
         ...updates,
         ...normalizedUpdates,
         version: existing.version + 1,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       };
-      
+
       delete updateData.id;
       delete updateData.createdAt;
 
@@ -307,7 +307,7 @@ export class DatabaseStorage {
       const result = await db.delete(videoProjects)
         .where(lt(videoProjects.expiresAt, sql`CURRENT_TIMESTAMP`))
         .returning({ id: videoProjects.id });
-      
+
       const count = result.length;
       if (count > 0) {
         logger.info("Cleaned up expired projects", { count });
@@ -369,7 +369,7 @@ export class DatabaseStorage {
       const result = await db.delete(cachedAssets)
         .where(lt(cachedAssets.expiresAt, sql`CURRENT_TIMESTAMP`))
         .returning({ id: cachedAssets.id });
-      
+
       const count = result.length;
       if (count > 0) {
         logger.info("Cleaned up expired cache entries", { count });
@@ -426,8 +426,8 @@ export class DatabaseStorage {
       // Use transaction for atomic feedback insertion
       return await withTransaction(async (tx) => {
         const [result] = await tx.insert(editFeedback).values(feedback).returning();
-        logger.debug("Saved edit feedback", { 
-          id: result.id, 
+        logger.debug("Saved edit feedback", {
+          id: result.id,
           projectId: result.projectId,
           actionType: result.actionType,
           wasApproved: result.wasApproved,
@@ -460,14 +460,14 @@ export class DatabaseStorage {
   }> {
     try {
       const allFeedback = await db.select().from(editFeedback);
-      
+
       if (allFeedback.length === 0) {
         return { approvalRate: 0, totalFeedback: 0, byActionType: {} };
       }
-      
+
       const approved = allFeedback.filter(f => f.wasApproved === 1).length;
       const byActionType: Record<string, { approved: number; rejected: number }> = {};
-      
+
       for (const f of allFeedback) {
         if (!byActionType[f.actionType]) {
           byActionType[f.actionType] = { approved: 0, rejected: 0 };
@@ -478,7 +478,7 @@ export class DatabaseStorage {
           byActionType[f.actionType].rejected++;
         }
       }
-      
+
       return {
         approvalRate: (approved / allFeedback.length) * 100,
         totalFeedback: allFeedback.length,
@@ -517,7 +517,7 @@ export class DatabaseStorage {
         username: insertUser.username,
         password: insertUser.password,
       }).returning();
-      
+
       logger.info("Created user", { id: result.id, username: result.username });
       return result;
     } catch (error) {
@@ -533,7 +533,7 @@ export class DatabaseStorage {
         .from(projectChatMessages)
         .where(eq(projectChatMessages.projectId, projectId))
         .orderBy(projectChatMessages.createdAt);
-      
+
       if (limit) {
         // Get most recent messages
         const messages = await db.select()
@@ -543,7 +543,7 @@ export class DatabaseStorage {
           .limit(limit);
         return messages.reverse(); // Return in chronological order
       }
-      
+
       return await query;
     } catch (error) {
       logger.error("Failed to get chat messages", { error, projectId });
@@ -562,7 +562,7 @@ export class DatabaseStorage {
         stage: message.stage || null,
         metadata: message.metadata || null,
       }).returning();
-      
+
       return result;
     } catch (error) {
       logger.error("Failed to add chat message", { error, projectId: message.projectId });
@@ -640,7 +640,7 @@ export class DatabaseStorage {
         selfReviewScore: pattern.selfReviewScore || null,
         context: pattern.context || null,
       }).returning();
-      
+
       logger.debug("Saved learning pattern", { patternId: result.patternId, type: result.type });
       return result;
     } catch (error) {
@@ -655,19 +655,19 @@ export class DatabaseStorage {
       const cutoff = new Date(Date.now() - maxAge);
       const ageResult = await db.delete(editingPatterns)
         .where(lt(editingPatterns.createdAt, cutoff));
-      
+
       // For each type, keep only maxPerType most recent patterns
       // This is done by getting patterns to keep and deleting the rest
       const patternTypes = ['cut', 'transition', 'broll', 'ai_image', 'caption', 'pacing', 'general'];
       let typeDeleted = 0;
-      
+
       for (const type of patternTypes) {
         const patterns = await db.select({ id: editingPatterns.id })
           .from(editingPatterns)
           .where(eq(editingPatterns.type, type as any))
           .orderBy(desc(editingPatterns.createdAt))
           .offset(maxPerType);
-        
+
         if (patterns.length > 0) {
           const idsToDelete = patterns.map(p => p.id);
           for (const id of idsToDelete) {
@@ -676,7 +676,7 @@ export class DatabaseStorage {
           }
         }
       }
-      
+
       return (ageResult.rowCount || 0) + typeDeleted;
     } catch (error) {
       logger.error("Failed to cleanup old patterns", { error });

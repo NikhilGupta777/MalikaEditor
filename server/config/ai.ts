@@ -19,7 +19,7 @@ export const AI_CONFIG = {
     mediaVision: "gemini-2.5-flash", // Vision-capable model for analyzing stock thumbnails
     reviewPass: "gemini-2.5-flash",
   },
-  
+
   // AI decides overlay counts based on content analysis - no arbitrary limits
   // Only concurrency and operational limits remain
   limits: {
@@ -31,14 +31,14 @@ export const AI_CONFIG = {
     // maxAiImages: removed - AI decides  
     // maxStockQueries: removed - AI decides
   },
-  
+
   // Confidence thresholds for filtering AI-generated content
   confidence: {
     minMediaSelectionScore: 10, // Skip low-confidence B-roll selections
     minTranscriptConfidence: 0.6, // Minimum confidence for transcript segments
     highConfidenceScore: 20, // Score threshold for "high confidence" label
   },
-  
+
   timing: {
     minWordDurationMs: 80,
     minBrollGapSeconds: 3,
@@ -47,7 +47,7 @@ export const AI_CONFIG = {
     // Used as guidance only, not a hard limit
     secondsPerBrollWindow: 15,
   },
-  
+
   processing: {
     maxConcurrentJobs: 3,
     projectExpirationHours: 1,
@@ -55,7 +55,7 @@ export const AI_CONFIG = {
     cleanupIntervalMs: 10 * 60 * 1000, // 10 minutes
     sseHeartbeatMs: 5000, // 5 seconds - more frequent to prevent proxy timeouts
   },
-  
+
   stockMedia: {
     // Per-query fetch limits - increased to give AI more options
     photosPerQuery: 5,
@@ -63,21 +63,27 @@ export const AI_CONFIG = {
     freepikPhotosPerQuery: 3,
     freepikVideosPerQuery: 3,
   },
-  
+
   network: {
     defaultTimeoutMs: 30000,
     longTimeoutMs: 60000,
+    downloadTimeoutMs: 60000, // Media download timeout
     retryBaseDelayMs: 1000,
     maxRetryDelayMs: 15000,
     pexelsQueryMaxLength: 80,
   },
-  
+
+  server: {
+    httpTimeoutMs: 10 * 60 * 1000, // 10 minutes for long SSE connections
+    gracefulShutdownMs: 30000, // 30 seconds max for shutdown
+  },
+
   ffmpeg: {
     probeTimeoutMs: 30000,
     shortTimeoutMs: 2 * 60 * 1000, // 2 minutes
     longTimeoutMs: 10 * 60 * 1000, // 10 minutes
   },
-  
+
   sse: {
     maxReconnectAttempts: 5,
     baseReconnectDelayMs: 2000,

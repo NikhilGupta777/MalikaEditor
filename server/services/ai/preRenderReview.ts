@@ -25,19 +25,19 @@ const PreRenderReviewSchema = z.object({
 
 function repairJSON(text: string): string | null {
   let json = text.trim();
-  
+
   const jsonMatch = json.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return null;
   json = jsonMatch[0];
-  
+
   // Fix common JSON issues safely
   json = json.replace(/,\s*}/g, '}');  // Trailing commas before }
   json = json.replace(/,\s*]/g, ']');  // Trailing commas before ]
-  
+
   // Only quote unquoted keys at start of line or after { or ,
   // Avoid corrupting URLs (https:, http:) by being more specific
   json = json.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
-  
+
   // Fix unquoted string values (but not numbers, booleans, null, or URLs)
   json = json.replace(/:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*([,}\]])/g, (match, val, end) => {
     // Don't quote boolean/null values
@@ -46,20 +46,20 @@ function repairJSON(text: string): string | null {
     }
     return `: "${val}"${end}`;
   });
-  
+
   // Balance brackets and braces
   const openBraces = (json.match(/{/g) || []).length;
   const closeBraces = (json.match(/}/g) || []).length;
   const openBrackets = (json.match(/\[/g) || []).length;
   const closeBrackets = (json.match(/]/g) || []).length;
-  
+
   for (let i = 0; i < openBrackets - closeBrackets; i++) {
     json += ']';
   }
   for (let i = 0; i < openBraces - closeBraces; i++) {
     json += '}';
   }
-  
+
   return json;
 }
 
@@ -102,16 +102,16 @@ export async function performPreRenderReview(
   userPrompt: string
 ): Promise<PreRenderReviewResult> {
   reviewLogger.info("Starting AI pre-render review with Gemini 2.5 Flash...");
-  
+
   const approvedCuts = reviewData.editPlan.actions.filter(a => a.type === "cut" && a.approved);
   const approvedKeeps = reviewData.editPlan.actions.filter(a => a.type === "keep" && a.approved);
   const approvedBroll = reviewData.stockMedia.filter(m => m.approved);
   const approvedAiImages = reviewData.aiImages.filter(m => m.approved);
-  
-  const transcriptText = transcript.slice(0, 20).map(t => 
+
+  const transcriptText = transcript.slice(0, 20).map(t =>
     `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`
   ).join("\n");
-  
+
   const prompt = `You are an expert video editor AI performing a final quality review before rendering.
 
 ORIGINAL USER REQUEST:
@@ -165,15 +165,15 @@ Respond in JSON format:
 }`;
 
   const maxRetries = 2;
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const client = getGeminiClient();
-      
-      const retryPrompt = attempt > 1 
+
+      const retryPrompt = attempt > 1
         ? prompt + "\n\nIMPORTANT: Return ONLY valid JSON, no markdown, no extra text. Start with { and end with }."
         : prompt;
-      
+
       const response = await client.models.generateContent({
         model: AI_CONFIG.models.reviewPass,
         contents: [{ role: "user", parts: [{ text: retryPrompt }] }],
@@ -184,36 +184,36 @@ Respond in JSON format:
       });
 
       const text = response.text || "";
-      
+
       if (!text.trim()) {
         reviewLogger.warn(`Attempt ${attempt}: Empty response from AI`);
         if (attempt < maxRetries) continue;
         return getDefaultReviewResult();
       }
-      
+
       // Robust JSON extraction for Gemini
-    const jsonString = extractJsonFromResponse(text);
-    if (!jsonString) {
-      reviewLogger.warn(`Attempt ${attempt}: Could not extract JSON from response`, { 
-        textPreview: text.slice(0, 300) 
-      });
-      if (attempt < maxRetries) continue;
-      return getDefaultReviewResult();
-    }
-    
-    const parsedJson = tryParseJSON(jsonString);
-      
-      if (!parsedJson) {
-        reviewLogger.warn(`Attempt ${attempt}: Could not parse JSON response`, { 
-          textPreview: text.slice(0, 300) 
+      const jsonString = extractJsonFromResponse(text);
+      if (!jsonString) {
+        reviewLogger.warn(`Attempt ${attempt}: Could not extract JSON from response`, {
+          textPreview: text.slice(0, 300)
         });
         if (attempt < maxRetries) continue;
         return getDefaultReviewResult();
       }
-      
+
+      const parsedJson = tryParseJSON(jsonString);
+
+      if (!parsedJson) {
+        reviewLogger.warn(`Attempt ${attempt}: Could not parse JSON response`, {
+          textPreview: text.slice(0, 300)
+        });
+        if (attempt < maxRetries) continue;
+        return getDefaultReviewResult();
+      }
+
       // Validate with Zod schema for type safety and default values
       const validationResult = PreRenderReviewSchema.safeParse(parsedJson);
-      
+
       if (!validationResult.success) {
         reviewLogger.warn(`Attempt ${attempt}: Schema validation failed`, {
           errors: validationResult.error.errors.slice(0, 5),
@@ -221,10 +221,10 @@ Respond in JSON format:
         if (attempt < maxRetries) continue;
         return getDefaultReviewResult();
       }
-      
+
       const result = validationResult.data;
       reviewLogger.info(`Pre-render review complete: confidence=${result.confidence}%, approved=${result.approved}`);
-      
+
       return {
         confidence: result.confidence,
         approved: result.approved,
@@ -242,7 +242,7 @@ Respond in JSON format:
       }
     }
   }
-  
+
   return getDefaultReviewResult();
 }
 
@@ -306,13 +306,24 @@ const FEEDBACK_CACHE_MAX_SIZE = 1000; // Maximum entries
 // Cleanup old feedback entries periodically
 function cleanupFeedbackCache(): void {
   const now = Date.now();
-  feedbackCache = feedbackCache.filter(entry => 
+  feedbackCache = feedbackCache.filter(entry =>
     now - entry.timestamp < FEEDBACK_CACHE_TTL_MS
   );
 }
 
-// Run cleanup every hour
-setInterval(cleanupFeedbackCache, 60 * 60 * 1000);
+// Run cleanup every hour - export for graceful shutdown
+let feedbackCacheCleanupInterval: NodeJS.Timeout | null = setInterval(cleanupFeedbackCache, 60 * 60 * 1000);
+
+/**
+ * Stop the feedback cache cleanup interval.
+ * Call this during graceful shutdown to prevent memory leaks.
+ */
+export function stopFeedbackCacheCleanup(): void {
+  if (feedbackCacheCleanupInterval) {
+    clearInterval(feedbackCacheCleanupInterval);
+    feedbackCacheCleanupInterval = null;
+  }
+}
 
 async function loadFeedbackFromDb(): Promise<void> {
   if (dbFeedbackLoaded) return;
@@ -331,7 +342,7 @@ export async function recordEditFeedbackAsync(feedback: EditFeedback): Promise<v
   if (feedbackCache.length > FEEDBACK_CACHE_MAX_SIZE) {
     feedbackCache = feedbackCache.slice(-FEEDBACK_CACHE_MAX_SIZE);
   }
-  
+
   try {
     const { storage } = await import("../../storage");
     await storage.saveEditFeedback({
@@ -361,7 +372,7 @@ export function recordEditFeedback(feedback: EditFeedback): void {
     feedbackCache = feedbackCache.slice(-FEEDBACK_CACHE_MAX_SIZE);
   }
   reviewLogger.debug(`Recorded feedback for action ${feedback.editActionId}: approved=${feedback.wasApproved}`);
-  
+
   recordEditFeedbackAsync(feedback).catch((err) => {
     reviewLogger.debug(`Failed to persist feedback to database: ${err instanceof Error ? err.message : String(err)}`);
   });
@@ -369,11 +380,11 @@ export function recordEditFeedback(feedback: EditFeedback): void {
 
 export async function getFeedbackSummaryAsync(): Promise<FeedbackSummary> {
   await loadFeedbackFromDb();
-  
+
   try {
     const { storage } = await import("../../storage");
     const dbSummary = await storage.getFeedbackSummary();
-    
+
     const commonRejections = Object.entries(dbSummary.byActionType)
       .filter(([_, data]) => data.rejected > 0)
       .map(([actionType, data]) => ({
@@ -382,7 +393,7 @@ export async function getFeedbackSummaryAsync(): Promise<FeedbackSummary> {
         commonReasons: [],
       }))
       .sort((a, b) => b.count - a.count);
-    
+
     return {
       totalFeedback: dbSummary.totalFeedback,
       approvalRate: dbSummary.approvalRate / 100,
@@ -400,12 +411,12 @@ export function getFeedbackSummary(): FeedbackSummary {
   const validFeedback = feedbackCache
     .filter(entry => now - entry.timestamp < FEEDBACK_CACHE_TTL_MS)
     .map(entry => entry.feedback);
-  
+
   const totalFeedback = validFeedback.length;
   const approvedCount = validFeedback.filter(f => f.wasApproved).length;
-  
+
   const rejectionsByType = new Map<string, { count: number; reasons: string[] }>();
-  
+
   for (const feedback of validFeedback.filter(f => !f.wasApproved)) {
     const existing = rejectionsByType.get(feedback.actionType) || { count: 0, reasons: [] };
     existing.count++;
@@ -414,7 +425,7 @@ export function getFeedbackSummary(): FeedbackSummary {
     }
     rejectionsByType.set(feedback.actionType, existing);
   }
-  
+
   const commonRejections = Array.from(rejectionsByType.entries())
     .map(([actionType, data]) => ({
       actionType,
@@ -422,7 +433,7 @@ export function getFeedbackSummary(): FeedbackSummary {
       commonReasons: Array.from(new Set(data.reasons)).slice(0, 5),
     }))
     .sort((a, b) => b.count - a.count);
-  
+
   return {
     totalFeedback,
     approvalRate: totalFeedback > 0 ? approvedCount / totalFeedback : 1,
@@ -433,14 +444,14 @@ export function getFeedbackSummary(): FeedbackSummary {
 
 export function getFeedbackContextForPlanning(): string {
   const summary = getFeedbackSummary();
-  
+
   if (summary.totalFeedback < 5) {
     return "";
   }
-  
+
   let context = "\n\nUSER FEEDBACK LEARNING:\n";
   context += `Based on ${summary.totalFeedback} previous edits, users approve ${(summary.approvalRate * 100).toFixed(0)}% of AI suggestions.\n`;
-  
+
   if (summary.commonRejections.length > 0) {
     context += "\nCommon rejections to avoid:\n";
     for (const rejection of summary.commonRejections.slice(0, 3)) {
@@ -451,7 +462,7 @@ export function getFeedbackContextForPlanning(): string {
       context += "\n";
     }
   }
-  
+
   return context;
 }
 

@@ -138,22 +138,22 @@ async function transcribeWithAssemblyAI(
   try {
     // Step 1: Upload audio file to AssemblyAI with retry and memory-safe streaming for large files
     aiLogger.debug("Uploading audio to AssemblyAI...");
-    
+
     const stats = await fs.stat(audioPath);
     const fileSizeMB = stats.size / (1024 * 1024);
     aiLogger.debug(`Audio file size: ${fileSizeMB.toFixed(2)}MB`);
-    
+
     // Use streaming for large files (>50MB) to avoid memory pressure
     const LARGE_FILE_THRESHOLD_MB = 50;
-    
+
     const audioUrl = await withRetry(
       async () => {
         let uploadResponse: Response;
-        
+
         if (fileSizeMB > LARGE_FILE_THRESHOLD_MB) {
           aiLogger.debug(`Large file detected (${fileSizeMB.toFixed(1)}MB), using streaming upload`);
           const stream = fsSync.createReadStream(audioPath);
-          
+
           uploadResponse = await fetch(`${ASSEMBLYAI_BASE_URL}/upload`, {
             method: "POST",
             headers: {
@@ -189,7 +189,7 @@ async function transcribeWithAssemblyAI(
       ASSEMBLYAI_RETRY_OPTIONS,
       "assemblyai"
     );
-    
+
     aiLogger.debug("Audio uploaded successfully");
 
     // Step 2: Submit transcription request with enhanced AI features
@@ -234,7 +234,7 @@ async function transcribeWithAssemblyAI(
       ASSEMBLYAI_RETRY_OPTIONS,
       "assemblyai"
     );
-    
+
     aiLogger.debug(`Transcription submitted, ID: ${transcriptId}`);
 
     // Step 3: Poll for completion with resilience against transient errors
@@ -262,11 +262,11 @@ async function transcribeWithAssemblyAI(
       } catch (pollError) {
         consecutiveErrors++;
         aiLogger.warn(`AssemblyAI poll error (${consecutiveErrors}/${maxConsecutiveErrors}): ${pollError instanceof Error ? pollError.message : String(pollError)}`);
-        
+
         if (consecutiveErrors >= maxConsecutiveErrors) {
           throw new Error(`AssemblyAI polling failed after ${maxConsecutiveErrors} consecutive errors`);
         }
-        
+
         // Wait longer before retrying on error
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs * 2));
         continue;
@@ -274,11 +274,11 @@ async function transcribeWithAssemblyAI(
 
       if (transcript.status === "completed") {
         aiLogger.info(`AssemblyAI transcription completed${transcript.language_code ? ` (detected: ${transcript.language_code})` : ""}`);
-        
+
         // Extract enhanced features
         const segments = createSegmentsFromAssemblyAI(transcript, audioDuration);
         const enhanced = extractEnhancedFeatures(transcript);
-        
+
         // Log enhanced features
         if (enhanced.speakers && enhanced.speakers.length > 0) {
           aiLogger.info(`Speaker diarization: ${enhanced.speakers.length} speakers detected`);
@@ -297,7 +297,7 @@ async function transcribeWithAssemblyAI(
         if (enhanced.entities && enhanced.entities.length > 0) {
           aiLogger.info(`Entity detection: ${enhanced.entities.length} entities found`);
         }
-        
+
         return {
           segments,
           ...enhanced,
@@ -326,18 +326,18 @@ async function transcribeWithAssemblyAI(
  */
 function extractEnhancedFeatures(transcript: AssemblyAITranscript): Omit<TranscriptEnhancedResult, "segments" | "detectedLanguage"> {
   const result: Omit<TranscriptEnhancedResult, "segments" | "detectedLanguage"> = {};
-  
+
   // Extract speaker information from utterances
   if (transcript.utterances && transcript.utterances.length > 0) {
     const speakerMap = new Map<string, { wordCount: number; speakingTime: number }>();
-    
+
     for (const utterance of transcript.utterances) {
       const existing = speakerMap.get(utterance.speaker) || { wordCount: 0, speakingTime: 0 };
       existing.wordCount += utterance.words?.length || utterance.text.split(/\s+/).length;
       existing.speakingTime += (utterance.end - utterance.start) / 1000; // Convert ms to seconds
       speakerMap.set(utterance.speaker, existing);
     }
-    
+
     result.speakers = Array.from(speakerMap.entries()).map(([id, stats], index) => ({
       id,
       label: `Speaker ${index + 1}`,
@@ -345,7 +345,7 @@ function extractEnhancedFeatures(transcript: AssemblyAITranscript): Omit<Transcr
       speakingTime: Math.round(stats.speakingTime * 10) / 10,
     }));
   }
-  
+
   // Extract chapters
   if (transcript.chapters && transcript.chapters.length > 0) {
     result.chapters = transcript.chapters.map(ch => ({
@@ -356,7 +356,7 @@ function extractEnhancedFeatures(transcript: AssemblyAITranscript): Omit<Transcr
       end: ch.end / 1000,
     }));
   }
-  
+
   // Extract sentiment analysis
   if (transcript.sentiment_analysis_results && transcript.sentiment_analysis_results.length > 0) {
     result.sentiments = transcript.sentiment_analysis_results.map(s => ({
@@ -368,7 +368,7 @@ function extractEnhancedFeatures(transcript: AssemblyAITranscript): Omit<Transcr
       speaker: s.speaker,
     }));
   }
-  
+
   // Extract entities
   if (transcript.entities && transcript.entities.length > 0) {
     result.entities = transcript.entities.map(e => ({
@@ -378,7 +378,7 @@ function extractEnhancedFeatures(transcript: AssemblyAITranscript): Omit<Transcr
       end: e.end / 1000,
     }));
   }
-  
+
   return result;
 }
 
@@ -392,7 +392,7 @@ function createSegmentsFromAssemblyAI(
 ): TranscriptSegment[] {
   // Determine effective duration from param or response (AssemblyAI returns duration in seconds)
   const effectiveDuration = audioDuration ?? (transcript.audio_duration ? transcript.audio_duration : undefined);
-  
+
   if (!transcript.words || transcript.words.length === 0) {
     aiLogger.warn("AssemblyAI returned no words, falling back to text-only");
     if (transcript.text) {
@@ -406,14 +406,14 @@ function createSegmentsFromAssemblyAI(
   const maxTime = effectiveDuration ? effectiveDuration * 1000 : Infinity;
   const result: TranscriptSegment[] = [];
   let currentWords: AssemblyAIWord[] = [];
-  
+
   const GAP_THRESHOLD_MS = 1000; // 1 second gap triggers new segment
   const MAX_SEGMENT_WORDS = 15; // Prevent overly long segments
 
   for (let i = 0; i < transcript.words.length; i++) {
     const word = transcript.words[i];
     const prevWord = currentWords.length > 0 ? currentWords[currentWords.length - 1] : null;
-    
+
     // Skip words that exceed audio duration
     if (word.start > maxTime) continue;
 
@@ -451,10 +451,10 @@ function createSegmentFromAssemblyAIWords(
 ): TranscriptSegment {
   const firstWord = words[0];
   const lastWord = words[words.length - 1];
-  
+
   // Convert ms to seconds and clamp to audio duration
   const maxTimeSec = maxTimeMs === Infinity ? Infinity : maxTimeMs / 1000;
-  
+
   return {
     start: Math.min(firstWord.start / 1000, maxTimeSec),
     end: Math.min(lastWord.end / 1000, maxTimeSec),
@@ -481,7 +481,7 @@ const SPEECH_CACHE_MAX_SIZE = 100; // Maximum entries
 function cleanupSpeechCache(): void {
   const now = Date.now();
   const keysToDelete: string[] = [];
-  
+
   // Use Array.from for compatibility with TypeScript target
   const entries = Array.from(speechStartCache.entries());
   for (let i = 0; i < entries.length; i++) {
@@ -490,16 +490,16 @@ function cleanupSpeechCache(): void {
       keysToDelete.push(key);
     }
   }
-  
+
   for (const key of keysToDelete) {
     speechStartCache.delete(key);
   }
-  
+
   // Also enforce max size - remove oldest entries
   if (speechStartCache.size > SPEECH_CACHE_MAX_SIZE) {
     const sortedEntries = Array.from(speechStartCache.entries())
       .sort((a, b) => a[1].timestamp - b[1].timestamp);
-    
+
     const toRemove = speechStartCache.size - SPEECH_CACHE_MAX_SIZE;
     for (let i = 0; i < toRemove; i++) {
       speechStartCache.delete(sortedEntries[i][0]);
@@ -507,8 +507,19 @@ function cleanupSpeechCache(): void {
   }
 }
 
-// Run cleanup every 10 minutes
-setInterval(cleanupSpeechCache, 10 * 60 * 1000);
+// Run cleanup every 10 minutes - export for graceful shutdown
+let speechCacheCleanupInterval: NodeJS.Timeout | null = setInterval(cleanupSpeechCache, 10 * 60 * 1000);
+
+/**
+ * Stop the speech cache cleanup interval.
+ * Call this during graceful shutdown to prevent memory leaks.
+ */
+export function stopSpeechCacheCleanup(): void {
+  if (speechCacheCleanupInterval) {
+    clearInterval(speechCacheCleanupInterval);
+    speechCacheCleanupInterval = null;
+  }
+}
 
 /**
  * Detect when speech first starts in an audio file using FFmpeg silencedetect
@@ -522,12 +533,12 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
   if (cached && (Date.now() - cached.timestamp < SPEECH_CACHE_TTL_MS)) {
     return cached.value;
   }
-  
+
   return new Promise((resolve) => {
     const timeoutMs = 15000; // 15 second timeout
     let completed = false;
     let speechStart = 0;
-    
+
     // Use silencedetect with sensitive settings to find first speech
     // noise=-35dB catches most speech, d=0.2 catches short silences
     const ffmpegArgs = [
@@ -536,9 +547,9 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
       '-f', 'null',
       '-'
     ];
-    
+
     const process = spawn('ffmpeg', ffmpegArgs);
-    
+
     const timeoutId = setTimeout(() => {
       if (!completed) {
         completed = true;
@@ -548,24 +559,24 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
         resolve(0);
       }
     }, timeoutMs);
-    
+
     let stderrData = '';
-    
+
     process.stderr.on('data', (data) => {
       stderrData += data.toString();
     });
-    
+
     process.on('close', () => {
       if (!completed) {
         completed = true;
         clearTimeout(timeoutId);
-        
+
         // Parse silence_start/end PAIRS from output to find leading silence
         // FFmpeg outputs: silence_start: X ... silence_end: Y | silence_duration: Z
         // We need to capture pairs in sequence to avoid mismatched arrays
         // Use regex to capture start followed by its corresponding end
         const silencePairRegex = /silence_start:\s*([\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g;
-        
+
         const silencePairs: { start: number; end: number }[] = [];
         let match;
         while ((match = silencePairRegex.exec(stderrData)) !== null) {
@@ -574,7 +585,7 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
             end: parseFloat(match[2])
           });
         }
-        
+
         // Find the first silence block that starts at t=0 (within tolerance)
         // The corresponding end time tells us when speech actually starts
         for (const pair of silencePairs) {
@@ -586,7 +597,7 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
             break;
           }
         }
-        
+
         if (speechStart === 0 && silencePairs.length > 0) {
           // No leading silence found (first silence starts later in audio)
           aiLogger.debug(`No leading silence detected (first silence at ${silencePairs[0].start.toFixed(2)}s), speech starts at 0s`);
@@ -594,12 +605,12 @@ async function detectSpeechStart(audioPath: string): Promise<number> {
           // No silence detected at all - continuous speech
           aiLogger.debug('No silence detected, speech starts at 0s');
         }
-        
+
         speechStartCache.set(audioPath, { value: speechStart, timestamp: Date.now() });
         resolve(speechStart);
       }
     });
-    
+
     process.on('error', (err) => {
       if (!completed) {
         completed = true;
@@ -642,14 +653,14 @@ export function logTranscriptionConfig(): void {
   if (hasGeminiKey) {
     aiLogger.info(`Fallback: Replit AI Gemini 2.5 Flash (audio files < ${GEMINI_MAX_FILE_SIZE_MB}MB)`);
   }
-  
+
   if (!hasAssemblyAIKey && !hasOpenAIKey && !hasGeminiKey) {
     aiLogger.error("WARNING: No transcription API keys configured");
     aiLogger.error("Transcription will fail. Please set up AssemblyAI, OpenAI, or Gemini.");
   } else {
     aiLogger.info("Status: Ready");
   }
-  
+
   aiLogger.info("═══════════════════════════════════════════════════════");
 }
 
@@ -660,11 +671,11 @@ async function sleep(ms: number): Promise<void> {
 function isRetryableError(error: unknown): boolean {
   const errorMessage = error instanceof Error ? error.message : String(error);
   const errorCode = (error as any)?.status || (error as any)?.code;
-  
+
   if (errorCode === 400 || errorCode === 401 || errorCode === 403) {
     return false;
   }
-  
+
   if (errorMessage.includes("model") && errorMessage.includes("not found")) {
     return false;
   }
@@ -674,14 +685,14 @@ function isRetryableError(error: unknown): boolean {
   if (errorMessage.includes("permission") || errorMessage.includes("forbidden")) {
     return false;
   }
-  
+
   return true;
 }
 
 function createSegmentsFromText(text: string, audioDuration?: number): TranscriptSegment[] {
   const segments = splitIntoNaturalSegments(text);
   const maxTime = audioDuration && audioDuration > 0 ? audioDuration : Infinity;
-  
+
   if (segments.length === 0) {
     if (text.trim()) {
       return [{
@@ -692,19 +703,19 @@ function createSegmentsFromText(text: string, audioDuration?: number): Transcrip
     }
     return [];
   }
-  
+
   const charsPerSecond = 12.5;
   let currentTime = 0;
   const result: TranscriptSegment[] = [];
-  
+
   for (const sentence of segments) {
     // Stop if we've exceeded audio duration
     if (currentTime >= maxTime) break;
-    
+
     const rawDuration = Math.max(1.5, sentence.length / charsPerSecond);
     // Clamp end time to audio duration
     const endTime = Math.min(currentTime + rawDuration, maxTime);
-    
+
     if (sentence.trim().length > 0) {
       result.push({
         start: currentTime,
@@ -712,16 +723,16 @@ function createSegmentsFromText(text: string, audioDuration?: number): Transcrip
         text: sentence.trim(),
       });
     }
-    
+
     currentTime = endTime + 0.3;
   }
-  
+
   return result;
 }
 
 function splitIntoNaturalSegments(text: string): string[] {
   const primarySplit = text.split(/(?<=[.!?।؟。！？])\s+/).filter((s: string) => s.trim());
-  
+
   const result: string[] = [];
   for (const segment of primarySplit) {
     if (segment.length > 200) {
@@ -758,7 +769,7 @@ function splitIntoNaturalSegments(text: string): string[] {
       result.push(segment);
     }
   }
-  
+
   return result;
 }
 
@@ -767,21 +778,21 @@ function estimateSyllables(word: string): number {
   const cleaned = word.toLowerCase().replace(/[^a-z]/g, '');
   if (cleaned.length === 0) return 1;
   if (cleaned.length <= 3) return 1;
-  
+
   // Count vowel groups as approximate syllables
   const vowelGroups = cleaned.match(/[aeiouy]+/g);
   let syllables = vowelGroups ? vowelGroups.length : 1;
-  
+
   // Adjust for silent e at end
   if (cleaned.endsWith('e') && syllables > 1) {
     syllables--;
   }
-  
+
   // Adjust for common suffixes
   if (cleaned.endsWith('le') && cleaned.length > 2 && !/[aeiouy]/.test(cleaned.charAt(cleaned.length - 3))) {
     syllables++;
   }
-  
+
   return Math.max(1, syllables);
 }
 
@@ -791,15 +802,15 @@ function estimateSyllables(word: string): number {
 // Average syllables per word: 1.5 = ~250-350ms per syllable
 function calculateWordWeight(word: string): number {
   const syllables = estimateSyllables(word);
-  
+
   // Base time per syllable (200ms is more accurate for natural speech)
   // Short words get slightly more time per syllable (articulation overhead)
   const syllableTime = word.length <= 4 ? 0.22 : 0.18;
   const baseWeight = syllables * syllableTime;
-  
+
   // Add minimum word duration to account for word boundaries (~80ms)
   const wordBoundary = 0.08;
-  
+
   // Add time for punctuation (natural pauses) - slightly increased for realism
   let pauseWeight = 0;
   if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) {
@@ -809,12 +820,12 @@ function calculateWordWeight(word: string): number {
   } else if (word.endsWith('...') || word.includes('—')) {
     pauseWeight = 0.6; // Longer pause for ellipsis/em-dash (~600ms)
   }
-  
+
   // Numbers and acronyms take longer to say
   if (/^\d+$/.test(word) || /^[A-Z]{2,}$/.test(word)) {
     return baseWeight * 1.5 + wordBoundary + pauseWeight;
   }
-  
+
   return baseWeight + wordBoundary + pauseWeight;
 }
 
@@ -844,40 +855,40 @@ interface OpenAISegment {
 // Returns sanitized words with invalid entries filtered out
 function sanitizeWordTimestamps(words: OpenAIWord[], audioDuration?: number): OpenAIWord[] {
   if (!words || words.length === 0) return [];
-  
+
   const sanitized: OpenAIWord[] = [];
   let lastEndTime = 0;
   let invalidCount = 0;
-  
+
   for (const word of words) {
     // Skip empty/whitespace-only words
     if (!word.word || word.word.trim().length === 0) {
       invalidCount++;
       continue;
     }
-    
+
     // Validate timestamps are finite numbers
     if (!Number.isFinite(word.start) || !Number.isFinite(word.end)) {
       aiLogger.warn(`Skipping word with invalid timestamps: "${word.word}" (start=${word.start}, end=${word.end})`);
       invalidCount++;
       continue;
     }
-    
+
     // Ensure non-negative
     let start = Math.max(0, word.start);
     let end = Math.max(0, word.end);
-    
+
     // Ensure end >= start (minimum word duration of 50ms)
     if (end <= start) {
       end = start + 0.05;
     }
-    
+
     // Clamp to audio duration if provided
     if (audioDuration && audioDuration > 0) {
       start = Math.min(start, audioDuration);
       end = Math.min(end, audioDuration);
     }
-    
+
     // Ensure monotonic (word starts after previous word ended, or at least at same time)
     if (start < lastEndTime) {
       // Word overlaps with previous - adjust start to previous end
@@ -886,20 +897,20 @@ function sanitizeWordTimestamps(words: OpenAIWord[], audioDuration?: number): Op
         end = start + 0.05;
       }
     }
-    
+
     sanitized.push({
       word: word.word.trim(),
       start,
       end,
     });
-    
+
     lastEndTime = end;
   }
-  
+
   if (invalidCount > 0) {
     aiLogger.warn(`Filtered ${invalidCount} invalid word timestamps from transcription`);
   }
-  
+
   return sanitized;
 }
 
@@ -917,11 +928,11 @@ function createSegmentsFromOpenAIWords(
   audioDuration?: number
 ): TranscriptSegment[] {
   if (!words || words.length === 0) return [];
-  
+
   // Sanitize word timestamps before processing
   const sanitizedWords = sanitizeWordTimestamps(words, audioDuration);
   if (sanitizedWords.length === 0) return [];
-  
+
   // If we have segments with words embedded, use segment boundaries
   // Check ALL segments for words, not just the first one
   if (segments && segmentsHaveWords(segments)) {
@@ -940,23 +951,23 @@ function createSegmentsFromOpenAIWords(
       };
     }).filter(seg => seg.text.length > 0);
   }
-  
+
   // Group sanitized words into sentence-like segments based on punctuation and timing gaps
   const result: TranscriptSegment[] = [];
   let currentWords: OpenAIWord[] = [];
   let currentText: string[] = [];
-  
+
   const GAP_THRESHOLD = 1.0; // 1 second gap triggers new segment
-  
+
   for (let i = 0; i < sanitizedWords.length; i++) {
     const word = sanitizedWords[i];
     const prevWord = i > 0 ? sanitizedWords[i - 1] : null;
-    
+
     // Check for sentence break conditions
     const hasLargeGap = prevWord ? (word.start - prevWord.end) > GAP_THRESHOLD : false;
     const endsWithPunctuation = prevWord ? /[.!?]$/.test(prevWord.word) : false;
     const shouldBreak = hasLargeGap || (endsWithPunctuation && currentWords.length >= 3);
-    
+
     if (shouldBreak && currentWords.length > 0) {
       // Save current segment
       result.push({
@@ -972,11 +983,11 @@ function createSegmentsFromOpenAIWords(
       currentWords = [];
       currentText = [];
     }
-    
+
     currentWords.push(word);
     currentText.push(word.word);
   }
-  
+
   // Don't forget the last segment
   if (currentWords.length > 0) {
     result.push({
@@ -990,7 +1001,7 @@ function createSegmentsFromOpenAIWords(
       })),
     });
   }
-  
+
   aiLogger.debug(`Created ${result.length} segments from ${words.length} OpenAI word timestamps`);
   return result;
 }
@@ -1001,22 +1012,22 @@ function createSegmentsFromOpenAISegments(
   audioDuration?: number
 ): TranscriptSegment[] {
   if (!segments || segments.length === 0) return [];
-  
+
   // Use audioDuration for clamping if available, otherwise use a large value
   const maxTime = audioDuration && audioDuration > 0 ? audioDuration : Infinity;
-  
+
   return segments.map(seg => {
     // Clamp segment times to audio duration
     const segStart = Math.max(0, Math.min(seg.start, maxTime));
     const segEnd = Math.max(segStart, Math.min(seg.end, maxTime));
     const segmentDuration = Math.max(0.1, segEnd - segStart);
-    
+
     const words = seg.text.trim().split(/\s+/).filter(w => w.length > 0);
-    
+
     // Synthesize word timing within segment bounds using improved algorithm
     const wordWeights = words.map(w => calculateWordWeight(w));
     const totalWeight = wordWeights.reduce((sum, w) => sum + w, 0);
-    
+
     let wordTime = segStart;
     const wordTimings = words.map((word, i) => {
       const weight = wordWeights[i];
@@ -1030,7 +1041,7 @@ function createSegmentsFromOpenAISegments(
       wordTime += wordDuration;
       return timing;
     });
-    
+
     return {
       start: segStart,
       end: segEnd,
@@ -1043,16 +1054,16 @@ function createSegmentsFromOpenAISegments(
 // Create segments with improved word-level timing using syllable-based estimation
 // speechStartOffset: time when speech actually starts (from silence detection)
 function createSegmentsFromTextWithDuration(
-  text: string, 
-  audioDuration: number, 
+  text: string,
+  audioDuration: number,
   speechStartOffset: number = 0
 ): TranscriptSegment[] {
   // Split into sentences using natural language boundaries
   const sentences = splitIntoNaturalSegments(text);
-  
+
   // Minimum speaking duration to prevent invalid timings
   const MIN_SPEAKING_DURATION = 0.5;
-  
+
   // Handle very short audio clips - skip offset entirely and scale to fit
   if (audioDuration < MIN_SPEAKING_DURATION) {
     aiLogger.debug(`Audio too short (${audioDuration.toFixed(2)}s), using minimal timing`);
@@ -1072,28 +1083,28 @@ function createSegmentsFromTextWithDuration(
       words: wordTimings,
     }];
   }
-  
+
   // Clamp speechStartOffset to ensure we have at least MIN_SPEAKING_DURATION of speaking time
   // This prevents negative/zero effective durations in edge cases
   const safeOffset = Math.max(0, Math.min(speechStartOffset, audioDuration - MIN_SPEAKING_DURATION));
-  
+
   // If audio is too short for any meaningful offset, start at 0
   const finalOffset = audioDuration < MIN_SPEAKING_DURATION * 2 ? 0 : safeOffset;
-  
+
   if (finalOffset !== speechStartOffset && speechStartOffset > 0) {
     aiLogger.debug(`Adjusted speech offset from ${speechStartOffset.toFixed(2)}s to ${finalOffset.toFixed(2)}s (audio: ${audioDuration.toFixed(2)}s)`);
   }
-  
+
   // Effective duration is from speech start to audio end, capped to actual audio
   const effectiveDuration = Math.min(audioDuration, Math.max(MIN_SPEAKING_DURATION, audioDuration - finalOffset));
-  
+
   if (sentences.length === 0) {
     if (text.trim()) {
       // Single segment with syllable-weighted word timing
       const words = text.trim().split(/\s+/).filter(w => w.length > 0);
       const totalWeight = words.reduce((sum, word) => sum + calculateWordWeight(word), 0);
       const speakingDuration = effectiveDuration * 0.95; // Leave small buffer
-      
+
       let currentTime = finalOffset; // Start timing at detected speech start
       const wordTimings = words.map(word => {
         const weight = calculateWordWeight(word);
@@ -1107,7 +1118,7 @@ function createSegmentsFromTextWithDuration(
         currentTime += wordDuration;
         return timing;
       });
-      
+
       return [{
         start: Math.min(finalOffset, audioDuration),
         end: audioDuration,
@@ -1117,46 +1128,46 @@ function createSegmentsFromTextWithDuration(
     }
     return [];
   }
-  
+
   // Calculate total weight across all sentences for proportional timing
   const sentenceWeights = sentences.map(s => calculateSentenceWeight(s));
   const totalWeight = sentenceWeights.reduce((sum, w) => sum + w, 0);
-  
+
   // Reserve time for inter-sentence gaps (natural pauses between sentences)
   const gapTime = 0.15; // 150ms between segments
   const totalGapTime = (sentences.length - 1) * gapTime;
-  
+
   // Scale speaking time to fit within effective duration
   // If total gap time exceeds effective duration, reduce gaps proportionally
   const targetGapTime = Math.min(gapTime, effectiveDuration * 0.1 / Math.max(1, sentences.length - 1));
   const actualTotalGapTime = (sentences.length - 1) * targetGapTime;
   const availableSpeakingTime = Math.max(0.5, effectiveDuration - actualTotalGapTime);
-  
+
   let currentTime = finalOffset; // Start timing at detected speech start
   const result: TranscriptSegment[] = [];
-  
+
   for (let idx = 0; idx < sentences.length; idx++) {
     const sentence = sentences[idx];
-    
+
     // Calculate remaining audio time - stop if exhausted
     const remainingTime = audioDuration - currentTime;
     if (remainingTime <= 0.1) {
       aiLogger.debug(`Stopping segment creation at ${idx}/${sentences.length} - no remaining audio time`);
       break;
     }
-    
+
     // Calculate segment duration proportionally based on syllable weight
     const sentenceWeight = sentenceWeights[idx];
     const proportion = sentenceWeight / totalWeight;
     // Calculate duration and ensure it doesn't exceed remaining audio time
     const rawSegmentDuration = proportion * availableSpeakingTime;
     const segmentDuration = Math.max(0.1, Math.min(rawSegmentDuration, remainingTime * 0.95));
-    
+
     // Create word-level timing using syllable-weighted distribution
     const words = sentence.trim().split(/\s+/).filter(w => w.length > 0);
     const wordWeights = words.map(w => calculateWordWeight(w));
     const segmentTotalWeight = wordWeights.reduce((sum, w) => sum + w, 0);
-    
+
     let wordTime = currentTime;
     const wordTimings = words.map((word, i) => {
       const wordWeight = wordWeights[i];
@@ -1170,34 +1181,34 @@ function createSegmentsFromTextWithDuration(
       wordTime += wordDuration;
       return timing;
     });
-    
+
     const segment: TranscriptSegment = {
       start: Math.min(currentTime, audioDuration),
       end: Math.min(currentTime + segmentDuration, audioDuration),
       text: sentence.trim(),
       words: wordTimings,
     };
-    
+
     if (segment.text.length > 0) {
       result.push(segment);
     }
-    
+
     currentTime += segmentDuration + targetGapTime;
   }
-  
+
   return result;
 }
 
 async function transcribeWithOpenAI(
-  audioPath: string, 
+  audioPath: string,
   audioDuration?: number,
   languageHint?: string
-): Promise<TranscriptSegment[]> {
+): Promise<TranscriptSegment[] | null> {
   aiLogger.info(`Using OpenAI ${AI_CONFIG.models.transcription.primary} for transcription...`);
   if (languageHint) {
     aiLogger.info(`Language hint provided: ${languageHint}`);
   }
-  
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const audioBuffer = await fs.readFile(audioPath);
@@ -1210,7 +1221,7 @@ async function transcribeWithOpenAI(
         // Word timing will be synthesized using improved segment-aware algorithm
         response_format: "json",
       };
-      
+
       if (languageHint) {
         transcriptionParams.language = languageHint;
       }
@@ -1218,14 +1229,14 @@ async function transcribeWithOpenAI(
       const response = await getOpenAIClient().audio.transcriptions.create(transcriptionParams) as any;
 
       const text = response.text || "";
-      
+
       if (!text.trim()) {
         aiLogger.warn("OpenAI transcription returned empty text (possibly silent audio)");
         return [];
       }
 
       aiLogger.info(`OpenAI transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
-      
+
       // Check if we got word-level timestamps from OpenAI
       if (response.words && Array.isArray(response.words) && response.words.length > 0) {
         // Use actual word timestamps from OpenAI for accurate caption timing
@@ -1234,7 +1245,7 @@ async function transcribeWithOpenAI(
         aiLogger.info(`Created ${segments.length} transcript segments with actual word timing`);
         return segments;
       }
-      
+
       // Check if we got segment-level timestamps
       if (response.segments && Array.isArray(response.segments) && response.segments.length > 0) {
         aiLogger.info(`Got ${response.segments.length} segment-level timestamps from OpenAI (no word timestamps)`);
@@ -1242,7 +1253,7 @@ async function transcribeWithOpenAI(
         aiLogger.info(`Created ${segments.length} transcript segments with segment timing`);
         return segments;
       }
-      
+
       // Fallback: Synthesize timing based on text length and audio duration
       // Use speech start detection to align captions with actual speech
       aiLogger.warn("OpenAI returned no timestamps, falling back to synthesized timing");
@@ -1258,26 +1269,26 @@ async function transcribeWithOpenAI(
         aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
         return segments;
       }
-      
+
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       aiLogger.error(`OpenAI transcription attempt ${attempt}/${MAX_RETRIES} failed:`, errorMessage);
-      
+
       // Check for model-not-found or format-not-supported errors - these won't be fixed by retrying
-      const isModelError = errorMessage.toLowerCase().includes("model") || 
-                          errorMessage.toLowerCase().includes("not compatible") ||
-                          errorMessage.toLowerCase().includes("response_format");
-      
+      const isModelError = errorMessage.toLowerCase().includes("model") ||
+        errorMessage.toLowerCase().includes("not compatible") ||
+        errorMessage.toLowerCase().includes("response_format");
+
       if (isModelError) {
         aiLogger.warn(`Model or format error detected - will fall back to Gemini`);
         break;
       }
-      
+
       if (!isRetryableError(error)) {
         aiLogger.warn("Non-retryable error detected, skipping remaining retries");
         break;
       }
-      
+
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
         aiLogger.info(`Retrying in ${delay}ms...`);
@@ -1285,44 +1296,44 @@ async function transcribeWithOpenAI(
       }
     }
   }
-  
-  return [];
+
+  return null;
 }
 
 async function transcribeWithGemini(
-  audioPath: string, 
+  audioPath: string,
   audioDuration?: number,
   languageHint?: string
-): Promise<TranscriptSegment[]> {
+): Promise<TranscriptSegment[] | null> {
   const audioBuffer = await fs.readFile(audioPath);
   const fileSizeMB = audioBuffer.length / (1024 * 1024);
-  
+
   if (fileSizeMB > GEMINI_MAX_FILE_SIZE_MB) {
     aiLogger.warn(`Audio file (${fileSizeMB.toFixed(1)}MB) exceeds Gemini limit (${GEMINI_MAX_FILE_SIZE_MB}MB), skipping Gemini fallback`);
-    return [];
+    return null;
   }
-  
+
   aiLogger.info(`Using Gemini 2.5 Flash for transcription (file size: ${fileSizeMB.toFixed(1)}MB)...`);
   if (languageHint) {
     aiLogger.info(`Language hint provided: ${languageHint}`);
   }
-  
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const base64Audio = audioBuffer.toString('base64');
-      
-      const ext = audioPath.split('.').pop()?.toLowerCase() || 'mp3';
-      const mimeType = ext === 'wav' ? 'audio/wav' : 
-                       ext === 'mp4' ? 'audio/mp4' :
-                       ext === 'm4a' ? 'audio/mp4' :
-                       ext === 'ogg' ? 'audio/ogg' :
-                       ext === 'webm' ? 'audio/webm' :
-                       'audio/mpeg';
 
-      const languageInstruction = languageHint 
-        ? `The audio is primarily in ${languageHint}. ` 
+      const ext = audioPath.split('.').pop()?.toLowerCase() || 'mp3';
+      const mimeType = ext === 'wav' ? 'audio/wav' :
+        ext === 'mp4' ? 'audio/mp4' :
+          ext === 'm4a' ? 'audio/mp4' :
+            ext === 'ogg' ? 'audio/ogg' :
+              ext === 'webm' ? 'audio/webm' :
+                'audio/mpeg';
+
+      const languageInstruction = languageHint
+        ? `The audio is primarily in ${languageHint}. `
         : "";
-      
+
       const gemini = getGeminiClient();
       const response = await gemini.models.generateContent({
         model: AI_CONFIG.models.transcription.fallback,
@@ -1357,14 +1368,14 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
       });
 
       const text = response.text?.trim() || "";
-      
+
       if (!text) {
         aiLogger.warn("Gemini transcription returned empty text");
         return [];
       }
 
       aiLogger.info(`Gemini transcription successful (attempt ${attempt}). Text length: ${text.length} chars`);
-      
+
       // Use duration-aware segment creation for better word timing
       // Include speech start detection to align captions with actual speech
       if (audioDuration) {
@@ -1377,21 +1388,21 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
         aiLogger.info(`Created ${segments.length} transcript segments with estimated timestamps`);
         return segments;
       }
-      
+
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       aiLogger.error(`Gemini transcription attempt ${attempt}/${MAX_RETRIES} failed:`, errorMessage);
-      
+
       if (errorMessage.includes("8 MB") || errorMessage.includes("too large") || errorMessage.includes("INVALID_ARGUMENT")) {
         aiLogger.warn("Audio file too large for Gemini inline data");
         break;
       }
-      
+
       if (!isRetryableError(error)) {
         aiLogger.warn("Non-retryable error detected, skipping remaining retries");
         break;
       }
-      
+
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
         aiLogger.info(`Retrying in ${delay}ms...`);
@@ -1399,8 +1410,8 @@ Return ONLY the transcription text, nothing else. No explanations, no timestamps
       }
     }
   }
-  
-  return [];
+
+  return null;
 }
 
 export interface TranscriptionOptions {
@@ -1421,47 +1432,59 @@ export async function transcribeAudioEnhanced(
   const languageHint = options?.languageHint;
   const filterLowConfidence = options?.filterLowConfidence ?? true;
   const confidenceThreshold = options?.confidenceThreshold ?? 0.5;
-  
+
   aiLogger.info(`Starting audio transcription...${languageHint ? ` (language hint: ${languageHint})` : ""}`);
   if (filterLowConfidence) {
     aiLogger.debug(`Low-confidence filtering enabled (threshold: ${confidenceThreshold})`);
   }
-  
+
   const hasAssemblyAI = !!process.env.ASSEMBLYAI_API_KEY;
   const hasOpenAI = !!process.env.AI_INTEGRATIONS_OPENAI_API_KEY;
   const hasGemini = !!(process.env.GEMINI_API_KEY || process.env.AI_INTEGRATIONS_GEMINI_API_KEY);
-  
+
+  const errors: string[] = [];
+
   // Primary: AssemblyAI (best for captions - native word-level timestamps + enhanced AI features)
   if (hasAssemblyAI) {
     const assemblyAIResult = await transcribeWithAssemblyAI(audioPath, audioDuration, languageHint);
-    if (assemblyAIResult && assemblyAIResult.segments.length > 0) {
-      aiLogger.info(`Transcription successful with AssemblyAI: ${assemblyAIResult.segments.length} segments with native word timing`);
+    if (assemblyAIResult) {
+      if (assemblyAIResult.segments.length > 0) {
+        aiLogger.info(`Transcription successful with AssemblyAI: ${assemblyAIResult.segments.length} segments with native word timing`);
+      } else {
+        aiLogger.info(`Transcription successful with AssemblyAI: 0 segments (silent audio)`);
+      }
       return assemblyAIResult;
     }
-    aiLogger.warn("AssemblyAI transcription failed, trying OpenAI fallback...");
+    const msg = "AssemblyAI transcription failed";
+    aiLogger.warn(`${msg}, trying OpenAI fallback...`);
+    errors.push(msg);
   }
-  
+
   // Secondary: OpenAI (synthesized word timing) - no enhanced features
   if (hasOpenAI) {
     const openAIResult = await transcribeWithOpenAI(audioPath, audioDuration, languageHint);
-    if (openAIResult.length > 0) {
+    if (openAIResult !== null) {
       aiLogger.info(`Transcription successful with OpenAI: ${openAIResult.length} segments extracted`);
       return { segments: openAIResult };
     }
-    aiLogger.warn("OpenAI transcription failed, trying Gemini fallback...");
+    const msg = "OpenAI transcription failed";
+    aiLogger.warn(`${msg}, trying Gemini fallback...`);
+    errors.push(msg);
   }
-  
+
   // Fallback: Gemini - no enhanced features
   if (hasGemini) {
     const geminiResult = await transcribeWithGemini(audioPath, audioDuration, languageHint);
-    if (geminiResult.length > 0) {
+    if (geminiResult !== null) {
       aiLogger.info(`Transcription successful with Gemini: ${geminiResult.length} segments extracted`);
       return { segments: geminiResult };
     }
+    errors.push("Gemini transcription failed");
   }
-  
-  aiLogger.error("All transcription methods failed. No segments extracted from audio.");
-  return { segments: [] };
+
+  const errorMessage = `All transcription methods failed. Errors: ${errors.join("; ")}`;
+  aiLogger.error(errorMessage);
+  throw new Error(errorMessage);
 }
 
 /**

@@ -1,9 +1,10 @@
 import { useCallback, useRef } from "react";
 import { useSSE } from "./useSSE";
 import { CLIENT_CONFIG } from "@/lib/config";
+import type { ProcessingStatus } from "@shared/schema";
 
 interface RenderSSECallbacks {
-  onStatusUpdate: (status: string) => void;
+  onStatusUpdate: (status: ProcessingStatus) => void;
   onActivity: (activity: { message: string; timestamp: number; details?: Record<string, unknown> }) => void;
   onComplete: (data: { outputPath: string; duration?: number; aiImageStats?: unknown }) => void;
   onError: (error: string, suggestion?: string) => void;
@@ -24,16 +25,16 @@ export function useRenderSSE(callbacks: RenderSSECallbacks): RenderSSEController
 
   const handleMessage = useCallback((data: unknown) => {
     const message = data as Record<string, unknown>;
-    
+
     // Helper to close connection after terminal events
     const closeConnection = () => {
       if (closeRef.current) {
         closeRef.current();
       }
     };
-    
+
     if (message.type === "status") {
-      callbacksRef.current.onStatusUpdate(message.status as string);
+      callbacksRef.current.onStatusUpdate(message.status as ProcessingStatus);
     } else if (message.type === "activity") {
       callbacksRef.current.onActivity({
         message: message.message as string,

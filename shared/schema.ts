@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, varchar, serial, integer, timestamp, jsonb, pgEnum, index } from "drizzle-orm/pg-core";
+import { conversations, messages } from "./models/chat";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -584,7 +585,7 @@ const genreValues = [
   "tutorial", "vlog", "interview", "presentation", "documentary",
   "spiritual", "educational", "entertainment", "tech", "lifestyle",
   "gaming", "music", "news", "review", "motivational", "advertisement",
-  "promotional", "commercial", "product", "finance", "business", 
+  "promotional", "commercial", "product", "finance", "business",
   "cooking", "fitness", "travel", "comedy", "drama", "other"
 ] as const;
 
@@ -927,15 +928,20 @@ export const aiReviewResultSchema = z.object({
 
 export type AiReviewResult = z.infer<typeof aiReviewResultSchema>;
 
+// Size limits for arrays to prevent DoS attacks from malicious payloads
+const MAX_TRANSCRIPT_SEGMENTS = 10000; // Max ~3 hours of content at 1 segment/second
+const MAX_EDIT_ACTIONS = 5000;
+const MAX_MEDIA_ITEMS = 500;
+
 export const reviewDataSchema = z.object({
-  transcript: z.array(reviewTranscriptSegmentSchema),
+  transcript: z.array(reviewTranscriptSegmentSchema).max(MAX_TRANSCRIPT_SEGMENTS),
   editPlan: z.object({
-    actions: z.array(reviewEditActionSchema),
+    actions: z.array(reviewEditActionSchema).max(MAX_EDIT_ACTIONS),
     estimatedDuration: coercedNumber().optional(),
     originalDuration: coercedNumber().optional(),
   }),
-  stockMedia: z.array(reviewMediaItemSchema),
-  aiImages: z.array(reviewMediaItemSchema),
+  stockMedia: z.array(reviewMediaItemSchema).max(MAX_MEDIA_ITEMS),
+  aiImages: z.array(reviewMediaItemSchema).max(MAX_MEDIA_ITEMS),
   summary: z.object({
     originalDuration: coercedNumber(),
     estimatedFinalDuration: coercedNumber(),
@@ -945,7 +951,7 @@ export const reviewDataSchema = z.object({
     totalAiImages: coercedNumber(),
   }),
   userApproved: z.boolean().default(false),
-  userNotes: z.string().optional(),
+  userNotes: z.string().max(10000).optional(), // Limit notes to 10KB
   editOptions: editOptionsSchema.optional(),
   aiReview: aiReviewResultSchema.optional(),
   // Post-render self-review (persisted by background processor)
@@ -954,3 +960,6 @@ export const reviewDataSchema = z.object({
 });
 
 export type ReviewData = z.infer<typeof reviewDataSchema>;
+
+// Export chat models for use in storage and routes
+export { conversations, messages };

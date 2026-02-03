@@ -15,6 +15,7 @@ import {
   type OptimizedBrollPlan,
   type ReviewedEditPlan,
   type ConsolidatedAnalysisResult,
+  safeJsonParse,
 } from "./editPlanningPasses";
 import { getLearningContext, retrievePatterns, applyLearnedPreferences } from "./learningSystem";
 import type {
@@ -214,7 +215,7 @@ function getEditStyleGuidance(context?: VideoContext): string {
 - Balance between information and engagement`,
   };
 
-  return styleGuides[context.genre] || 
+  return styleGuides[context.genre] ||
     `For ${context.genre} content with ${context.tone} tone and ${context.pacing} pacing:
 - Match editing style to content energy
 - Use contextually appropriate B-roll
@@ -223,52 +224,52 @@ function getEditStyleGuidance(context?: VideoContext): string {
 }
 
 export function validateAndFixBrollActions(
-  actions: EditAction[], 
+  actions: EditAction[],
   duration: number,
   transcript?: TranscriptSegment[]
 ): EditAction[] {
   // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
   const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
-  
+
   // Helper to find transcript text at a given timestamp
   const findTranscriptText = (start: number, end: number): string | null => {
     if (!transcript || transcript.length === 0) return null;
-    
+
     // Find transcript segments that overlap with the given time range
-    const overlapping = transcript.filter(seg => 
+    const overlapping = transcript.filter(seg =>
       seg.start < end && seg.end > start
     );
-    
+
     if (overlapping.length === 0) return null;
-    
+
     return overlapping.map(seg => seg.text).join(' ').trim();
   };
-  
+
   // First, validate all actions for basic timestamp integrity
   const sanitizedActions: EditAction[] = [];
-  
+
   for (const action of actions) {
     // Validate and fix cut/keep actions
     if (action.type === "cut" || action.type === "keep") {
       let start = action.start;
       let end = action.end;
-      
+
       // Skip actions with missing or invalid timestamps
       if (start === undefined || end === undefined) {
         aiLogger.debug(`Skipping ${action.type} action with missing timestamps`);
         continue;
       }
-      
+
       // Ensure timestamps are finite numbers
       if (!Number.isFinite(start) || !Number.isFinite(end)) {
         aiLogger.debug(`Skipping ${action.type} action with invalid timestamps: start=${start}, end=${end}`);
         continue;
       }
-      
+
       // Ensure non-negative
       start = Math.max(0, start);
       end = Math.max(0, end);
-      
+
       // Ensure start < end (swap if needed)
       if (start >= end) {
         if (start === end) {
@@ -279,14 +280,14 @@ export function validateAndFixBrollActions(
         [start, end] = [end, start];
         aiLogger.debug(`Swapped ${action.type} action timestamps: ${action.start}s-${action.end}s -> ${start}s-${end}s`);
       }
-      
+
       // Clamp to video duration
       end = Math.min(end, validDuration);
       if (start >= validDuration) {
         aiLogger.debug(`Skipping ${action.type} action starting after video end (${start}s > ${validDuration}s)`);
         continue;
       }
-      
+
       sanitizedActions.push({
         ...action,
         start,
@@ -296,26 +297,26 @@ export function validateAndFixBrollActions(
       // Validate AI image actions
       let start = action.start ?? 0;
       let actionDuration = action.duration ?? 3;
-      
+
       // Ensure timestamps are finite
       if (!Number.isFinite(start)) start = 0;
       if (!Number.isFinite(actionDuration)) actionDuration = 3;
-      
+
       // Ensure non-negative
       start = Math.max(0, start);
       actionDuration = Math.max(0.5, Math.min(actionDuration, 10)); // 0.5-10 seconds
-      
+
       // Ensure within video bounds
       if (start >= validDuration) {
         aiLogger.debug(`Skipping AI image action starting after video end (${start}s > ${validDuration}s)`);
         continue;
       }
-      
+
       // Clamp duration to fit within video
       if (start + actionDuration > validDuration) {
         actionDuration = Math.max(0.5, validDuration - start);
       }
-      
+
       sanitizedActions.push({
         ...action,
         start,
@@ -325,25 +326,25 @@ export function validateAndFixBrollActions(
       // Validate caption actions
       let start = action.start ?? 0;
       let end = action.end ?? (start + 3);
-      
+
       // Ensure timestamps are finite
       if (!Number.isFinite(start)) start = 0;
       if (!Number.isFinite(end)) end = start + 3;
-      
+
       // Ensure non-negative and proper ordering
       start = Math.max(0, start);
       end = Math.max(start + 0.1, end);
-      
+
       // Clamp to video duration
       end = Math.min(end, validDuration);
       if (start >= validDuration) {
         aiLogger.debug(`Skipping caption action starting after video end`);
         continue;
       }
-      
+
       // Ensure caption has text - use text, transcriptContext, or derive from transcript
       let captionText = action.text || action.transcriptContext;
-      
+
       // If no text provided, try to derive from transcript at this timestamp
       if (!captionText && transcript) {
         const derivedText = findTranscriptText(start, end);
@@ -352,13 +353,13 @@ export function validateAndFixBrollActions(
           aiLogger.debug(`Derived caption text from transcript at ${start}s: "${derivedText.substring(0, 50)}..."`);
         }
       }
-      
+
       if (!captionText) {
         // Caption without text is useless - skip it
         aiLogger.debug(`Skipping caption action at ${start}s: no text available`);
         continue;
       }
-      
+
       sanitizedActions.push({
         ...action,
         start,
@@ -369,26 +370,26 @@ export function validateAndFixBrollActions(
       // Validate text overlay actions
       let start = action.start ?? 0;
       let actionDuration = action.duration ?? 3;
-      
+
       // Ensure timestamps are finite
       if (!Number.isFinite(start)) start = 0;
       if (!Number.isFinite(actionDuration)) actionDuration = 3;
-      
+
       // Ensure non-negative
       start = Math.max(0, start);
       actionDuration = Math.max(0.5, Math.min(actionDuration, 30)); // 0.5-30 seconds
-      
+
       // Ensure within video bounds
       if (start >= validDuration) {
         aiLogger.debug(`Skipping text overlay action starting after video end`);
         continue;
       }
-      
+
       // Clamp duration to fit within video
       if (start + actionDuration > validDuration) {
         actionDuration = Math.max(0.5, validDuration - start);
       }
-      
+
       sanitizedActions.push({
         ...action,
         start,
@@ -398,21 +399,21 @@ export function validateAndFixBrollActions(
       // Validate transition actions
       let timestamp = action.timestamp ?? 0;
       let actionDuration = action.duration ?? 0.5;
-      
+
       // Ensure timestamps are finite
       if (!Number.isFinite(timestamp)) timestamp = 0;
       if (!Number.isFinite(actionDuration)) actionDuration = 0.5;
-      
+
       // Ensure non-negative
       timestamp = Math.max(0, timestamp);
       actionDuration = Math.max(0.1, Math.min(actionDuration, 2)); // 0.1-2 seconds
-      
+
       // Ensure within video bounds
       if (timestamp >= validDuration) {
         aiLogger.debug(`Skipping transition action at timestamp after video end`);
         continue;
       }
-      
+
       sanitizedActions.push({
         ...action,
         timestamp,
@@ -423,29 +424,29 @@ export function validateAndFixBrollActions(
       sanitizedActions.push(action);
     }
   }
-  
+
   // Now process B-roll actions specifically
   const brollActions = sanitizedActions.filter(a => a.type === "insert_stock");
   const otherActions = sanitizedActions.filter(a => a.type !== "insert_stock");
-  
+
   const brollWithTiming = brollActions.map((a, index) => ({
     ...a,
     start: a.start ?? (index * 10),
   }));
-  
+
   brollWithTiming.sort((a, b) => (a.start || 0) - (b.start || 0));
-  
+
   const validatedBroll: EditAction[] = [];
   let lastEnd = -3;
-  
+
   for (const action of brollWithTiming) {
     const start = Math.max(0, action.start || 0);
     const actionDuration = action.duration || 4;
-    
+
     // Check: must be 3+ seconds after last B-roll AND before video end
     const hasGap = start >= lastEnd + 3;
     const beforeEnd = start < validDuration - 1;
-    
+
     if (hasGap && beforeEnd) {
       validatedBroll.push({
         ...action,
@@ -457,7 +458,7 @@ export function validateAndFixBrollActions(
       aiLogger.debug(`Skipping B-roll at ${start}s: hasGap=${hasGap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, videoDuration=${validDuration}s)`);
     }
   }
-  
+
   return [...otherActions, ...validatedBroll];
 }
 
@@ -469,15 +470,15 @@ export async function generateEditPlan(
 ): Promise<EditPlan> {
   const contextInfo = analysis.context;
   const editStyleGuidance = getEditStyleGuidance(contextInfo);
-  
+
   const semanticBrollWindows = semanticAnalysis?.brollWindows || [];
   const extractedKeywords = semanticAnalysis?.extractedKeywords || [];
   const contentSummary = semanticAnalysis?.contentSummary || analysis.summary || "";
-  
+
   const videoDuration = analysis.duration;
   const pacingGuidance = getPacingGuidanceForDuration(videoDuration);
   const contentTypeGuidance = getContentTypeGuidance(contextInfo?.genre);
-  
+
   const systemPrompt = `You are an expert professional video editor with years of experience in ${contextInfo?.genre || "video"} content. Your task is to create a precise, intelligent edit plan that maximizes viewer engagement and attention while respecting the content's nature and purpose.
 
 VIDEO CONTEXT:
@@ -520,13 +521,13 @@ B-ROLL SEARCH QUERY GUIDELINES:
 - Match the video's tone: ${contextInfo?.tone || "casual"}
 - For ${contextInfo?.genre || "general"} content, prefer: ${getBrollStyleHint(contextInfo?.genre)}`;
 
-  const brollOppsSummary = semanticBrollWindows.length > 0 
-    ? semanticBrollWindows.map(b => 
-        `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.suggestedQuery}" (${b.priority} priority)`
-      ).join("\n")
-    : analysis.brollOpportunities?.slice(0, 5).map(b => 
-        `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.query}" (${b.priority} priority)`
-      ).join("\n") || "No specific opportunities identified";
+  const brollOppsSummary = semanticBrollWindows.length > 0
+    ? semanticBrollWindows.map(b =>
+      `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.suggestedQuery}" (${b.priority} priority)`
+    ).join("\n")
+    : analysis.brollOpportunities?.slice(0, 5).map(b =>
+      `  - ${b.start.toFixed(1)}s-${b.end.toFixed(1)}s: "${b.query}" (${b.priority} priority)`
+    ).join("\n") || "No specific opportunities identified";
 
   const topicsSummary = analysis.topicSegments?.map(t =>
     `  - ${t.start.toFixed(1)}s-${t.end.toFixed(1)}s: ${t.topic} (${t.importance || "medium"} importance)`
@@ -600,14 +601,13 @@ Respond with a JSON object only (no markdown):
     () => getGeminiClient().models.generateContent({
       model: AI_CONFIG.models.editPlanning,
       contents: [{ role: "user", parts: [{ text: systemPrompt + "\n\n" + userPrompt }] }],
+      config: { responseMimeType: "application/json" },
     }),
     "generateEditPlan",
     AI_RETRY_OPTIONS
   );
 
   const text = response.text || "";
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  
   const fallbackPlan = (): EditPlan => {
     const keepAction: EditAction = {
       type: "keep",
@@ -617,19 +617,19 @@ Respond with a JSON object only (no markdown):
     };
     return { actions: [keepAction], estimatedDuration: analysis.duration };
   };
-  
-  if (!jsonMatch) {
-    aiLogger.warn("No JSON found in AI response for edit plan");
+
+  const parsed = safeJsonParse(text, aiLogger);
+  if (!parsed) {
+    aiLogger.warn("Failed to parse edit plan (invalid JSON), using fallback");
     return fallbackPlan();
   }
 
-  let parsed: z.infer<typeof EditPlanResponseSchema>;
   try {
-    parsed = JSON.parse(jsonMatch[0]) as z.infer<typeof EditPlanResponseSchema>;
     EditPlanResponseSchema.safeParse(parsed);
   } catch (parseError) {
-    aiLogger.warn("JSON parse error in edit plan:", parseError);
-    return fallbackPlan();
+    aiLogger.warn("Schema validation unexpected error:", parseError);
+    // schema failure is handled below by accessing props safely?
+    // Actually safeJsonParse returns any. usage below checks props.
   }
 
   if (!parsed.actions || !Array.isArray(parsed.actions)) {
@@ -700,7 +700,7 @@ export async function generateSmartEditPlan(
 ): Promise<EditPlan> {
   aiLogger.info("Starting optimized smart edit planning (2-pass consolidated approach)...");
   const startTime = Date.now();
-  
+
   // Log rich context availability
   if (enhancedTranscript) {
     const richDataSources: string[] = [];
@@ -741,7 +741,7 @@ export async function generateSmartEditPlan(
   } catch (consolidatedError) {
     // Fallback to sequential passes if consolidated fails
     aiLogger.warn("Consolidated analysis failed, falling back to sequential passes:", consolidatedError);
-    
+
     aiLogger.info("Pass 1: Analyzing video structure...");
     structuredPlan = await executePass1StructureAnalysis(analysis, transcript, semanticAnalysis);
     aiLogger.debug(`Pass 1 complete: ${structuredPlan.narrativeArc} structure with ${structuredPlan.sectionMarkers.length} markers`);
@@ -761,10 +761,10 @@ export async function generateSmartEditPlan(
 
   aiLogger.info("Final Pass: Quality review and refinement...");
   let reviewedPlan;
-  
+
   // Enhance prompt with learning context from successful past edits
   const enhancedPrompt = learningContext ? `${prompt}${learningContext}` : prompt;
-  
+
   try {
     reviewedPlan = await executePass4QualityReview(
       analysis, structuredPlan, qualityMap, brollPlan, enhancedPrompt
@@ -780,11 +780,11 @@ export async function generateSmartEditPlan(
         stockQuery: p.query,
         mediaType: "video" as const
       })),
-      qualityMetrics: { 
-        overallScore: 70, 
-        narrativeFlow: "medium", 
+      qualityMetrics: {
+        overallScore: 70,
+        narrativeFlow: "medium",
         pacing: "moderate",
-        brollRelevance: "medium" 
+        brollRelevance: "medium"
       },
       warnings: ["Final pass refinement failed"]
     };
@@ -795,13 +795,13 @@ export async function generateSmartEditPlan(
   const elapsedTime = Date.now() - startTime;
   aiLogger.info(`Multi-pass smart edit planning complete in ${elapsedTime}ms`);
 
-    const stockQueriesSet = new Set<string>();
-    reviewedPlan.actions.forEach(a => {
-      if (a.type === "insert_stock" && (a as any).stockQuery) {
-        stockQueriesSet.add((a as any).stockQuery);
-      }
-    });
-    const stockQueries = Array.from(stockQueriesSet);
+  const stockQueriesSet = new Set<string>();
+  reviewedPlan.actions.forEach(a => {
+    if (a.type === "insert_stock" && (a as any).stockQuery) {
+      stockQueriesSet.add((a as any).stockQuery);
+    }
+  });
+  const stockQueries = Array.from(stockQueriesSet);
 
   const keyPoints = [
     ...(structuredPlan.sectionMarkers?.filter(m => m.type === "climax" || m.type === "section_change").map(m => m.description) || []),

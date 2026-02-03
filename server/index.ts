@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { createWriteStream } from "fs";
 
 // Optional: Tee logs to file when LOG_FILE is set (helps debug crashes)

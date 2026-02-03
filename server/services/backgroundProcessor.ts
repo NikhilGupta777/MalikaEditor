@@ -1,6 +1,8 @@
 import { storage } from "../storage";
+import { fileStorage, generateFileKey } from "./fileStorage";
 import { getVideoMetadata, extractFrames, extractAudio, detectSilence, applyEdits } from "./videoProcessor";
 import { analyzeVideoDeep, generateSmartEditPlan, transcribeAudioEnhanced, detectFillerWords } from "./ai";
+import { performPreRenderReview } from "./ai/preRenderReview";
 import { performPostRenderSelfReview } from "./ai/postRenderReview";
 import { arbitrateReviewConflicts } from "./ai/arbitration";
 import { generateAiImagesForVideo } from "./ai/imageGeneration";
@@ -129,13 +131,11 @@ process.on("uncaughtException", async (err) => {
 let staleJobCleanupInterval: NodeJS.Timeout | null = null;
 
 // Periodically clean up stale jobs that have been running too long
-function startStaleJobCleanup(): void {
-  if (staleJobCleanupInterval) return; // Already started
+async function cleanupStaleJobs(): Promise<void> {
+  const now = Date.now();
+  let cleanedCount = 0;
 
-  staleJobCleanupInterval = setInterval(() => {
-    const now = Date.now();
-    let cleanedCount = 0;
-
+  try {
     // First: Clean up stale locks (use Array.from for compatibility)
     for (const [projectId, lock] of Array.from(processingLocks.entries())) {
       if (lock.acquired && now - lock.timestamp > LOCK_TIMEOUT_MS) {
@@ -154,7 +154,7 @@ function startStaleJobCleanup(): void {
           processorLogger.warn(`Force-cleaned stale processing job ${projectId} after ${LOCK_TIMEOUT_MS}ms`);
 
           // Update storage
-          storage.updateVideoProject(projectId, {
+          await storage.updateVideoProject(projectId, {
             status: "failed",
             errorMessage: "Processing timed out. Please retry with a shorter video.",
           }).catch((err) => {
@@ -185,7 +185,7 @@ function startStaleJobCleanup(): void {
               onJobCompleteCallback(projectId);
             }
 
-            storage.updateVideoProject(projectId, {
+            await storage.updateVideoProject(projectId, {
               status: "failed",
               errorMessage: "Processing state lost. Please retry.",
             }).catch((err) => {
@@ -199,7 +199,24 @@ function startStaleJobCleanup(): void {
     if (cleanedCount > 0) {
       processorLogger.info(`Stale job cleanup: cleaned ${cleanedCount} stale locks/jobs`);
     }
-  }, STALE_JOB_CLEANUP_INTERVAL_MS);
+  } catch (error) {
+    processorLogger.error("Error during stale job cleanup:", error);
+  }
+
+  // Schedule next cleanup
+  if (staleJobCleanupInterval !== null) { // Only schedule if not stopped
+    staleJobCleanupInterval = setTimeout(cleanupStaleJobs, STALE_JOB_CLEANUP_INTERVAL_MS);
+  }
+}
+
+function startStaleJobCleanup(): void {
+  if (staleJobCleanupInterval) return; // Already started
+  // Use a dummy timeout initially to signal it's active, effectively "started"
+  // The actual loop starts immediately
+  staleJobCleanupInterval = setTimeout(cleanupStaleJobs, STALE_JOB_CLEANUP_INTERVAL_MS);
+
+  // Also run once immediately on startup (after a slight delay to let things settle)
+  setTimeout(cleanupStaleJobs, 10000);
 }
 
 /**
@@ -208,7 +225,7 @@ function startStaleJobCleanup(): void {
  */
 export function stopStaleJobCleanup(): void {
   if (staleJobCleanupInterval) {
-    clearInterval(staleJobCleanupInterval);
+    clearTimeout(staleJobCleanupInterval);
     staleJobCleanupInterval = null;
   }
 }
@@ -322,11 +339,20 @@ function determineResumeStage(project: any): ProcessingStage {
 }
 
 // Resume processing from a specific stage
-async function resumeProcessing(projectId: number, prompt: string, resumeFromStage: ProcessingStage): Promise<void> {
+async function resumeProcessing(projectId: number, prompt: string, resumeFromStage: ProcessingStage, retryCount = 0): Promise<void> {
+  const MAX_RESUME_RETRIES = 5;
+
   if (!canStartNewJob()) {
-    processorLogger.warn(`Cannot resume project ${projectId}: max concurrent jobs reached, will retry later`);
-    // Retry in 30 seconds
-    setTimeout(() => resumeProcessing(projectId, prompt, resumeFromStage), 30000);
+    if (retryCount >= MAX_RESUME_RETRIES) {
+      processorLogger.warn(`Cannot resume project ${projectId}: max concurrent jobs reached and max retries (${MAX_RESUME_RETRIES}) exceeded.`);
+      // Optionally mark as failed or just leave it for next server restart / user action
+      return;
+    }
+
+    processorLogger.warn(`Cannot resume project ${projectId}: max concurrent jobs reached, will retry later (Attempt ${retryCount + 1}/${MAX_RESUME_RETRIES})`);
+    // Backoff strategy: 30s, 60s, 90s...
+    const delay = 30000 * (retryCount + 1);
+    setTimeout(() => resumeProcessing(projectId, prompt, resumeFromStage, retryCount + 1), delay);
     return;
   }
 
@@ -360,13 +386,19 @@ async function resumeProcessing(projectId: number, prompt: string, resumeFromSta
   }
 
   // Infer edit options from existing data or use defaults
-  const editOptions: EditOptionsType = {
+  // Initialize with safe defaults, then try to load from project if saved
+  let editOptions: EditOptionsType = {
     addCaptions: true,
     addBroll: true,
     removeSilence: true,
     generateAiImages: true,
     addTransitions: true,
   };
+
+  // If project has reviewData, it might have editOptions
+  if (project.reviewData && (project.reviewData as any).editOptions) {
+    editOptions = { ...editOptions, ...(project.reviewData as any).editOptions };
+  }
 
   // Run the pipeline with the resume stage
   runProcessingPipeline(projectId, prompt, editOptions, resumeFromStage).catch((error: Error) => {
@@ -665,7 +697,7 @@ async function runProcessingPipeline(
       throw new Error("Project not found");
     }
 
-    const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
+    const videoPath = await fileStorage.getFilePath(project.originalPath);
 
     try {
       await fs.access(videoPath);
@@ -1093,6 +1125,7 @@ async function runProcessingPipeline(
     // Save checkpoint: media selection complete
     await updateProcessingStage(projectId, "media_selection");
 
+    // Construct review data first so we can pass it to the AI reviewer
     const reviewData: ReviewData = {
       transcript: transcript.map((t, i) => ({
         id: `transcript_${i}`,
@@ -1129,17 +1162,83 @@ async function runProcessingPipeline(
         originalDuration: metadata.duration,
         estimatedFinalDuration: editPlan.estimatedDuration || metadata.duration,
       },
-      userApproved: editOptions.autonomousMode === true, // Auto-approve in autonomous mode
+      userApproved: editOptions.autonomousMode === true, // Will be overridden if gating triggers
     };
 
-    // AUTONOMOUS MODE: Continue directly to rendering without stopping for user review
+    // Verify we have analysis before running pre-render review
+    let aiReviewFnResult;
+    try {
+      addActivity(projectId, "Performing pre-render AI review...");
+      // Ensure we have a valid VideoAnalysis object
+      // Cast to unknown first to avoid "neither type sufficiently overlaps" error
+      const validAnalysis = (analysis as any).semanticAnalysis ?
+        (analysis as unknown as import("@shared/schema").VideoAnalysis) :
+        (analysis as unknown as import("@shared/schema").VideoAnalysis); // Fallback to casting whatever we have, assuming it's structural enough
+
+      // Call with correct signature: (videoAnalysis, transcript, editPlan, reviewData, userPrompt)
+      aiReviewFnResult = await performPreRenderReview(
+        validAnalysis,
+        transcript,
+        editPlan,
+        reviewData,
+        prompt
+      );
+
+      addActivity(projectId, `Pre-render review complete: ${aiReviewFnResult.approved ? 'Approved' : 'Needs Review'} (Confidence: ${aiReviewFnResult.confidence}%)`);
+
+      // Attach result to reviewData
+      reviewData.aiReview = aiReviewFnResult;
+
+    } catch (err) {
+      processorLogger.error("Pre-render review failed:", err);
+      addActivity(projectId, "Pre-render review skipped (internal error)");
+      // Fallback: continue without review data
+    }
+
+    // AUTONOMOUS MODE: Continue directly to rendering (if approved)
     if (editOptions.autonomousMode) {
+      // GATING: Check if pre-render review allows autonomous proceeding
+      const isApproved = aiReviewFnResult?.approved === true;
+      const isHighConfidence = (aiReviewFnResult?.confidence || 0) >= 70;
+
+      if (!isApproved || !isHighConfidence) {
+        processorLogger.info(`[AUTONOMOUS] Gated: Pre-render review failed approval or confidence check. Falling back to manual review.`);
+        addActivity(projectId, `Autonomous mode halted: Quality check failed (Approved: ${isApproved}, Confidence: ${aiReviewFnResult?.confidence}%). Waiting for user review.`);
+
+        // Disable auto-approval flag since we are stopping
+        reviewData.userApproved = false; // Important: Force false so UI shows "Awaiting Review"
+
+        // Save review data and STOP here
+        await storage.updateVideoProject(projectId, {
+          reviewData,
+          status: "awaiting_review",
+          processingStage: "review_ready"
+        });
+
+        notifySubscribers(projectId, "processingComplete", {
+          status: "awaiting_review",
+          reviewData
+        });
+
+        await sendReviewReadyUpdate(projectId, {
+          totalCuts: reviewData.summary.totalCuts,
+          totalKeeps: reviewData.summary.totalKeeps,
+          totalBroll: reviewData.summary.totalBroll,
+          totalAiImages: reviewData.summary.totalAiImages
+        });
+
+        // Cleanup and exit the function (do not proceed to render)
+        cleanupJob(projectId);
+        return;
+      }
+
+      processorLogger.info(`[AUTONOMOUS] Pre-render review passed (Confidence: ${aiReviewFnResult?.confidence}%). Proceeding to render.`);
       processorLogger.info(`[AUTONOMOUS] Starting autonomous rendering pipeline for project ${projectId}`);
       addActivity(projectId, "Entering autonomous rendering and self-correction loop...");
 
       let currentEditPlan = editPlan;
       let currentStockMedia = stockMedia;
-      let currentReviewData = reviewData;
+      let currentReviewData = reviewData; // Use the one with aiReview included
       let renderAttempts = 0;
       const MAX_RENDER_ATTEMPTS = 2;
       let publicOutputPath = "";
@@ -1161,6 +1260,10 @@ async function runProcessingPipeline(
           generateAiImages: currentStockMedia.some(m => m.type === 'ai_generated'),
           addTransitions: editOptions.addTransitions,
         };
+
+        // Update status to rendering so UI reflects activity
+        await storage.updateVideoProject(projectId, { status: "rendering" });
+        notifySubscribers(projectId, "status", { status: "rendering" });
 
         const editResult = await applyEdits(
           videoPath,
@@ -1201,8 +1304,14 @@ async function runProcessingPipeline(
           addActivity(projectId, `Review result: Quality score ${selfReviewResult.overallScore}/100`);
 
           // ARBITRATION: Decide if correction is needed
+          // Ensure we pass the actual PreRenderReviewResult, not the whole ReviewData
+          if (!currentReviewData.aiReview) {
+            processorLogger.warn("[AUTONOMOUS] Missing pre-render review data for arbitration, skipping correction");
+            break;
+          }
+
           const arbitration = await arbitrateReviewConflicts(
-            currentReviewData as any,
+            { ...currentReviewData.aiReview, issues: currentReviewData.aiReview.issues || [], suggestions: currentReviewData.aiReview.suggestions || [], summary: currentReviewData.aiReview.summary || "" },
             selfReviewResult,
             currentEditPlan
           );
@@ -1646,7 +1755,17 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
 
   // Get output metadata
   const outputMetadata = await getVideoMetadata(editResult.outputPath);
-  const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
+  // For S3/Cloud compatibility, use the storage key as the public path base
+  // If it's a URL (S3), we might need to sign it or serve via proxy, but for now 
+  // we assume the storage key is the relative path from the storage root.
+  // However, the client expects a path it can fetch. 
+  // If using LocalStorage, output path is just filename.
+  // If using S3, we need to return the key.
+
+  // Fix: Use the storage key or construct path relative to output dir depending on storage type
+  const publicOutputPath = editResult.storageKey
+    ? `/output/${editResult.storageKey}` // Assumes a route handles /output/:key
+    : `/output/${path.basename(editResult.outputPath)}`;
 
   processorLogger.info(`[Background Render] Complete for project ${projectId}, output: ${publicOutputPath}`);
 

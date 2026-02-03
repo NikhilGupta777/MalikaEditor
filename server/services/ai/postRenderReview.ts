@@ -11,7 +11,7 @@ const selfReviewLogger = createLogger("ai-self-review");
 
 // Lower limit reduces OOM risk when uploading to Gemini (default 50MB ~ 2-3 min video)
 const MAX_VIDEO_SIZE_MB = Math.min(
-  parseInt(process.env.SELF_REVIEW_MAX_VIDEO_MB || "50", 10) || 50,
+  parseInt(process.env.SELF_REVIEW_MAX_VIDEO_MB || "100", 10) || 100,
   200
 );
 

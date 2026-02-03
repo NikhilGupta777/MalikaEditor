@@ -837,6 +837,7 @@ export const editPlanSchema = z.object({
 export type EditPlan = z.infer<typeof editPlanSchema>;
 
 export const stockMediaItemSchema = z.object({
+  id: z.string().optional(),
   type: normalizedEnum(["image", "video", "ai_generated"], normalizeStockMediaType),
   query: z.string(),
   url: z.string(),

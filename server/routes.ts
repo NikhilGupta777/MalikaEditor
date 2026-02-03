@@ -24,14 +24,15 @@ const booleanQueryParam = (defaultValue: boolean) =>
   });
 
 const processQuerySchema = z.object({
-  prompt: z.string().min(1, "Prompt is required"),
+  prompt: z.string().default("Edit this video professionally"),
   addCaptions: booleanQueryParam(true),
   addBroll: booleanQueryParam(true),
   removeSilence: booleanQueryParam(true),
   generateAiImages: booleanQueryParam(true),
   addTransitions: booleanQueryParam(false),
-  skipReview: booleanQueryParam(false),
+  skipReview: booleanQueryParam(false), // Maps to autonomousMode
   reconnect: booleanQueryParam(false),
+  lastEventId: z.string().optional(),
 });
 
 // Helper to format Zod errors for user-friendly 400 responses
@@ -553,7 +554,7 @@ export async function registerRoutes(
       return res.status(400).json({ error: formatZodError(queryResult.error) });
     }
 
-    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions, reconnect } = queryResult.data;
+    const { prompt, addCaptions, addBroll, removeSilence, generateAiImages, addTransitions, skipReview, reconnect } = queryResult.data;
 
     const editOptions = {
       addCaptions,
@@ -700,7 +701,7 @@ export async function registerRoutes(
       }
 
       routesLogger.info(`Starting background processing for project ${id}`);
-      startBackgroundProcessing(id, prompt, editOptions);
+      startBackgroundProcessing(id, prompt, { ...editOptions, autonomousMode: skipReview });
     } else if (jobAlreadyRunning) {
       // Job is running but this is not a reconnect - subscribe to updates
       routesLogger.info(`Subscribing to in-progress job for project ${id}`);
@@ -2029,7 +2030,13 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Project not found" });
       }
 
-      const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
+      let videoPath: string;
+      try {
+        videoPath = await fileStorage.getFilePath(project.originalPath);
+      } catch (error) {
+        routesLogger.error(`Failed to get video path for project ${id}:`, error);
+        return res.status(404).json({ error: "Video file not found" });
+      }
 
       try {
         await fs.access(videoPath);

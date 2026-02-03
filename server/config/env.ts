@@ -20,32 +20,34 @@ interface EnvVar {
 const envVars: EnvVar[] = [
   // Database
   { name: "DATABASE_URL", required: true, description: "PostgreSQL connection string" },
-  
+
   // Session and auth
   { name: "SESSION_SECRET", required: process.env.NODE_ENV === "production", description: "Session encryption secret (required in production)" },
   { name: "DEFAULT_ADMIN_USERNAME", required: false, description: "Default admin username for first-run setup" },
   { name: "DEFAULT_ADMIN_PASSWORD", required: false, description: "Default admin password (min 12 chars in production)" },
-  
+
   // AI Services
   { name: "ASSEMBLYAI_API_KEY", required: false, description: "AssemblyAI API key for transcription" },
   { name: "GEMINI_API_KEY", required: false, description: "Google Gemini API key for AI features" },
   { name: "GEMINI_VIDEO_ANALYSIS_API_KEY", required: false, description: "Gemini API key for video analysis" },
   { name: "OPENAI_API_KEY", required: false, description: "OpenAI API key for AI features" },
-  
+
   // Media services
   { name: "PEXELS_API_KEY", required: false, description: "Pexels API key for stock media" },
   { name: "FREEPIK_API_KEY", required: false, description: "Freepik API key for stock media" },
-  
+
   // Server config
   { name: "PORT", required: false, description: "Server port (defaults to 5000)" },
   { name: "NODE_ENV", required: false, description: "Environment: development or production" },
   { name: "LOG_FILE", required: false, description: "Optional file path to tee logs (helps debug crashes)" },
   { name: "SELF_REVIEW_MAX_VIDEO_MB", required: false, description: "Max video size (MB) for AI self-review (default 50, max 200)" },
-  
+
   // File storage
-  { name: "FILE_STORAGE_TYPE", required: false, description: "File storage type: 'local' or 'gcs' (default: local)" },
-  { name: "GCS_BUCKET_NAME", required: false, description: "Google Cloud Storage bucket name (required if FILE_STORAGE_TYPE=gcs)" },
-  { name: "GCS_PROJECT_ID", required: false, description: "Google Cloud project ID (optional)" },
+  { name: "FILE_STORAGE_TYPE", required: false, description: "File storage type: 'local' or 's3' (default: local)" },
+  { name: "S3_BUCKET_NAME", required: false, description: "S3 bucket name (required if FILE_STORAGE_TYPE=s3)" },
+  { name: "S3_REGION", required: false, description: "S3 region (required if FILE_STORAGE_TYPE=s3)" },
+  { name: "AWS_ACCESS_KEY_ID", required: false, description: "AWS Access Key ID (required if FILE_STORAGE_TYPE=s3)" },
+  { name: "AWS_SECRET_ACCESS_KEY", required: false, description: "AWS Secret Access Key (required if FILE_STORAGE_TYPE=s3)" },
   { name: "UPLOADS_PATH", required: false, description: "Local uploads directory path (default: system temp)" },
 ];
 
@@ -62,10 +64,10 @@ interface ValidationResult {
 export function validateEnv(): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
-  
+
   for (const envVar of envVars) {
     const value = process.env[envVar.name];
-    
+
     if (!value) {
       if (envVar.required) {
         errors.push(`Missing required env var: ${envVar.name} - ${envVar.description}`);
@@ -75,13 +77,13 @@ export function validateEnv(): ValidationResult {
       }
       continue;
     }
-    
+
     // Run custom validator if provided
     if (envVar.validate && !envVar.validate(value)) {
       errors.push(`Invalid value for ${envVar.name}: validation failed`);
     }
   }
-  
+
   return {
     valid: errors.length === 0,
     errors,
@@ -95,22 +97,22 @@ export function validateEnv(): ValidationResult {
  */
 export function validateEnvAtStartup(strict = false): void {
   const result = validateEnv();
-  
+
   // Log warnings
   for (const warning of result.warnings) {
     logger.warn(warning);
   }
-  
+
   // Log errors
   for (const error of result.errors) {
     logger.error(error);
   }
-  
+
   // In strict mode, fail startup on errors
   if (strict && !result.valid) {
     throw new Error(`Environment validation failed: ${result.errors.join("; ")}`);
   }
-  
+
   if (result.valid && result.warnings.length === 0) {
     logger.info("Environment validation passed");
   } else if (result.valid) {

@@ -18,6 +18,7 @@ import {
   type ConsolidatedAnalysisResult,
   safeJsonParse,
 } from "./editPlanningPasses";
+import { getFeedbackContextForPlanning } from "./preRenderReview";
 import { getLearningContext, retrievePatterns, applyLearnedPreferences } from "./learningSystem";
 import { type ArbitrationResult } from "./arbitration";
 import type {
@@ -478,6 +479,9 @@ export async function generateEditPlan(
   const extractedKeywords = semanticAnalysis?.extractedKeywords || [];
   const contentSummary = semanticAnalysis?.contentSummary || analysis.summary || "";
 
+  // Inject historical user feedback to improve plan
+  const feedbackContext = getFeedbackContextForPlanning();
+
   const videoDuration = analysis.duration;
   const pacingGuidance = getPacingGuidanceForDuration(videoDuration);
   const contentTypeGuidance = getContentTypeGuidance(contextInfo?.genre);
@@ -499,6 +503,9 @@ ${contentTypeGuidance}
 
 ${editStyleGuidance}
 
+USER FEEDBACK HISTORY (LEARN FROM THIS):
+${feedbackContext}
+ 
 CRITICAL EDITING RULES:
 1. NEVER cut in the middle of a sentence - always find natural pause points between sentences or clauses
 2. When cutting, identify sentence boundaries using punctuation and natural speech pauses

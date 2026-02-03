@@ -148,6 +148,8 @@ const allowedOrigins = [
   /\.replit\.dev$/,
   /\.repl\.co$/,
   /\.replit\.app$/,
+  // Railway domains
+  /\.up\.railway\.app$/,
 ];
 
 const isProduction = process.env.NODE_ENV === "production";

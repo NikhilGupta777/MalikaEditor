@@ -9,6 +9,7 @@ import axios from "axios";
 import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem, SemanticAnalysis } from "@shared/schema";
 import { createLogger } from "../utils/logger";
 import { AI_CONFIG } from "../config/ai";
+import { fileStorage, generateFileKey } from "./fileStorage";
 
 export interface ChapterInfo {
   title: string;
@@ -1592,6 +1593,7 @@ async function applyAllBrollOverlays(
 
 export interface EditResult {
   outputPath: string;
+  storageKey?: string;
   aiImagesApplied: number;
   aiImagesSkipped: number;
   stockMediaApplied: number;
@@ -2675,8 +2677,22 @@ async function applyEditsInternal(
   videoLogger.info("=== APPLY EDITS COMPLETE (OVERLAY MODE) ===");
   videoLogger.info(`Final Stats: aiImagesApplied=${aiImagesApplied}, aiImagesSkipped=${aiImagesSkipped}, stockMediaApplied=${stockMediaApplied}, brollOverlays=${brollOverlays.length}`);
 
+  // Sync final output to persistent storage
+  let storageKey: string | undefined;
+  try {
+    storageKey = generateFileKey("output", path.basename(outputPath));
+    await fileStorage.uploadFile(outputPath, storageKey, {
+      contentType: "video/mp4",
+      originalName: path.basename(outputPath),
+    });
+    videoLogger.info(`Synced final output to storage: ${storageKey}`);
+  } catch (error) {
+    videoLogger.error("Failed to sync final output to storage:", error);
+  }
+
   return {
     outputPath,
+    storageKey,
     aiImagesApplied,
     aiImagesSkipped,
     stockMediaApplied,

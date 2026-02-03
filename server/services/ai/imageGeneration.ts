@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import { STOCK_DIR } from "../../config/paths";
+import { fileStorage } from "../fileStorage";
 
 const aiLogger = createLogger("ai-service");
 
@@ -109,6 +110,17 @@ export async function generateAiImage(
     const filePath = path.join(STOCK_DIR, filename);
 
     await fs.writeFile(filePath, buffer);
+
+    // Upload to persistent storage (if configured)
+    try {
+      await fileStorage.uploadFile(filePath, `stock/${filename}`, {
+        contentType: mimeType,
+        originalName: filename,
+      });
+      aiLogger.info(`Synced AI image to storage: stock/${filename}`);
+    } catch (storageError) {
+      aiLogger.warn(`Failed to sync AI image to storage (non-critical): ${storageError}`);
+    }
 
     aiLogger.debug(`AI image generated and saved: ${filePath}, size: ${(buffer.length / 1024).toFixed(1)}KB`);
 

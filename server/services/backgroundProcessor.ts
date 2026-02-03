@@ -1194,9 +1194,11 @@ async function runProcessingPipeline(
 
       // Get output metadata
       const outputMetadata = await getVideoMetadata(editResult.outputPath);
-      const publicOutputPath = `/ output / ${path.basename(editResult.outputPath)} `;
+      const publicOutputPath = editResult.storageKey
+        ? `/output/${editResult.storageKey.replace(/^output\//, "")}`
+        : `/output/${path.basename(editResult.outputPath)}`;
 
-      addActivity(projectId, `Final video: ${Math.round(outputMetadata.duration)} s`);
+      addActivity(projectId, `Final video: ${Math.round(outputMetadata.duration)}s`);
 
       // Perform AI self-review in background
       processorLogger.info(`[AUTONOMOUS] Starting self - review for project ${projectId}`);

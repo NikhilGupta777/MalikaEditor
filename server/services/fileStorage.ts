@@ -13,15 +13,25 @@
  */
 
 import { Storage, Bucket } from "@google-cloud/storage";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createLogger } from "../utils/logger";
 import { promises as fs } from "fs";
 import path from "path";
 import os from "os";
 import { v4 as uuidv4 } from "uuid";
+import { Readable } from "stream";
 
 const logger = createLogger("file-storage");
 
-export type StorageType = "local" | "gcs";
+export type StorageType = "local" | "gcs" | "s3";
 
 interface FileMetadata {
   contentType?: string;
@@ -42,17 +52,25 @@ interface FileStorageConfig {
   localBasePath?: string;
   gcsBucket?: string;
   gcsProjectId?: string;
+  s3Bucket?: string;
+  s3Region?: string;
+  awsAccessKeyId?: string;
+  awsSecretAccessKey?: string;
 }
 
 // Get configuration from environment
 function getConfig(): FileStorageConfig {
   const type = (process.env.FILE_STORAGE_TYPE || "local") as StorageType;
-  
+
   return {
     type,
     localBasePath: process.env.UPLOADS_PATH || os.tmpdir(),
     gcsBucket: process.env.GCS_BUCKET_NAME,
     gcsProjectId: process.env.GCS_PROJECT_ID,
+    s3Bucket: process.env.S3_BUCKET_NAME,
+    s3Region: process.env.S3_REGION || "us-east-1",
+    awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   };
 }
 
@@ -79,15 +97,15 @@ class LocalFileStorage {
     metadata?: FileMetadata
   ): Promise<StoredFile> {
     await this.ensureDirs();
-    
+
     const destDir = key.startsWith("output/") ? this.outputDir : this.uploadsDir;
     const fileName = path.basename(key);
     const destPath = path.join(destDir, fileName);
-    
+
     await fs.copyFile(localPath, destPath);
-    
+
     const stats = await fs.stat(destPath);
-    
+
     return {
       key,
       path: destPath,
@@ -104,7 +122,7 @@ class LocalFileStorage {
     const srcDir = key.startsWith("output/") ? this.outputDir : this.uploadsDir;
     const fileName = path.basename(key);
     const srcPath = path.join(srcDir, fileName);
-    
+
     await fs.copyFile(srcPath, destPath);
   }
 
@@ -166,7 +184,19 @@ class GCSFileStorage {
   private localCacheDir: string;
 
   constructor(bucketName: string, projectId?: string) {
-    this.storage = new Storage({ projectId });
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    let storageOptions: any = { projectId };
+
+    if (credentialsJson) {
+      try {
+        storageOptions.credentials = JSON.parse(credentialsJson);
+        logger.info("Using GCS credentials from environment variable");
+      } catch (error) {
+        logger.error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:", error);
+      }
+    }
+
+    this.storage = new Storage(storageOptions);
     this.bucketName = bucketName;
     this.bucket = this.storage.bucket(bucketName);
     this.localCacheDir = path.join(os.tmpdir(), "malika_gcs_cache");
@@ -184,9 +214,9 @@ class GCSFileStorage {
     metadata?: FileMetadata
   ): Promise<StoredFile> {
     await this.ensureDirs();
-    
+
     const gcsKey = key.startsWith("/") ? key.slice(1) : key;
-    
+
     try {
       await this.bucket.upload(localPath, {
         destination: gcsKey,
@@ -197,9 +227,9 @@ class GCSFileStorage {
           },
         },
       });
-      
+
       logger.info(`Uploaded file to GCS: ${gcsKey}`);
-      
+
       return {
         key: gcsKey,
         path: `gs://${this.bucketName}/${gcsKey}`,
@@ -215,7 +245,7 @@ class GCSFileStorage {
 
   async downloadFile(key: string, destPath: string): Promise<void> {
     const gcsKey = key.startsWith("/") ? key.slice(1) : key;
-    
+
     try {
       await this.bucket.file(gcsKey).download({ destination: destPath });
       logger.info(`Downloaded file from GCS: ${gcsKey} -> ${destPath}`);
@@ -227,7 +257,7 @@ class GCSFileStorage {
 
   async getFileUrl(key: string, expiresIn: number = 3600): Promise<string> {
     const gcsKey = key.startsWith("/") ? key.slice(1) : key;
-    
+
     try {
       const [signedUrl] = await this.bucket.file(gcsKey).getSignedUrl({
         action: "read",
@@ -243,13 +273,13 @@ class GCSFileStorage {
   async getFilePath(key: string): Promise<string> {
     // For GCS, we need to download to a local cache first
     await this.ensureDirs();
-    
+
     const gcsKey = key.startsWith("/") ? key.slice(1) : key;
     const localPath = path.join(this.localCacheDir, gcsKey);
-    
+
     // Create directory structure
     await fs.mkdir(path.dirname(localPath), { recursive: true });
-    
+
     // Check if already cached
     try {
       await fs.access(localPath);
@@ -263,11 +293,11 @@ class GCSFileStorage {
 
   async deleteFile(key: string): Promise<void> {
     const gcsKey = key.startsWith("/") ? key.slice(1) : key;
-    
+
     try {
       await this.bucket.file(gcsKey).delete();
       logger.info(`Deleted file from GCS: ${gcsKey}`);
-      
+
       // Also delete from local cache
       const localPath = path.join(this.localCacheDir, gcsKey);
       try {
@@ -284,7 +314,7 @@ class GCSFileStorage {
 
   async fileExists(key: string): Promise<boolean> {
     const gcsKey = key.startsWith("/") ? key.slice(1) : key;
-    
+
     try {
       const [exists] = await this.bucket.file(gcsKey).exists();
       return exists;
@@ -334,6 +364,213 @@ class GCSFileStorage {
   }
 }
 
+// AWS S3 Storage implementation
+class S3FileStorage {
+  private s3Client: S3Client;
+  private bucketName: string;
+  private localCacheDir: string;
+
+  constructor(bucketName: string, region: string, accessKeyId?: string, secretAccessKey?: string) {
+    const config: any = { region };
+
+    if (accessKeyId && secretAccessKey) {
+      config.credentials = {
+        accessKeyId,
+        secretAccessKey,
+      };
+      logger.info("Using S3 credentials from environment variables");
+    }
+
+    this.s3Client = new S3Client(config);
+    this.bucketName = bucketName;
+    this.localCacheDir = path.join(os.tmpdir(), "malika_s3_cache");
+  }
+
+  async ensureDirs(): Promise<void> {
+    await fs.mkdir(this.localCacheDir, { recursive: true });
+    await fs.mkdir(path.join(this.localCacheDir, "uploads"), { recursive: true });
+    await fs.mkdir(path.join(this.localCacheDir, "output"), { recursive: true });
+  }
+
+  async uploadFile(
+    localPath: string,
+    key: string,
+    metadata?: FileMetadata
+  ): Promise<StoredFile> {
+    await this.ensureDirs();
+
+    const s3Key = key.startsWith("/") ? key.slice(1) : key;
+    const fileContent = await fs.readFile(localPath);
+
+    try {
+      const command = new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: s3Key,
+        Body: fileContent,
+        ContentType: metadata?.contentType || "application/octet-stream",
+        Metadata: {
+          "original-name": metadata?.originalName || path.basename(localPath),
+        },
+      });
+
+      await this.s3Client.send(command);
+      logger.info(`Uploaded file to S3: ${s3Key}`);
+
+      return {
+        key: s3Key,
+        path: `s3://${this.bucketName}/${s3Key}`,
+        metadata: {
+          ...metadata,
+        },
+      };
+    } catch (error) {
+      logger.error(`Failed to upload to S3: ${error}`);
+      throw error;
+    }
+  }
+
+  async downloadFile(key: string, destPath: string): Promise<void> {
+    const s3Key = key.startsWith("/") ? key.slice(1) : key;
+
+    try {
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: s3Key,
+      });
+
+      const response = await this.s3Client.send(command);
+      const stream = response.Body as Readable;
+
+      if (!stream) {
+        throw new Error("Empty response body from S3");
+      }
+
+      const fileStream = await fs.open(destPath, "w");
+      for await (const chunk of stream) {
+        await fileStream.write(chunk);
+      }
+      await fileStream.close();
+
+      logger.info(`Downloaded file from S3: ${s3Key} -> ${destPath}`);
+    } catch (error) {
+      logger.error(`Failed to download from S3: ${error}`);
+      throw error;
+    }
+  }
+
+  async getFileUrl(key: string, expiresIn: number = 3600): Promise<string> {
+    const s3Key = key.startsWith("/") ? key.slice(1) : key;
+
+    try {
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: s3Key,
+      });
+      return await getSignedUrl(this.s3Client, command, { expiresIn });
+    } catch (error) {
+      logger.error(`Failed to get signed URL for S3: ${error}`);
+      throw error;
+    }
+  }
+
+  async getFilePath(key: string): Promise<string> {
+    await this.ensureDirs();
+
+    const s3Key = key.startsWith("/") ? key.slice(1) : key;
+    const localPath = path.join(this.localCacheDir, s3Key);
+
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+
+    try {
+      await fs.access(localPath);
+      return localPath;
+    } catch {
+      await this.downloadFile(key, localPath);
+      return localPath;
+    }
+  }
+
+  async deleteFile(key: string): Promise<void> {
+    const s3Key = key.startsWith("/") ? key.slice(1) : key;
+
+    try {
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: s3Key,
+      });
+      await this.s3Client.send(command);
+      logger.info(`Deleted file from S3: ${s3Key}`);
+
+      const localPath = path.join(this.localCacheDir, s3Key);
+      try {
+        await fs.unlink(localPath);
+      } catch {
+        // Ignore if not in cache
+      }
+    } catch (error: any) {
+      logger.error(`Failed to delete from S3: ${error}`);
+    }
+  }
+
+  async fileExists(key: string): Promise<boolean> {
+    const s3Key = key.startsWith("/") ? key.slice(1) : key;
+
+    try {
+      const command = new HeadObjectCommand({
+        Bucket: this.bucketName,
+        Key: s3Key,
+      });
+      await this.s3Client.send(command);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async listFiles(prefix: string): Promise<string[]> {
+    try {
+      const command = new ListObjectsV2Command({
+        Bucket: this.bucketName,
+        Prefix: prefix,
+      });
+      const response = await this.s3Client.send(command);
+      return response.Contents?.map(c => c.Key || "").filter(Boolean) || [];
+    } catch {
+      return [];
+    }
+  }
+
+  getUploadsDir(): string {
+    return path.join(this.localCacheDir, "uploads");
+  }
+
+  getOutputDir(): string {
+    return path.join(this.localCacheDir, "output");
+  }
+
+  async clearCache(): Promise<number> {
+    let cleared = 0;
+    try {
+      const cacheFiles = await fs.readdir(this.localCacheDir, { recursive: true });
+      for (const file of cacheFiles) {
+        const fullPath = path.join(this.localCacheDir, file.toString());
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.isFile()) {
+            await fs.unlink(fullPath);
+            cleared++;
+          }
+        } catch {
+          // Ignore errors
+        }
+      }
+    } catch {
+      // Ignore errors
+    }
+    return cleared;
+  }
+}
+
 // Unified file storage interface
 export interface IFileStorage {
   uploadFile(localPath: string, key: string, metadata?: FileMetadata): Promise<StoredFile>;
@@ -351,17 +588,32 @@ export interface IFileStorage {
 // Create the appropriate storage instance based on config
 function createFileStorage(): IFileStorage {
   const config = getConfig();
-  
+
   if (config.type === "gcs") {
     if (!config.gcsBucket) {
       logger.warn("GCS_BUCKET_NAME not set, falling back to local storage");
       return new LocalFileStorage(config.localBasePath || os.tmpdir());
     }
-    
+
     logger.info(`Using Google Cloud Storage: ${config.gcsBucket}`);
     return new GCSFileStorage(config.gcsBucket, config.gcsProjectId);
   }
-  
+
+  if (config.type === "s3") {
+    if (!config.s3Bucket) {
+      logger.warn("S3_BUCKET_NAME not set, falling back to local storage");
+      return new LocalFileStorage(config.localBasePath || os.tmpdir());
+    }
+
+    logger.info(`Using AWS S3 Storage: ${config.s3Bucket}`);
+    return new S3FileStorage(
+      config.s3Bucket,
+      config.s3Region || "us-east-1",
+      config.awsAccessKeyId,
+      config.awsSecretAccessKey
+    );
+  }
+
   logger.info(`Using local file storage: ${config.localBasePath}`);
   return new LocalFileStorage(config.localBasePath || os.tmpdir());
 }

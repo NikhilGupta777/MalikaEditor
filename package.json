@@ -13,6 +13,8 @@
     "db:migrate": "tsx script/migrate.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.981.0",
+    "@aws-sdk/s3-request-presigner": "^3.981.0",
     "@google-cloud/storage": "^7.18.0",
     "@google/genai": "^1.38.0",
     "@hookform/resolvers": "^3.10.0",

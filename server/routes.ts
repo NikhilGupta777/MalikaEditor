@@ -113,6 +113,7 @@ import {
   retryProcessingFromStage,
   type RetryStage,
 } from "./services/backgroundProcessor";
+import { fileStorage, generateFileKey } from "./services/fileStorage";
 
 // Use unified slot management from backgroundProcessor
 function canStartProcessing(): boolean {
@@ -342,49 +343,39 @@ export async function registerRoutes(
   registerAuthRoutes(app);
 
   app.use("/uploads", async (req, res, next) => {
-    const filePath = getSecurePath(UPLOADS_DIR, req.path);
-    if (!filePath) {
-      return res.status(403).json({ error: "Access denied" });
-    }
+    const key = `uploads${req.path}`;
     try {
-      await fs.access(filePath);
-      const ext = path.extname(filePath).toLowerCase();
-      if (ext === '.mp4') {
-        res.setHeader("Content-Type", "video/mp4");
-      } else if (ext === '.webm') {
-        res.setHeader("Content-Type", "video/webm");
-      } else if (ext === '.mov') {
-        res.setHeader("Content-Type", "video/quicktime");
+      const url = await fileStorage.getFileUrl(key);
+      if (url.startsWith("http")) {
+        return res.redirect(url);
       }
-      res.sendFile(filePath);
+      res.sendFile(url);
     } catch {
       next();
     }
   });
 
   app.use("/output", async (req, res, next) => {
-    const filePath = getSecurePath(OUTPUT_DIR, req.path);
-    if (!filePath) {
-      return res.status(403).json({ error: "Access denied" });
-    }
+    const key = `output${req.path}`;
     try {
-      await fs.access(filePath);
-      res.setHeader("Content-Type", "video/mp4");
-      res.sendFile(filePath);
+      const url = await fileStorage.getFileUrl(key);
+      if (url.startsWith("http")) {
+        return res.redirect(url);
+      }
+      res.sendFile(url);
     } catch {
       next();
     }
   });
 
   app.use("/stock", async (req, res, next) => {
-    const filePath = getSecurePath(STOCK_DIR, req.path);
-    if (!filePath) {
-      return res.status(403).json({ error: "Access denied" });
-    }
+    const key = `stock${req.path}`;
     try {
-      await fs.access(filePath);
-      // Let express determine content type based on extension
-      res.sendFile(filePath);
+      const url = await fileStorage.getFileUrl(key);
+      if (url.startsWith("http")) {
+        return res.redirect(url);
+      }
+      res.sendFile(url);
     } catch {
       next();
     }
@@ -413,11 +404,21 @@ export async function registerRoutes(
 
         const metadata = await getVideoMetadata(filePath);
 
+        // Upload to persistent storage (if configured)
+        const storageKey = generateFileKey("uploads", req.file.originalname);
+        const storedFile = await fileStorage.uploadFile(filePath, storageKey, {
+          contentType: req.file.mimetype,
+          originalName: req.file.originalname,
+          size: req.file.size,
+        });
+
         // Check video duration limit (default: 30 minutes = 1800 seconds)
         const maxDurationSeconds = parseInt(process.env.MAX_VIDEO_DURATION_SECONDS || "1800", 10);
         if (metadata.duration > maxDurationSeconds) {
           // Clean up the uploaded file since it exceeds the limit
           await fs.unlink(filePath).catch(() => { });
+          await fileStorage.deleteFile(storageKey).catch(() => { });
+
           const maxMinutes = Math.floor(maxDurationSeconds / 60);
           const videoMinutes = Math.floor(metadata.duration / 60);
           const videoSeconds = Math.round(metadata.duration % 60);
@@ -428,7 +429,7 @@ export async function registerRoutes(
 
         const project = await storage.createVideoProject({
           fileName: req.file.originalname,
-          originalPath: `/uploads/${path.basename(filePath)}`,
+          originalPath: `/uploads/${storageKey.startsWith("uploads/") ? storageKey.slice(8) : storageKey}`,
           status: "pending",
           duration: Math.round(metadata.duration),
         });
@@ -567,15 +568,13 @@ export async function registerRoutes(
       return res.status(404).json({ error: "Project not found" });
     }
 
-    const videoPath = path.join(
-      UPLOADS_DIR,
-      path.basename(project.originalPath)
-    );
-
+    let videoPath: string;
     try {
-      await fs.access(videoPath);
-    } catch {
-      return res.status(404).json({ error: "Video file not found. Please re-upload your video." });
+      // getFilePath automatically downloads from GCS to local cache if needed
+      videoPath = await fileStorage.getFilePath(project.originalPath);
+    } catch (error) {
+      routesLogger.error(`Failed to get video path for project ${id}:`, error);
+      return res.status(404).json({ error: "Video file not found or could not be retrieved from cloud storage." });
     }
 
     // Setup SSE for real-time updates
@@ -1035,12 +1034,12 @@ export async function registerRoutes(
       }
     }
 
-    const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
-
+    let videoPath: string;
     try {
-      await fs.access(videoPath);
-    } catch {
-      return res.status(404).json({ error: "Video file not found. Please re-upload your video." });
+      videoPath = await fileStorage.getFilePath(project.originalPath);
+    } catch (error) {
+      routesLogger.error(`Failed to get video path for rendering project ${id}:`, error);
+      return res.status(404).json({ error: "Video file not found or could not be retrieved from cloud storage." });
     }
 
     // Set up SSE response
@@ -1347,7 +1346,9 @@ export async function registerRoutes(
 
       // Verify output
       const outputMetadata = await getVideoMetadata(editResult.outputPath);
-      const publicOutputPath = `/output/${path.basename(editResult.outputPath)}`;
+      const publicOutputPath = editResult.storageKey
+        ? `/output/${editResult.storageKey.replace(/^output\//, "")}`
+        : `/output/${path.basename(editResult.outputPath)}`;
 
       sendActivity(`Output video: ${Math.round(outputMetadata.duration)}s`);
       sendActivity("Video ready for download!");
@@ -1446,7 +1447,10 @@ export async function registerRoutes(
                 routesLogger.info(`[SelfReview] Re-render complete: ${correctedEditResult.outputPath}`);
 
                 // Update project with new output
-                const newPublicPath = `/output/${path.basename(correctedEditResult.outputPath)}`;
+                const newPublicPath = correctedEditResult.storageKey
+                  ? `/output/${correctedEditResult.storageKey.replace(/^output\//, "")}`
+                  : `/output/${path.basename(correctedEditResult.outputPath)}`;
+
                 await storage.updateVideoProject(projectIdForReview, {
                   outputPath: newPublicPath,
                 });

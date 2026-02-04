@@ -96,7 +96,8 @@ async function main() {
     log("Building Docker Image (Targeting Linux/AMD64)...");
     try {
         // Run docker build connecting stdio to parent to show progress
-        const buildProc = spawn("docker", ["build", "--platform", "linux/amd64", "-t", `${repoUri}:latest`, "."], { stdio: "inherit", shell: true });
+        // Use --progress=plain to prevent TTY hanging issues
+        const buildProc = spawn("docker", ["build", "--progress=plain", "--platform", "linux/amd64", "-t", `${repoUri}:latest`, "."], { stdio: "inherit", shell: true });
 
         await new Promise<void>((resolve, reject) => {
             buildProc.on('close', (code) => {

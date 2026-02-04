@@ -1,0 +1,55 @@
+name: Deploy to AWS ECR and App Runner
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: malika-editor
+  # APP_RUNNER_SERVICE: malika-editor-service # Uncomment if you want automatic deployment to App Runner later
+
+jobs:
+  deploy:
+    name: Build and Push
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: latest
+      run: |
+        # Build a docker container and push it to ECR so that it can be deployed to App Runner.
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    # Optional: Deploy to App Runner step
+    # Note: Requires creating the service in the portal first
+    # - name: Deploy to App Runner
+    #   id: deploy-app-runner
+    #   uses: awslabs/amazon-app-runner-deploy@main
+    #   with:
+    #     service: ${{ env.APP_RUNNER_SERVICE }}
+    #     image: ${{ steps.build-image.outputs.image }}
+    #     access-role-arn: ${{ secrets.APP_RUNNER_ROLE_ARN }}
+    #     region: ${{ env.AWS_REGION }}
+    #     cpu: 1
+    #     memory: 2
+    #     wait-for-service-stability-seconds: 600

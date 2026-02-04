@@ -1,9 +1,14 @@
-# Use Node.js 20 on Alpine Linux for a small footprint
-FROM node:20-alpine
+# Use Node.js 20 Slim (Debian-based) for better compatibility with native modules (bcrypt, sharp, etc.)
+# This avoids compiling from source (which is slow on Alpine)
+FROM node:20-slim
 
-# Install FFmpeg (Required for video processing)
-# python3/make/g++ required for some node_modules build (bcrypt, etc.)
-RUN apk add --no-cache ffmpeg python3 make g++
+# Install FFmpeg and python3/build-essential for any remaining native builds
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
@@ -11,20 +16,12 @@ WORKDIR /app
 # Copy package files first to leverage Docker cache
 COPY package*.json ./
 
-# Install dependencies (including devDependencies to build certain packages, then prune)
-RUN npm install
+# Install dependencies using npm ci (faster and more reliable than npm install)
+# builds all dependencies including devDependencies (needed for build scripts like tsx)
+RUN npm ci
 
 # Copy the rest of the application code
 COPY . .
-
-# Build the Typescript code (if you have a build script)
-# Or for this setup, we might run with tsx directly in production for simplicity
-# removing 'npm run build' if it just compiles TS to JS, unless we strictly want to run node dist/index.js
-# For stability with current setup, we'll keep using tsx or build if strictly defined. 
-# Looking at package.json, "build": "tsx script/build.ts" might do something specific.
-# Let's try to assume we run source with tsx for maximum compatibility with the current dev setup.
-# IF you prefer compiled:
-# RUN npm run build
 
 # Expose the API port
 EXPOSE 5000
@@ -34,6 +31,5 @@ ENV NODE_ENV=production
 ENV PORT=5000
 
 # Start command
-# Using tsx for direct execution as it handles ESM/TS paths gracefully
-# (Ensure tsx is installed or use npx)
+# Using tsx directly for simplicity as per original setup
 CMD ["npx", "tsx", "server/index.ts"]

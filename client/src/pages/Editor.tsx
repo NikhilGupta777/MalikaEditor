@@ -159,6 +159,22 @@ export default function Editor() {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const prevProjectIdRef = useRef<number | null>(null);
+
+  // Reset all project state when navigating to a different project
+  useEffect(() => {
+    if (projectIdFromUrl !== prevProjectIdRef.current) {
+      prevProjectIdRef.current = projectIdFromUrl;
+      setProject(null);
+      setPreviewUrl(null);
+      setReviewData(null);
+      setActivities([]);
+      setCurrentTime(0);
+      setIsRendering(false);
+      setMarkedReviewed(false);
+      setSourceFilesDeleted(false);
+    }
+  }, [projectIdFromUrl]);
 
   // SSE reconnection constants from centralized config
   const MAX_RECONNECT_ATTEMPTS = CLIENT_CONFIG.sse.maxReconnectAttempts;

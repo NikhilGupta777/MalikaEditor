@@ -903,13 +903,14 @@ export async function registerRoutes(
           }
         } catch { /* dir may not exist */ }
 
-        // Wipe temp working dirs: frames, audio, chapters
+        // Wipe temp working dirs: frames (has subdirs), audio, chapters
         for (const tempDir of [FRAMES_DIR, AUDIO_DIR, CHAPTERS_DIR]) {
           try {
-            const files = await fs.readdir(tempDir);
-            for (const f of files) {
+            const entries = await fs.readdir(tempDir);
+            for (const entry of entries) {
               try {
-                await fs.unlink(path.join(tempDir, f));
+                // Use recursive rm so subdirectories (e.g. frames/<uuid>/) are handled
+                await fs.rm(path.join(tempDir, entry), { recursive: true, force: true });
                 deleted++;
               } catch { /* ignore */ }
             }

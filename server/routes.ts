@@ -12,6 +12,7 @@ import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
 import { validateVideoMagicBytes } from "./utils/fileValidation";
 import { AI_CONFIG } from "./config/ai";
 import { STOCK_DIR, FRAMES_DIR, AUDIO_DIR, CHAPTERS_DIR, UPLOADS_DIR as UPLOADS_DIR_PATHS } from "./config/paths";
+import { deleteProjectFiles, resumePendingDeletions } from "./services/cleanup";
 
 // Zod schemas for query/path parameter validation
 const idParamSchema = z.object({
@@ -822,78 +823,6 @@ export async function registerRoutes(
       projectId: id
     });
   });
-
-  // Shared deletion function — deletes all project files from S3 and local temp
-  async function deleteProjectFiles(id: number): Promise<void> {
-    const proj = await storage.getVideoProject(id);
-    if (!proj || proj.sourceFilesDeletedAt) return;
-
-    let deleted = 0;
-
-    if (proj.originalPath) {
-      const key = `uploads/${path.basename(proj.originalPath)}`;
-      try { await fileStorage.deleteFile(key); deleted++; routesLogger.info(`[Cleanup] Deleted upload: ${key}`); }
-      catch (e: any) { routesLogger.warn(`[Cleanup] Could not delete upload ${key}: ${e.message}`); }
-    }
-
-    if (proj.outputPath) {
-      const key = `output/${path.basename(proj.outputPath)}`;
-      try { await fileStorage.deleteFile(key); deleted++; routesLogger.info(`[Cleanup] Deleted output: ${key}`); }
-      catch (e: any) { routesLogger.warn(`[Cleanup] Could not delete output ${key}: ${e.message}`); }
-    }
-
-    // Delete stock/B-roll files from S3 (key prefix: stock/) and local temp dir
-    try {
-      const stockFiles = await fs.readdir(STOCK_DIR);
-      for (const f of stockFiles) {
-        try { await fileStorage.deleteFile(`stock/${f}`); deleted++; } catch { }
-        await fs.unlink(path.join(STOCK_DIR, f)).catch(() => {});
-      }
-    } catch { }
-
-    for (const tempDir of [FRAMES_DIR, AUDIO_DIR, CHAPTERS_DIR]) {
-      try {
-        const entries = await fs.readdir(tempDir);
-        for (const entry of entries) {
-          try { await fs.rm(path.join(tempDir, entry), { recursive: true, force: true }); deleted++; } catch { }
-        }
-      } catch { }
-    }
-
-    const s3CacheDir = path.join(os.tmpdir(), "malika_s3_cache");
-    const cacheKeys = [
-      proj.originalPath && path.join(s3CacheDir, "uploads", path.basename(proj.originalPath)),
-      proj.outputPath && path.join(s3CacheDir, "output", path.basename(proj.outputPath)),
-    ].filter(Boolean) as string[];
-    for (const cachePath of cacheKeys) {
-      try { await fs.unlink(cachePath); deleted++; } catch { }
-    }
-
-    await storage.markSourceFilesDeleted(id);
-    routesLogger.info(`[Cleanup] Done — deleted ${deleted} files for project ${id}`);
-  }
-
-  // On startup: recover any deletion timers lost due to server restart.
-  // Projects where reviewed_at is set but source_files_deleted_at is null need rescheduling.
-  (async () => {
-    try {
-      const DELAY_MS = 10 * 60 * 1000;
-      const { pool } = await import("./db");
-      const result = await pool.query(
-        `SELECT id, reviewed_at FROM video_projects
-         WHERE reviewed_at IS NOT NULL AND source_files_deleted_at IS NULL`
-      );
-      for (const row of result.rows) {
-        const reviewedAt = new Date(row.reviewed_at).getTime();
-        const elapsed = Date.now() - reviewedAt;
-        const remaining = Math.max(0, DELAY_MS - elapsed);
-        routesLogger.info(`[Cleanup] Re-scheduling deletion for project ${row.id} in ${Math.round(remaining / 1000)}s`);
-        setTimeout(() => deleteProjectFiles(row.id), remaining);
-      }
-    } catch (e) {
-      routesLogger.warn("[Cleanup] Could not recover pending deletions on startup:", e);
-    }
-  })();
 
   // Mark project as reviewed by user — schedules source file deletion in 10 minutes
   app.post("/api/videos/:id/mark-reviewed", requireAuth, async (req: Request, res: Response) => {

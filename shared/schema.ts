@@ -260,7 +260,7 @@ export const videoProjects = pgTable("video_projects", {
   sourceFilesDeletedAt: timestamp("source_files_deleted_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-  expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '7 days'`).notNull(),
+  expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '1 day'`).notNull(),
 }, (table) => ({
   statusIdx: index("video_projects_status_idx").on(table.status),
   createdAtIdx: index("video_projects_created_at_idx").on(table.createdAt),
@@ -274,7 +274,7 @@ export const cachedAssets = pgTable("cached_assets", {
   cacheKey: text("cache_key").notNull(),
   data: jsonb("data").notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-  expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '7 days'`).notNull(),
+  expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '1 day'`).notNull(),
 }, (table) => ({
   typeKeyIdx: index("cached_assets_type_key_idx").on(table.cacheType, table.cacheKey),
   expiresAtIdx: index("cached_assets_expires_at_idx").on(table.expiresAt),

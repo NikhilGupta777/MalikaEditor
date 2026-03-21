@@ -38,6 +38,7 @@ import compression from "compression";
 import { createLogger } from "./utils/logger";
 import { cleanupStaleTempFiles } from "./services/videoProcessor";
 import { recoverInterruptedJobs } from "./services/backgroundProcessor";
+import { cleanupExpiredProjectFiles, resumePendingDeletions } from "./services/cleanup";
 import { logTranscriptionConfig } from "./services/aiService";
 import { storage } from "./storage";
 import { AI_CONFIG } from "./config/ai";
@@ -52,11 +53,14 @@ let cleanupIntervalId: NodeJS.Timeout | null = null;
 
 async function runPeriodicCleanup() {
   try {
+    // First: delete S3/local files for expired projects (before removing DB records)
+    const filesDeleted = await cleanupExpiredProjectFiles();
+    // Then: remove their DB records
     const deletedProjects = await storage.cleanupExpiredProjects();
     const deletedCache = await storage.cleanupExpiredCache();
-    if (deletedProjects > 0 || deletedCache > 0) {
+    if (deletedProjects > 0 || deletedCache > 0 || filesDeleted > 0) {
       expressLogger.info(
-        `Periodic cleanup: ${deletedProjects} expired projects, ${deletedCache} expired cache entries`,
+        `Periodic cleanup: ${deletedProjects} expired projects (${filesDeleted} cleaned), ${deletedCache} expired cache entries`,
       );
     }
   } catch (e) {
@@ -319,6 +323,13 @@ async function runStartupTasks() {
     await recoverInterruptedJobs();
   } catch (e) {
     expressLogger.warn("Failed to recover interrupted jobs on startup:", e);
+  }
+
+  // Reschedule any deletion timers lost during a server restart
+  try {
+    await resumePendingDeletions();
+  } catch (e) {
+    expressLogger.warn("Failed to resume pending file deletions on startup:", e);
   }
 
   // Create default admin user from environment variables if not exists

@@ -703,6 +703,8 @@ export const storage: IStorage = {
   deleteVideoProject: dbStorage.deleteVideoProject.bind(dbStorage),
   getActiveProjects: dbStorage.getActiveProjects.bind(dbStorage),
   cleanupExpiredProjects: dbStorage.cleanupExpiredProjects.bind(dbStorage),
+  markProjectReviewed: dbStorage.markProjectReviewed.bind(dbStorage),
+  markSourceFilesDeleted: dbStorage.markSourceFilesDeleted.bind(dbStorage),
 
   getCachedAsset: dbStorage.getCachedAsset.bind(dbStorage),
   setCachedAsset: dbStorage.setCachedAsset.bind(dbStorage),

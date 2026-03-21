@@ -256,6 +256,8 @@ export const videoProjects = pgTable("video_projects", {
   reviewData: jsonb("review_data"),
   errorMessage: text("error_message"),
   version: integer("version").notNull().default(1),
+  reviewedAt: timestamp("reviewed_at"),
+  sourceFilesDeletedAt: timestamp("source_files_deleted_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   expiresAt: timestamp("expires_at").default(sql`CURRENT_TIMESTAMP + INTERVAL '1 hour'`).notNull(),

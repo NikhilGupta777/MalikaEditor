@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
-import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2 } from "lucide-react";
+import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2, Trash2, Clock } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
@@ -153,6 +153,8 @@ export default function Editor() {
   });
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [markedReviewed, setMarkedReviewed] = useState(false);
+  const [sourceFilesDeleted, setSourceFilesDeleted] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -236,6 +238,8 @@ export default function Editor() {
       if (loadedProject.originalPath) {
         setPreviewUrl(loadedProject.originalPath);
       }
+      if ((loadedProject as any).reviewedAt) setMarkedReviewed(true);
+      if ((loadedProject as any).sourceFilesDeletedAt) setSourceFilesDeleted(true);
       // Load review data if in awaiting_review status
       if (loadedProject.status === "awaiting_review") {
         fetch(`/api/videos/${loadedProject.id}/review`)
@@ -757,6 +761,27 @@ export default function Editor() {
     },
   });
 
+  const markReviewedMutation = useMutation({
+    mutationFn: async (projectId: number) => {
+      const response = await apiRequest("POST", `/api/videos/${projectId}/mark-reviewed`);
+      return response.json();
+    },
+    onSuccess: () => {
+      setMarkedReviewed(true);
+      toast({
+        title: "Marked as done",
+        description: "Source files will be deleted in 10 minutes to free up space.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not mark as done",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleEditPlanChange = useCallback((updatedPlan: EditPlan) => {
     setProject((prev) => prev ? { ...prev, editPlan: updatedPlan } : null);
     if (project?.id) {
@@ -1159,6 +1184,40 @@ export default function Editor() {
                     isProcessing={false}
                     isComplete={true}
                   />
+                  <div className="mt-4 pt-4 border-t border-border">
+                    {sourceFilesDeleted ? (
+                      <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="status-source-files-deleted">
+                        <Trash2 className="h-4 w-4" />
+                        <span>Source files deleted — rendered video kept</span>
+                      </div>
+                    ) : markedReviewed ? (
+                      <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="status-deletion-pending">
+                        <Clock className="h-4 w-4 animate-pulse" />
+                        <span>Source files deleting in 10 minutes...</span>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-2">
+                          Done reviewing? Delete the source upload, B-roll &amp; AI images to free up space. Your rendered video stays.
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          data-testid="button-mark-reviewed"
+                          onClick={() => project.id && markReviewedMutation.mutate(project.id)}
+                          disabled={markReviewedMutation.isPending}
+                          className="w-full text-muted-foreground hover:text-destructive hover:border-destructive"
+                        >
+                          {markReviewedMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4 mr-2" />
+                          )}
+                          Done — Clean Up Source Files
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             )}

@@ -822,6 +822,79 @@ export async function registerRoutes(
     });
   });
 
+  // Mark project as reviewed by user — schedules source file deletion in 10 minutes
+  app.post("/api/videos/:id/mark-reviewed", requireAuth, async (req: Request, res: Response) => {
+    const paramResult = idParamSchema.safeParse(req.params);
+    if (!paramResult.success) {
+      return res.status(400).json({ error: formatZodError(paramResult.error) });
+    }
+    const { id } = paramResult.data;
+
+    const project = await storage.getVideoProject(id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (project.status !== "completed") {
+      return res.status(400).json({ error: "Project is not completed yet" });
+    }
+    if (project.sourceFilesDeletedAt) {
+      return res.json({ success: true, message: "Source files already deleted", alreadyDeleted: true });
+    }
+
+    await storage.markProjectReviewed(id);
+
+    // Schedule deletion of source files after 10 minutes
+    const DELAY_MS = 10 * 60 * 1000;
+    setTimeout(async () => {
+      try {
+        const proj = await storage.getVideoProject(id);
+        if (!proj || proj.sourceFilesDeletedAt) return;
+
+        const filesToDelete: string[] = [];
+
+        // Always delete the original uploaded source video
+        if (proj.originalPath) {
+          filesToDelete.push(proj.originalPath);
+        }
+
+        // Delete AI-generated images stored alongside uploads (ai_gen_*.png files)
+        try {
+          const uploadFiles = await fs.readdir(UPLOADS_DIR);
+          for (const f of uploadFiles) {
+            if (f.startsWith("ai_gen_")) {
+              filesToDelete.push(path.join(UPLOADS_DIR, f));
+            }
+          }
+        } catch { /* uploads dir may not exist */ }
+
+        // Delete downloaded stock/B-roll clips from the stock cache dir
+        try {
+          const stockFiles = await fs.readdir(STOCK_DIR);
+          for (const f of stockFiles) {
+            filesToDelete.push(path.join(STOCK_DIR, f));
+          }
+        } catch { /* stock dir may not exist */ }
+
+        let deleted = 0;
+        for (const filePath of filesToDelete) {
+          try {
+            await fs.unlink(filePath);
+            deleted++;
+          } catch { /* file may already be gone */ }
+        }
+
+        await storage.markSourceFilesDeleted(id);
+        routesLogger.info(`[Mark-Reviewed] Deleted ${deleted} source files for project ${id}`);
+      } catch (err) {
+        routesLogger.error(`[Mark-Reviewed] Cleanup failed for project ${id}:`, err);
+      }
+    }, DELAY_MS);
+
+    res.json({
+      success: true,
+      message: "Project marked as reviewed. Source files will be deleted in 10 minutes.",
+      deletionScheduledAt: new Date(Date.now() + DELAY_MS).toISOString()
+    });
+  });
+
   // Render video after review approval (SSE endpoint)
   app.get("/api/videos/:id/render", requireAuth, async (req: Request, res: Response) => {
     const paramResult = idParamSchema.safeParse(req.params);

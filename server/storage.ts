@@ -72,6 +72,8 @@ export interface IStorage {
   deleteVideoProject(id: number): Promise<void>;
   getActiveProjects(): Promise<VideoProject[]>;
   cleanupExpiredProjects(): Promise<number>;
+  markProjectReviewed(id: number): Promise<VideoProject | undefined>;
+  markSourceFilesDeleted(id: number): Promise<void>;
 
   getCachedAsset(cacheType: string, cacheKey: string): Promise<any | undefined>;
   setCachedAsset(cacheType: string, cacheKey: string, data: any, projectId?: number): Promise<void>;
@@ -293,6 +295,29 @@ export class DatabaseStorage {
     } catch (error) {
       logger.error("Failed to cleanup expired projects", { error });
       throw error;
+    }
+  }
+
+  async markProjectReviewed(id: number): Promise<VideoProject | undefined> {
+    try {
+      const [result] = await db.update(videoProjects)
+        .set({ reviewedAt: new Date(), updatedAt: new Date() })
+        .where(eq(videoProjects.id, id))
+        .returning();
+      return result;
+    } catch (error) {
+      logger.error("Failed to mark project reviewed", { id, error });
+      throw error;
+    }
+  }
+
+  async markSourceFilesDeleted(id: number): Promise<void> {
+    try {
+      await db.update(videoProjects)
+        .set({ sourceFilesDeletedAt: new Date(), updatedAt: new Date() })
+        .where(eq(videoProjects.id, id));
+    } catch (error) {
+      logger.error("Failed to mark source files deleted", { id, error });
     }
   }
 

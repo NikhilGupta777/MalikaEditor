@@ -850,17 +850,20 @@ export async function registerRoutes(
 
         const filesToDelete: string[] = [];
 
+        // DB stores URL paths like /uploads/<filename> and /output/<filename>
+        // Convert to real filesystem paths using path.basename() + directory constants
+
         // Delete the original uploaded source video
         if (proj.originalPath) {
-          filesToDelete.push(proj.originalPath);
+          filesToDelete.push(path.join(UPLOADS_DIR, path.basename(proj.originalPath)));
         }
 
-        // Delete the rendered output video too
+        // Delete the rendered output video
         if (proj.outputPath) {
-          filesToDelete.push(proj.outputPath);
+          filesToDelete.push(path.join(OUTPUT_DIR, path.basename(proj.outputPath)));
         }
 
-        // Delete AI-generated images stored alongside uploads (ai_gen_*.png files)
+        // Delete AI-generated images in the uploads dir (ai_gen_*.png)
         try {
           const uploadFiles = await fs.readdir(UPLOADS_DIR);
           for (const f of uploadFiles) {
@@ -868,26 +871,31 @@ export async function registerRoutes(
               filesToDelete.push(path.join(UPLOADS_DIR, f));
             }
           }
-        } catch { /* uploads dir may not exist */ }
+        } catch { /* dir may not exist */ }
 
-        // Delete downloaded stock/B-roll clips from the stock cache dir
+        // Delete all downloaded stock/B-roll clips
         try {
           const stockFiles = await fs.readdir(STOCK_DIR);
           for (const f of stockFiles) {
             filesToDelete.push(path.join(STOCK_DIR, f));
           }
-        } catch { /* stock dir may not exist */ }
+        } catch { /* dir may not exist */ }
 
         let deleted = 0;
         for (const filePath of filesToDelete) {
           try {
             await fs.unlink(filePath);
+            routesLogger.info(`[Mark-Reviewed] Deleted: ${filePath}`);
             deleted++;
-          } catch { /* file may already be gone */ }
+          } catch (e: any) {
+            if (e.code !== "ENOENT") {
+              routesLogger.warn(`[Mark-Reviewed] Could not delete ${filePath}: ${e.message}`);
+            }
+          }
         }
 
         await storage.markSourceFilesDeleted(id);
-        routesLogger.info(`[Mark-Reviewed] Deleted ${deleted} files (source + output) for project ${id}`);
+        routesLogger.info(`[Mark-Reviewed] Done — deleted ${deleted} of ${filesToDelete.length} files for project ${id}`);
       } catch (err) {
         routesLogger.error(`[Mark-Reviewed] Cleanup failed for project ${id}:`, err);
       }

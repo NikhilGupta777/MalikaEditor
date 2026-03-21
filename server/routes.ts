@@ -848,54 +848,62 @@ export async function registerRoutes(
         const proj = await storage.getVideoProject(id);
         if (!proj || proj.sourceFilesDeletedAt) return;
 
-        const filesToDelete: string[] = [];
+        let deleted = 0;
 
-        // DB stores URL paths like /uploads/<filename> and /output/<filename>
-        // Convert to real filesystem paths using path.basename() + directory constants
-
-        // Delete the original uploaded source video
+        // Delete original upload and rendered output via fileStorage
+        // (works for both local filesystem and S3)
+        // DB stores URL-style paths — extract just the filename and use known key prefixes
         if (proj.originalPath) {
-          filesToDelete.push(path.join(UPLOADS_DIR, path.basename(proj.originalPath)));
+          const key = `uploads/${path.basename(proj.originalPath)}`;
+          try {
+            await fileStorage.deleteFile(key);
+            routesLogger.info(`[Mark-Reviewed] Deleted upload: ${key}`);
+            deleted++;
+          } catch (e: any) {
+            routesLogger.warn(`[Mark-Reviewed] Could not delete upload ${key}: ${e.message}`);
+          }
         }
 
-        // Delete the rendered output video
         if (proj.outputPath) {
-          filesToDelete.push(path.join(OUTPUT_DIR, path.basename(proj.outputPath)));
+          const key = `output/${path.basename(proj.outputPath)}`;
+          try {
+            await fileStorage.deleteFile(key);
+            routesLogger.info(`[Mark-Reviewed] Deleted output: ${key}`);
+            deleted++;
+          } catch (e: any) {
+            routesLogger.warn(`[Mark-Reviewed] Could not delete output ${key}: ${e.message}`);
+          }
         }
 
-        // Delete AI-generated images in the uploads dir (ai_gen_*.png)
+        // Delete AI-generated images from local uploads dir + S3 if applicable
         try {
           const uploadFiles = await fs.readdir(UPLOADS_DIR);
           for (const f of uploadFiles) {
             if (f.startsWith("ai_gen_")) {
-              filesToDelete.push(path.join(UPLOADS_DIR, f));
+              // Delete from S3/local via fileStorage
+              try {
+                await fileStorage.deleteFile(`uploads/${f}`);
+                deleted++;
+              } catch { /* ignore */ }
+              // Also remove local copy if it still exists
+              await fs.unlink(path.join(UPLOADS_DIR, f)).catch(() => {});
             }
           }
         } catch { /* dir may not exist */ }
 
-        // Delete all downloaded stock/B-roll clips
+        // Delete local stock/B-roll temp files (always local, never in S3)
         try {
           const stockFiles = await fs.readdir(STOCK_DIR);
           for (const f of stockFiles) {
-            filesToDelete.push(path.join(STOCK_DIR, f));
+            try {
+              await fs.unlink(path.join(STOCK_DIR, f));
+              deleted++;
+            } catch { /* ignore */ }
           }
         } catch { /* dir may not exist */ }
 
-        let deleted = 0;
-        for (const filePath of filesToDelete) {
-          try {
-            await fs.unlink(filePath);
-            routesLogger.info(`[Mark-Reviewed] Deleted: ${filePath}`);
-            deleted++;
-          } catch (e: any) {
-            if (e.code !== "ENOENT") {
-              routesLogger.warn(`[Mark-Reviewed] Could not delete ${filePath}: ${e.message}`);
-            }
-          }
-        }
-
         await storage.markSourceFilesDeleted(id);
-        routesLogger.info(`[Mark-Reviewed] Done — deleted ${deleted} of ${filesToDelete.length} files for project ${id}`);
+        routesLogger.info(`[Mark-Reviewed] Done — deleted ${deleted} files for project ${id}`);
       } catch (err) {
         routesLogger.error(`[Mark-Reviewed] Cleanup failed for project ${id}:`, err);
       }

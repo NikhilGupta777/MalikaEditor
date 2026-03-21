@@ -1765,7 +1765,7 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
 
   // Fix: Use the storage key or construct path relative to output dir depending on storage type
   const publicOutputPath = editResult.storageKey
-    ? `/output/${editResult.storageKey}` // Assumes a route handles /output/:key
+    ? `/output/${editResult.storageKey.replace(/^output\//, "")}`
     : `/output/${path.basename(editResult.outputPath)}`;
 
   processorLogger.info(`[Background Render] Complete for project ${projectId}, output: ${publicOutputPath}`);

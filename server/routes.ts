@@ -850,9 +850,14 @@ export async function registerRoutes(
 
         const filesToDelete: string[] = [];
 
-        // Always delete the original uploaded source video
+        // Delete the original uploaded source video
         if (proj.originalPath) {
           filesToDelete.push(proj.originalPath);
+        }
+
+        // Delete the rendered output video too
+        if (proj.outputPath) {
+          filesToDelete.push(proj.outputPath);
         }
 
         // Delete AI-generated images stored alongside uploads (ai_gen_*.png files)
@@ -882,7 +887,7 @@ export async function registerRoutes(
         }
 
         await storage.markSourceFilesDeleted(id);
-        routesLogger.info(`[Mark-Reviewed] Deleted ${deleted} source files for project ${id}`);
+        routesLogger.info(`[Mark-Reviewed] Deleted ${deleted} files (source + output) for project ${id}`);
       } catch (err) {
         routesLogger.error(`[Mark-Reviewed] Cleanup failed for project ${id}:`, err);
       }
@@ -890,7 +895,7 @@ export async function registerRoutes(
 
     res.json({
       success: true,
-      message: "Project marked as reviewed. Source files will be deleted in 10 minutes.",
+      message: "Project marked as reviewed. All files will be deleted in 10 minutes.",
       deletionScheduledAt: new Date(Date.now() + DELAY_MS).toISOString()
     });
   });

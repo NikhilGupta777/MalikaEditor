@@ -1188,17 +1188,17 @@ export default function Editor() {
                     {sourceFilesDeleted ? (
                       <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="status-source-files-deleted">
                         <Trash2 className="h-4 w-4" />
-                        <span>Source files deleted — rendered video kept</span>
+                        <span>All files deleted — storage cleared</span>
                       </div>
                     ) : markedReviewed ? (
                       <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="status-deletion-pending">
                         <Clock className="h-4 w-4 animate-pulse" />
-                        <span>Source files deleting in 10 minutes...</span>
+                        <span>All files deleting in 10 minutes...</span>
                       </div>
                     ) : (
                       <div>
                         <p className="text-xs text-muted-foreground mb-2">
-                          Done reviewing? Delete the source upload, B-roll &amp; AI images to free up space. Your rendered video stays.
+                          Done reviewing? Make sure to download your video first — clicking this will delete everything (upload, rendered output, B-roll &amp; AI images) in 10 minutes.
                         </p>
                         <Button
                           variant="outline"
@@ -1213,7 +1213,7 @@ export default function Editor() {
                           ) : (
                             <Trash2 className="h-4 w-4 mr-2" />
                           )}
-                          Done — Clean Up Source Files
+                          Done — Delete All Files
                         </Button>
                       </div>
                     )}

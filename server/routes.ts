@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { type Server } from "http";
 import multer from "multer";
 import path from "path";
+import os from "os";
 import { promises as fs } from "fs";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
@@ -10,7 +11,7 @@ import { createLogger } from "./utils/logger";
 import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
 import { validateVideoMagicBytes } from "./utils/fileValidation";
 import { AI_CONFIG } from "./config/ai";
-import { STOCK_DIR } from "./config/paths";
+import { STOCK_DIR, FRAMES_DIR, AUDIO_DIR, CHAPTERS_DIR, UPLOADS_DIR as UPLOADS_DIR_PATHS } from "./config/paths";
 
 // Zod schemas for query/path parameter validation
 const idParamSchema = z.object({
@@ -901,6 +902,32 @@ export async function registerRoutes(
             } catch { /* ignore */ }
           }
         } catch { /* dir may not exist */ }
+
+        // Wipe temp working dirs: frames, audio, chapters
+        for (const tempDir of [FRAMES_DIR, AUDIO_DIR, CHAPTERS_DIR]) {
+          try {
+            const files = await fs.readdir(tempDir);
+            for (const f of files) {
+              try {
+                await fs.unlink(path.join(tempDir, f));
+                deleted++;
+              } catch { /* ignore */ }
+            }
+          } catch { /* dir may not exist */ }
+        }
+
+        // Delete project-specific files from the S3 local cache
+        const s3CacheDir = path.join(os.tmpdir(), "malika_s3_cache");
+        const cacheKeys = [
+          proj.originalPath && path.join(s3CacheDir, "uploads", path.basename(proj.originalPath)),
+          proj.outputPath && path.join(s3CacheDir, "output", path.basename(proj.outputPath)),
+        ].filter(Boolean) as string[];
+        for (const cachePath of cacheKeys) {
+          try {
+            await fs.unlink(cachePath);
+            deleted++;
+          } catch { /* ignore if not cached */ }
+        }
 
         await storage.markSourceFilesDeleted(id);
         routesLogger.info(`[Mark-Reviewed] Done — deleted ${deleted} files for project ${id}`);

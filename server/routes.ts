@@ -842,20 +842,12 @@ export async function registerRoutes(
       catch (e: any) { routesLogger.warn(`[Cleanup] Could not delete output ${key}: ${e.message}`); }
     }
 
-    try {
-      const uploadFiles = await fs.readdir(UPLOADS_DIR);
-      for (const f of uploadFiles) {
-        if (f.startsWith("ai_gen_")) {
-          try { await fileStorage.deleteFile(`uploads/${f}`); deleted++; } catch { }
-          await fs.unlink(path.join(UPLOADS_DIR, f)).catch(() => {});
-        }
-      }
-    } catch { }
-
+    // Delete stock/B-roll files from S3 (key prefix: stock/) and local temp dir
     try {
       const stockFiles = await fs.readdir(STOCK_DIR);
       for (const f of stockFiles) {
-        try { await fs.unlink(path.join(STOCK_DIR, f)); deleted++; } catch { }
+        try { await fileStorage.deleteFile(`stock/${f}`); deleted++; } catch { }
+        await fs.unlink(path.join(STOCK_DIR, f)).catch(() => {});
       }
     } catch { }
 
@@ -1939,6 +1931,11 @@ export async function registerRoutes(
       if (!project) {
         return res.status(404).json({ error: "Project not found" });
       }
+
+      // Clean up all associated files from S3 and local temp before removing DB record
+      await deleteProjectFiles(id).catch(e =>
+        routesLogger.warn(`[Delete] File cleanup failed for project ${id}:`, e)
+      );
 
       await storage.deleteVideoProject(id);
       res.json({ success: true, message: "Video project deleted" });

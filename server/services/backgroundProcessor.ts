@@ -1655,10 +1655,11 @@ export async function startBackgroundRender(projectId: number): Promise<void> {
 }
 
 async function runBackgroundRender(projectId: number, project: any, reviewData: ReviewData): Promise<void> {
-  const videoPath = path.join(UPLOADS_DIR, path.basename(project.originalPath));
-
+  // Use fileStorage.getFilePath so it works with both local and S3 storage.
+  // For S3, this downloads the file from the bucket to the local cache first.
+  let videoPath: string;
   try {
-    await fs.access(videoPath);
+    videoPath = await fileStorage.getFilePath(project.originalPath);
   } catch {
     throw new Error("Video file not found");
   }

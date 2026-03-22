@@ -1235,9 +1235,9 @@ async function runProcessingPipeline(
       addActivity(projectId, "Performing pre-render AI review...");
       // Ensure we have a valid VideoAnalysis object
       // Cast to unknown first to avoid "neither type sufficiently overlaps" error
-      const validAnalysis = (analysis as any).semanticAnalysis ?
-        (analysis as unknown as import("@shared/schema").VideoAnalysis) :
-        (analysis as unknown as import("@shared/schema").VideoAnalysis); // Fallback to casting whatever we have, assuming it's structural enough
+      const validAnalysis = (sanitizedAnalysis as any).semanticAnalysis ?
+        (sanitizedAnalysis as unknown as import("@shared/schema").VideoAnalysis) :
+        (sanitizedAnalysis as unknown as import("@shared/schema").VideoAnalysis);
 
       // Call with correct signature: (videoAnalysis, transcript, editPlan, reviewData, userPrompt)
       aiReviewFnResult = await performPreRenderReview(

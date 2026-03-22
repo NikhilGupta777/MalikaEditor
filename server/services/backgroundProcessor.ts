@@ -1793,57 +1793,171 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
 
   processorLogger.info(`[Background Render] Project ${projectId} marked completed — video available to user`);
 
-  // ─── STEP 2: Self-review runs as true fire-and-forget ────────────────────
-  // Saves 3-5 minutes of user wait time. The score is persisted to DB when
-  // ready and will appear on the next project fetch / page reload.
-  const selfReviewInputs = {
-    outputPath: editResult.outputPath,
+  // ─── STEP 2: Background quality loop — runs after user already has the video ─
+  // Phase A: self-review → score saved to DB.
+  // Phase B: if score is poor, arbitrate → re-plan → re-render → overwrite output.
+  // One correction attempt max so the background work stays bounded.
+  // The improved video path overwrites outputPath in DB; user gets it on next download.
+  const bgInputs = {
+    firstOutputPath: editResult.outputPath,
+    publicOutputPath,
     videoPath,
-    finalEditPlan: { ...finalEditPlan },
+    editPlan: finalEditPlan as any,
     transcript: [...transcript],
-    reviewData: { ...reviewData },
     stockMedia: [...stockMedia],
+    editOptions: { ...editOptions },
     prompt: project.prompt || "",
     analysis: project.analysis as import("@shared/schema").VideoAnalysis | undefined,
-    existingReviewData: { ...(project.reviewData || {}) },
+    baseReviewData: { ...(project.reviewData || {}) },
+    reviewData: { ...reviewData } as ReviewData,
   };
 
   (async () => {
+    // ── Phase A: self-review ──────────────────────────────────────────────────
+    let selfReviewResult: Awaited<ReturnType<typeof performPostRenderSelfReview>>;
     try {
-      processorLogger.info(`[Background Render] Starting background self-review for project ${projectId}`);
-      const selfReviewResult = await performPostRenderSelfReview(
-        selfReviewInputs.outputPath,
-        selfReviewInputs.videoPath,
-        selfReviewInputs.finalEditPlan,
-        selfReviewInputs.transcript,
-        selfReviewInputs.reviewData,
-        selfReviewInputs.stockMedia,
-        selfReviewInputs.prompt,
-        selfReviewInputs.analysis
+      processorLogger.info(`[BG Quality] Phase A — self-review starting for project ${projectId}`);
+      selfReviewResult = await performPostRenderSelfReview(
+        bgInputs.firstOutputPath,
+        bgInputs.videoPath,
+        bgInputs.editPlan,
+        bgInputs.transcript,
+        bgInputs.reviewData,
+        bgInputs.stockMedia,
+        bgInputs.prompt,
+        bgInputs.analysis
+      );
+      processorLogger.info(`[BG Quality] Self-review done for project ${projectId}: score=${selfReviewResult.overallScore}, approved=${selfReviewResult.approved}`);
+    } catch (reviewErr) {
+      processorLogger.warn(`[BG Quality] Self-review failed (non-critical) for project ${projectId}:`, reviewErr);
+      return;
+    }
+
+    // Persist initial score immediately so it's visible on next page load
+    const selfReviewRecord = {
+      overallScore: selfReviewResult.overallScore,
+      watchedFullVideo: selfReviewResult.watchedFullVideo,
+      approved: selfReviewResult.approved,
+      qualityMetrics: selfReviewResult.qualityMetrics,
+      issues: selfReviewResult.issues,
+      detailedFeedback: selfReviewResult.detailedFeedback,
+      suggestions: selfReviewResult.suggestions,
+    };
+    await storage.updateVideoProject(projectId, {
+      reviewData: {
+        ...bgInputs.baseReviewData,
+        selfReviewScore: selfReviewResult.overallScore,
+        selfReviewResult: selfReviewRecord,
+      },
+    });
+
+    // ── Phase B: arbitration + correction re-render ──────────────────────────
+    // Only attempt if we have a pre-render AI review to arbitrate against
+    if (!bgInputs.reviewData.aiReview) {
+      processorLogger.info(`[BG Quality] Phase B skipped — no pre-render AI review available for project ${projectId}`);
+      return;
+    }
+
+    let correctedOutputPath: string | null = null;
+    try {
+      const aiReview = bgInputs.reviewData.aiReview;
+      const arbitration = await arbitrateReviewConflicts(
+        {
+          ...aiReview,
+          issues: aiReview.issues || [],
+          suggestions: aiReview.suggestions || [],
+          summary: aiReview.summary || "",
+        },
+        selfReviewResult,
+        bgInputs.editPlan
       );
 
-      processorLogger.info(`[Background Render] Self-review complete for project ${projectId}: score=${selfReviewResult.overallScore}`);
+      processorLogger.info(`[BG Quality] Arbitration for project ${projectId}: shouldReRender=${arbitration.shouldReRender}, confidence=${arbitration.confidence}`);
 
-      // Persist score to DB — project is already "completed", just update reviewData
+      if (!arbitration.shouldReRender || arbitration.confidence <= 70) {
+        processorLogger.info(`[BG Quality] No correction needed for project ${projectId} — quality accepted`);
+        return;
+      }
+
+      processorLogger.info(`[BG Quality] Phase B — re-rendering correction for project ${projectId}: ${arbitration.justification}`);
+
+      // Re-plan with correction feedback
+      const analysis = bgInputs.analysis as any;
+      const correctedPlan = await generateSmartEditPlan(
+        bgInputs.prompt,
+        analysis,
+        bgInputs.transcript,
+        analysis?.semanticAnalysis || {},
+        [],        // no filler segments available at this stage
+        null,      // no enhanced transcript at this stage
+        bgInputs.editPlan,
+        arbitration,
+        projectId
+      );
+
+      // Re-render using the corrected plan (keep user's existing stock media)
+      const correctedEditResult = await applyEdits(
+        bgInputs.videoPath,
+        correctedPlan as any,
+        bgInputs.transcript,
+        bgInputs.stockMedia,
+        bgInputs.editOptions,
+        undefined,
+        analysis?.semanticAnalysis
+      );
+
+      correctedOutputPath = correctedEditResult.storageKey
+        ? `/output/${correctedEditResult.storageKey.replace(/^output\//, "")}`
+        : `/output/${path.basename(correctedEditResult.outputPath)}`;
+
+      processorLogger.info(`[BG Quality] Correction render complete for project ${projectId}: ${correctedOutputPath}`);
+
+      // Run a final self-review on the corrected output to capture the improved score
+      let finalScore = selfReviewResult.overallScore;
+      let finalSelfReviewRecord = selfReviewRecord;
+      try {
+        const finalReview = await performPostRenderSelfReview(
+          correctedEditResult.outputPath,
+          bgInputs.videoPath,
+          correctedPlan as any,
+          bgInputs.transcript,
+          bgInputs.reviewData,
+          bgInputs.stockMedia,
+          bgInputs.prompt,
+          bgInputs.analysis
+        );
+        finalScore = finalReview.overallScore;
+        finalSelfReviewRecord = {
+          overallScore: finalReview.overallScore,
+          watchedFullVideo: finalReview.watchedFullVideo,
+          approved: finalReview.approved,
+          qualityMetrics: finalReview.qualityMetrics,
+          issues: finalReview.issues,
+          detailedFeedback: finalReview.detailedFeedback,
+          suggestions: finalReview.suggestions,
+        };
+        processorLogger.info(`[BG Quality] Final self-review for project ${projectId}: score=${finalScore}`);
+      } catch (finalReviewErr) {
+        processorLogger.warn(`[BG Quality] Final self-review failed (non-critical) for project ${projectId}:`, finalReviewErr);
+      }
+
+      // Update DB: overwrite outputPath with the corrected video + new score
       await storage.updateVideoProject(projectId, {
+        outputPath: correctedOutputPath,
         reviewData: {
-          ...selfReviewInputs.existingReviewData,
-          selfReviewScore: selfReviewResult.overallScore,
-          selfReviewResult: {
-            overallScore: selfReviewResult.overallScore,
-            watchedFullVideo: selfReviewResult.watchedFullVideo,
-            approved: selfReviewResult.approved,
-            qualityMetrics: selfReviewResult.qualityMetrics,
-            issues: selfReviewResult.issues,
-            detailedFeedback: selfReviewResult.detailedFeedback,
-            suggestions: selfReviewResult.suggestions,
-          },
+          ...bgInputs.baseReviewData,
+          selfReviewScore: finalScore,
+          selfReviewResult: finalSelfReviewRecord,
+          correctionApplied: true,
+          correctionReason: arbitration.justification,
         },
       });
 
-      processorLogger.info(`[Background Render] Self-review score persisted for project ${projectId}`);
-    } catch (reviewErr) {
-      processorLogger.warn(`[Background Render] Self-review failed (non-critical) for project ${projectId}:`, reviewErr);
+      processorLogger.info(`[BG Quality] Project ${projectId} improved: ${bgInputs.publicOutputPath} → ${correctedOutputPath} (score: ${selfReviewResult.overallScore} → ${finalScore})`);
+
+    } catch (correctionErr) {
+      processorLogger.warn(`[BG Quality] Correction loop failed (non-critical) for project ${projectId}:`, correctionErr);
+      // Original output is still in DB and usable — nothing is broken
     }
   })();
 }

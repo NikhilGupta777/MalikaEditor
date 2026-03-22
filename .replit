@@ -56,8 +56,6 @@ defaultBucketID = "replit-objstore-c89eb0fe-dd55-471d-953a-e56bf65de372"
 [userenv]
 
 [userenv.shared]
-AWS_ACCESS_KEY_ID = "AKIAYVZ7GYFE6JY3QXUL"
-AWS_SECRET_ACCESS_KEY = "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"
 DEFAULT_ADMIN_PASSWORD = "Malikaeditor#123"
 DEFAULT_ADMIN_USERNAME = "Malikaeditor"
 FILE_STORAGE_TYPE = "s3"

@@ -1,4 +1,4 @@
-modules = ["nodejs-20", "web", "postgresql-16"]
+imodules = ["nodejs-20", "web", "postgresql-16"]
 run = "npm run dev"
 hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 
@@ -61,5 +61,5 @@ DEFAULT_ADMIN_USERNAME = "Malikaeditor"
 FILE_STORAGE_TYPE = "s3"
 S3_BUCKET_NAME = "malikaeditor"
 S3_REGION = "us-east-1"
-AWS_ACCESS_KEY_ID = "AKIAYVZ7GYFE6Q4GIIB3"
-AWS_SECRET_ACCESS_KEY = "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"
+AWS_ACCESS_KEY_ID = "fill"
+AWS_SECRET_ACCESS_KEY = "fill"

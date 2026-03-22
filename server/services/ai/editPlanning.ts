@@ -507,27 +507,36 @@ USER FEEDBACK HISTORY (LEARN FROM THIS):
 ${feedbackContext}
  
 CRITICAL EDITING RULES:
-1. NEVER cut in the middle of a sentence - always find natural pause points between sentences or clauses
-2. When cutting, identify sentence boundaries using punctuation and natural speech pauses
-3. If a segment contains a complete thought, preserve it entirely or remove it entirely
-4. For spoken content, the transcript shows sentence boundaries - respect them when planning cuts
+1. CUTS ARE A LAST RESORT — only cut dead silence (>2s with no speech) or major mistakes/repeated sentences. When in doubt, DO NOT cut.
+2. NEVER cut in the middle of a sentence — only cut between complete thoughts at natural pause points.
+3. If a segment contains a complete thought, preserve it entirely or remove it entirely.
+4. DO NOT cut simply because a section seems slow — preserve the speaker's natural pace and personality.
+5. Prefer fewer, more meaningful cuts over many small cuts. Choppy editing is worse than no editing.
+
+B-ROLL PLACEMENT RULES (VERY IMPORTANT):
+6. B-roll OVERLAYS the video — the speaker's audio continues underneath. It is NOT a cut.
+7. ONLY place B-roll when the speaker is describing something visual (an object, place, process, or concept) that can be illustrated.
+8. NEVER place B-roll over the speaker's face during key emotional moments, punchlines, or important conclusions.
+9. NEVER place B-roll over the intro (first 10 seconds) or outro (last 10 seconds).
+10. Ensure each B-roll moment is visually relevant to the exact words being spoken at that timestamp.
 
 AVAILABLE EDIT ACTIONS:
 
-1. "cut" - Remove sections (audio AND video removed synchronously)
+1. "cut" - Remove sections (audio AND video removed synchronously) — USE SPARINGLY
 2. "keep" - Explicitly mark important segments to preserve
-3. "insert_stock" - OVERLAY B-roll stock footage (original audio CONTINUES)
+3. "insert_stock" - OVERLAY B-roll stock footage (original audio CONTINUES underneath)
 4. "add_caption" - Add captions for key dialogue
 5. "add_text_overlay" - Add emphasis text
 
 TIMING RULES FOR B-ROLL:
-- Minimum duration: 2 seconds
-- Maximum duration: 10 seconds
-- Optimal duration: 3-6 seconds
-- Leave 1+ seconds between B-roll overlays adjustable to the video context and editing style
+- Minimum duration: 3 seconds
+- Maximum duration: 8 seconds
+- Optimal duration: 4-6 seconds
+- Leave at least 3 seconds between B-roll overlays to let the viewer reconnect with the speaker
+- Total B-roll time should not exceed 40% of the video duration
 
 B-ROLL SEARCH QUERY GUIDELINES:
-- Be specific and contextual
+- Be specific and directly match what the speaker is saying at that exact moment
 - Match the video's tone: ${contextInfo?.tone || "casual"}
 - For ${contextInfo?.genre || "general"} content, prefer: ${getBrollStyleHint(contextInfo?.genre)}`;
 

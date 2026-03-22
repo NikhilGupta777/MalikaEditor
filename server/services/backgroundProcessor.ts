@@ -1138,7 +1138,9 @@ async function runProcessingPipeline(
         actions: (editPlan.actions || []).map((a, i) => ({
           id: `action_${i}`,
           ...a,
-          approved: true,
+          // Cuts default to OFF — user must explicitly approve each cut.
+          // All other actions (B-roll, captions, etc.) default to approved.
+          approved: a.type === 'cut' ? false : true,
         })),
       },
       stockMedia: stockMedia.filter(m => m.type !== 'ai_generated').map((m, i) => ({

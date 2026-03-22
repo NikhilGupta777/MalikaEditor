@@ -1424,6 +1424,11 @@ async function prepareOverlayMedia(
   outputPath: string,
   animationPreset: AnimationPreset = "zoom_in"
 ): Promise<void> {
+  // Compute fade durations: 0.4s in/out, but never more than 1/3 of total duration
+  const fadeDur = Math.min(0.4, duration / 3);
+  const fadeOutStart = Math.max(0, duration - fadeDur);
+  const fadeFilter = `fade=t=in:st=0:d=${fadeDur.toFixed(2)},fade=t=out:st=${fadeOutStart.toFixed(2)}:d=${fadeDur.toFixed(2)}`;
+
   if (stock.item.type === "video") {
     const cmd = ffmpeg(stock.localPath)
       .setDuration(duration)
@@ -1432,7 +1437,7 @@ async function prepareOverlayMedia(
         "-preset", "fast",
         "-crf", "23",
         "-an",
-        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,${fadeFilter}`,
         "-pix_fmt", "yuv420p",
         "-threads", "2",
       ])
@@ -1452,7 +1457,7 @@ async function prepareOverlayMedia(
         "-crf", "23",
         "-an",
         "-t", String(duration),
-        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,${zoompanFilter}`,
+        "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,${zoompanFilter},${fadeFilter}`,
         "-pix_fmt", "yuv420p",
         "-threads", "2",
       ])

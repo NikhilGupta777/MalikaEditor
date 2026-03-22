@@ -213,8 +213,15 @@ export async function clearProjectChat(projectId: number): Promise<void> {
 export function detectReEditTrigger(question: string, recentMessages: ChatMessage[]): boolean {
   const normalized = question.trim().toLowerCase();
 
-  // Trigger keywords — user is saying "go ahead"
-  const triggerPattern = /^(start|go|yes|apply|do it|begin|proceed|ok|okay|sure|confirm|re.?edit|let'?s go|make it happen|sounds good|looks good|perfect|great|do that|execute|run it|yeah|yep|do this|start it|kick it off|start re-?edit)/i;
+  // Short confirmations only — if the message is long (>60 chars), it's likely a new instruction,
+  // not a simple "yes/go/start" confirmation. Route it to answerUserQuestion instead so the AI
+  // can parse it and produce a fresh [PLAN] block.
+  if (normalized.length > 60) return false;
+
+  // Trigger keywords — user is saying "go ahead". Anchored at ^ AND $ (with optional trailing
+  // punctuation/filler like "please", "now", "!", ".", etc.) to avoid false positives on messages
+  // like "ok but actually change the B-roll instead".
+  const triggerPattern = /^(start|go|yes|apply|do it|begin|proceed|ok|okay|sure|confirm|re.?edit|let'?s go|make it happen|sounds good|looks good|perfect|great|do that|execute|run it|yeah|yep|do this|start it|kick it off|start re-?edit)([.!,\s]*(please|now|thanks|thx)?[.!]*)?$/i;
 
   if (!triggerPattern.test(normalized)) return false;
 

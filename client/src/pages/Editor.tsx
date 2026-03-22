@@ -201,6 +201,13 @@ export default function Editor() {
         outputPath: data.outputPath,
         duration: data.duration,
         aiImageStats: data.aiImageStats as AiImageStats | undefined,
+        reviewData: data.selfReviewScore != null
+          ? {
+              ...(prev.reviewData as any ?? {}),
+              selfReviewScore: data.selfReviewScore,
+              selfReviewResult: data.selfReviewResult ?? null,
+            }
+          : prev.reviewData,
       } : null);
       setPreviewUrl(data.outputPath);
       setIsRendering(false);
@@ -816,8 +823,11 @@ export default function Editor() {
       try {
         await apiRequest("POST", `/api/videos/${project.id}/retry`, { stage: "all" });
       } catch (retryErr: any) {
-        const status = retryErr?.status ?? retryErr?.response?.status;
-        if (status !== 409) throw retryErr;
+        // apiRequest throws Error("409: ...") for HTTP 409 — check the message prefix
+        const errMsg = retryErr instanceof Error ? retryErr.message : String(retryErr ?? "");
+        const is409 = errMsg.startsWith("409") || errMsg.includes(": 409");
+        if (!is409) throw retryErr;
+        // 409 = already started (e.g. by ErrorDisplay's retryMutation) — continue to SSE setup
       }
 
       // Reset local state

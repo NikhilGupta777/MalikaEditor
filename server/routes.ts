@@ -934,6 +934,8 @@ export async function registerRoutes(
             sendEvent("complete", {
               outputPath: publicOutputPath,
               duration: currentProject.duration,
+              selfReviewScore: (currentProject.reviewData as any)?.selfReviewScore ?? null,
+              selfReviewResult: (currentProject.reviewData as any)?.selfReviewResult ?? null,
             });
             clearInterval(pollInterval);
             clearInterval(heartbeatInterval);
@@ -1042,7 +1044,9 @@ export async function registerRoutes(
           if (currentProject.status === "completed" && currentProject.outputPath) {
             sendPollingEvent("complete", {
               outputPath: currentProject.outputPath,
-              duration: currentProject.duration
+              duration: currentProject.duration,
+              selfReviewScore: (currentProject.reviewData as any)?.selfReviewScore ?? null,
+              selfReviewResult: (currentProject.reviewData as any)?.selfReviewResult ?? null,
             });
             cleanupIntervals();
             connectionClosed = true;

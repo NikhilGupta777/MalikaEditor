@@ -11,6 +11,12 @@ import { createLogger } from "../utils/logger";
 import { AI_CONFIG } from "../config/ai";
 import { fileStorage, generateFileKey } from "./fileStorage";
 
+/** Round a number to 3 decimal places for use in FFmpeg filter strings.
+ *  Prevents JS float precision artifacts like 5.299999999999997 appearing in filter graphs. */
+function ffFloat(n: number): number {
+  return parseFloat(n.toFixed(3));
+}
+
 export interface ChapterInfo {
   title: string;
   startTime: number;
@@ -1086,7 +1092,7 @@ async function createVideoSegment(
     for (const overlay of textOverlays) {
       const escapedText = escapeFFmpegText(overlay.text);
       filters.push(
-        `drawtext=text='${escapedText}':fontcolor=white:fontsize=42:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-th-80:enable='between(t,${overlay.startOffset},${overlay.endOffset})'`
+        `drawtext=text='${escapedText}':fontcolor=white:fontsize=42:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-th-80:enable='between(t,${ffFloat(overlay.startOffset)},${ffFloat(overlay.endOffset)})'`
       );
     }
   }
@@ -1565,14 +1571,14 @@ async function applyOverlaysSequentially(
     // Prepare filter for this single overlay
     let overlayFilter = "";
     if (overlay.type === "video") {
-      overlayFilter = `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black[ov];[0:v][ov]overlay=enable='between(t,${overlay.startTime},${overlay.startTime + duration})':eof_action=pass[v]`;
+      overlayFilter = `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black[ov];[0:v][ov]overlay=enable='between(t,${ffFloat(overlay.startTime)},${ffFloat(overlay.startTime + duration)})':eof_action=pass[v]`;
     } else {
       // Image overlay with simple zoompan
       const fps = 30;
       const totalFrames = Math.ceil(duration * fps);
       // Simplify simple zoom for sequential mode to reduce filter graph complexity
       const zoompan = `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
-      overlayFilter = `[1:v]${zoompan}[ov];[0:v][ov]overlay=enable='between(t,${overlay.startTime},${overlay.startTime + duration})':eof_action=pass[v]`;
+      overlayFilter = `[1:v]${zoompan}[ov];[0:v][ov]overlay=enable='between(t,${ffFloat(overlay.startTime)},${ffFloat(overlay.startTime + duration)})':eof_action=pass[v]`;
     }
 
     try {
@@ -1718,7 +1724,7 @@ async function applyAllBrollOverlays(
 
     const fd = overlay.fadeDur;
     filterParts.push(
-      `[${inputIndex}:v]format=yuva420p,fade=t=in:st=0:d=${fd.toFixed(2)}:alpha=1,fade=t=out:st=${Math.max(0, overlay.duration - fd).toFixed(2)}:d=${fd.toFixed(2)}:alpha=1,setpts=PTS-STARTPTS+${overlay.startTime}/TB${overlayStream}`
+      `[${inputIndex}:v]format=yuva420p,fade=t=in:st=0:d=${fd.toFixed(2)}:alpha=1,fade=t=out:st=${Math.max(0, overlay.duration - fd).toFixed(2)}:d=${fd.toFixed(2)}:alpha=1,setpts=PTS-STARTPTS+${ffFloat(overlay.startTime)}/TB${overlayStream}`
     );
 
     // Composite overlay onto current stream
@@ -2127,18 +2133,14 @@ async function applyEditsInternal(
   // Determine what to keep
   let segmentsToKeep: { start: number; end: number }[] = [];
 
-  // CRITICAL: If removeSilence is false (user didn't approve cuts), keep the ENTIRE video
-  // This takes priority over any keep/cut segments in the edit plan
+  // CRITICAL: If no cuts were explicitly approved in the review, keep the ENTIRE video.
+  // Cut actions require individual user approval in the review panel — if none were approved
+  // (removeSilence=false), the full video is preserved and B-roll overlays are still applied.
   if (!options.removeSilence) {
-    // Keep entire video - user did not approve any cuts
     segmentsToKeep = [{ start: 0, end: metadata.duration }];
-    videoLogger.info(`[Segments] KEEPING ENTIRE VIDEO: removeSilence is disabled (no cuts approved by user)`);
-    if (keepSegments.length > 0) {
-      videoLogger.debug(`[Segments] Ignoring ${keepSegments.length} keep segments - entire video will be preserved`);
-    }
-    if (cutSegments.length > 0) {
-      videoLogger.debug(`[Segments] Ignoring ${cutSegments.length} cut segments - entire video will be preserved`);
-    }
+    const keptIgnored = keepSegments.length > 0 ? ` (${keepSegments.length} AI-planned keep segments bypassed)` : "";
+    const cutIgnored = cutSegments.length > 0 ? ` (${cutSegments.length} AI-planned cut segments bypassed — not approved in review)` : "";
+    videoLogger.info(`[Segments] Full video preserved — no cuts were approved in review${keptIgnored}${cutIgnored}`);
   } else if (keepSegments.length > 0) {
     // Use explicit keep segments (only when removeSilence is true)
     segmentsToKeep = keepSegments.map(s => ({

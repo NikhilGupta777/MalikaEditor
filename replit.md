@@ -66,9 +66,9 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Data Validation & Integrity**: All edit actions, review data, and media assets undergo validation to ensure data consistency and prevent errors.
 - **Error Handling & Scalability**: User-friendly error messages, background processing with job queues, SSE auto-reconnection, and stale processing recovery.
 - **Persistence & Multi-User Support**: PostgreSQL storage, project history, and project expiration.
-- **Reliability Features**: Circuit breaker pattern for AI services, retry with exponential backoff, batch frame extraction, JSON parsing recovery for malformed AI responses, and feedback learning from user decisions.
+- **Reliability Features**: Circuit breaker pattern for AI services, retry with exponential backoff, batch frame extraction, JSON parsing recovery for malformed AI responses, and feedback learning from user decisions. Circuit breaker explicitly exempts HTTP 429 rate-limit errors — a throttled service stays "available" and does not trip the breaker.
 - **Processing Lock System**: Atomic lock acquisition prevents race conditions and ensures job integrity.
-- **AI Image Selection Priority**: Explicitly prioritizes AI-generated images over stock footage, with minimum usage requirements and guardrails to detect selection bias.
+- **AI Image Selection (No Source Bias)**: The media selector treats AI-generated images and stock media equally — the AI model picks purely on content quality and visual match. No source-type preference is applied in prefiltering, fallback scoring, or the AI selection prompt. The only meaningful distinction is video (has motion) vs still image (no motion) for motion-heavy windows.
 - **Resumable Processing with Database Checkpoints**: Processing jobs persist across server restarts via database-persisted checkpoints. The `processingStage` field tracks pipeline progress (upload, transcription, analysis, planning, media_fetch, media_selection, review_ready). On server startup, `recoverInterruptedJobs` automatically detects interrupted projects and resumes from the last completed checkpoint without redoing work.
 
 ## External Dependencies

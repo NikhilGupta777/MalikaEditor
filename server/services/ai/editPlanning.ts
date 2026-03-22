@@ -716,15 +716,16 @@ export async function generateSmartEditPlan(
   fillerSegments: { start: number; end: number; word: string }[],
   enhancedTranscript?: TranscriptEnhancedType,
   previousPlan?: EditPlan,
-  arbitrationResult?: ArbitrationResult
+  arbitrationResult?: ArbitrationResult,
+  projectId?: number
 ): Promise<EditPlan> {
-  const projectId = (analysis as any).projectId || 0;
-  aiLogger.info(`[SmartEditPlan] Generating autonomous multi-pass edit plan for project ${projectId}...`);
+  const resolvedProjectId = projectId ?? (analysis as any).projectId ?? 0;
+  aiLogger.info(`[SmartEditPlan] Generating autonomous multi-pass edit plan for project ${resolvedProjectId}...`);
 
   // --- START AUTONOMOUS CORRECTION LOOP ---
   // If we have arbitration feedback, trigger Pass 5 (Correction) instead of a fresh plan
   if (previousPlan && arbitrationResult && arbitrationResult.shouldReRender) {
-    aiLogger.info(`[Self-Correction] Triggering Pass 5 Correction for project ${projectId} based on Arbitrator feedback`);
+    aiLogger.info(`[Self-Correction] Triggering Pass 5 Correction for project ${resolvedProjectId} based on Arbitrator feedback`);
 
     // Identify actions flagged for replacement
     const flaggedActions = (arbitrationResult.correctionPlan || []).filter(a => (a as any).needsReplacement);

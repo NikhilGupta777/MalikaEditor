@@ -83,6 +83,22 @@ interface ErrorWithStatus extends Error {
   code?: number | string;
 }
 
+function isRateLimitError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const errWithStatus = error as ErrorWithStatus;
+    const status = errWithStatus.status || errWithStatus.statusCode || errWithStatus.code;
+    if (typeof status === "number" && status === 429) return true;
+
+    const message = error.message.toLowerCase();
+    const statusMatch = message.match(/status[:\s]*(\d+)/);
+    const parsedStatus = statusMatch ? parseInt(statusMatch[1]) : null;
+    if (parsedStatus === 429) return true;
+
+    return message.includes("rate limit") || message.includes("too many requests") || message.includes("429");
+  }
+  return false;
+}
+
 function isRetryableError(error: unknown): boolean {
   if (error instanceof Error) {
     const errWithStatus = error as ErrorWithStatus;
@@ -152,7 +168,10 @@ export async function withRetry<T>(
       lastError = error;
 
       if (attempt > config.maxRetries || !config.retryableErrors(error)) {
-        if (serviceName) recordFailure(circuitName);
+        // Do NOT open the circuit breaker for rate-limit errors (HTTP 429).
+        // Rate limiting means the service is UP but throttled — tripping the breaker
+        // would incorrectly block all future requests for the entire circuit-reset window.
+        if (serviceName && !isRateLimitError(error)) recordFailure(circuitName);
         break;
       }
 

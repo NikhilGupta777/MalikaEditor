@@ -811,8 +811,14 @@ export default function Editor() {
     if (!project) return;
 
     try {
-      // First, call backend to reset project status in database
-      await apiRequest("POST", `/api/videos/${project.id}/retry`, { stage: "all" });
+      // Call backend to reset project status. A 409 means the retry was already initiated
+      // (e.g. by ErrorDisplay's own mutation) — that is fine; we just continue to set up SSE.
+      try {
+        await apiRequest("POST", `/api/videos/${project.id}/retry`, { stage: "all" });
+      } catch (retryErr: any) {
+        const status = retryErr?.status ?? retryErr?.response?.status;
+        if (status !== 409) throw retryErr;
+      }
 
       // Reset local state
       setProject((prev) => prev ? {
@@ -836,7 +842,7 @@ export default function Editor() {
         addBroll: String(storedOptions.addBroll ?? true),
         removeSilence: String(storedOptions.removeSilence ?? true),
         generateAiImages: String(storedOptions.generateAiImages ?? true),
-        addTransitions: String(storedOptions.addTransitions ?? true),
+        addTransitions: String(storedOptions.addTransitions ?? false),
       });
 
       if (eventSourceRef.current) {
@@ -1231,6 +1237,31 @@ export default function Editor() {
                     isProcessing={false}
                     isComplete={true}
                   />
+                  {(() => {
+                    const selfReviewScore = (project.reviewData as any)?.selfReviewScore as number | undefined;
+                    const selfReviewResult = (project.reviewData as any)?.selfReviewResult as any;
+                    if (selfReviewScore == null) return null;
+                    const scoreColor = selfReviewScore >= 85 ? "text-green-600" : selfReviewScore >= 70 ? "text-yellow-600" : "text-red-600";
+                    const issues: any[] = selfReviewResult?.issues?.filter((i: any) => i.severity !== "minor") ?? [];
+                    return (
+                      <div className="mt-3 p-3 rounded-md bg-muted/40 text-left">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Sparkles className="h-4 w-4 text-primary flex-shrink-0" />
+                          <span className="text-sm font-medium">AI Quality Score: <span className={scoreColor}>{selfReviewScore}/100</span></span>
+                        </div>
+                        {issues.length > 0 && (
+                          <ul className="mt-1 space-y-0.5">
+                            {issues.slice(0, 3).map((issue: any, idx: number) => (
+                              <li key={idx} className="text-xs text-muted-foreground">• {issue.description ?? issue.message ?? String(issue)}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {selfReviewResult?.suggestions?.length > 0 && issues.length === 0 && (
+                          <p className="text-xs text-muted-foreground mt-1">{selfReviewResult.suggestions[0]}</p>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div className="mt-4 pt-4 border-t border-border">
                     {sourceFilesDeleted ? (
                       <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="status-source-files-deleted">

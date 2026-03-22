@@ -182,18 +182,13 @@ function preFilterCandidatesByMetadata(
     const matchingWords = candidateWords.filter(w => targetKeywords.has(w));
     score += Math.min(30, matchingWords.length * 10);
 
-    // 2. Source priority - balanced approach (0-15 points)
-    // Check if any B-roll window needs motion content
+    // 2. Media type relevance — no source bias (AI-generated vs stock treated equally)
+    // Only distinguish video vs still image based on whether motion content is needed.
     const hasMotionNeeds = brollWindows.some(w => detectMotionContent(w.suggestedQuery));
-
     if (hasMotionNeeds && candidate.type === "video") {
-      score += 18; // Videos strongly preferred when motion is needed
-    } else if (candidate.source === "ai") {
-      score += 12; // AI images good for specific concepts
-    } else if (candidate.type === "video") {
-      score += 14; // Videos generally valuable
+      score += 15; // Videos preferred when motion is needed (content-based, not source-based)
     } else {
-      score += 8; // Photos as fallback
+      score += 10; // Equal base score for all still-image sources (AI or stock photo)
     }
 
     // 3. Duration appropriateness for videos (0-15 points)
@@ -269,7 +264,11 @@ async function analyzeMediaThumbnails(
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  selectorLogger.info(`Visual analysis complete: ${results.size} thumbnails analyzed in ${elapsed}s`);
+  const failedCount = stockCandidates.length - results.size;
+  if (failedCount > 0) {
+    selectorLogger.warn(`Visual analysis: ${failedCount}/${stockCandidates.length} thumbnails failed silently — they will be selected without visual context`);
+  }
+  selectorLogger.info(`Visual analysis complete: ${results.size}/${stockCandidates.length} thumbnails analyzed in ${elapsed}s`);
 
   return results;
 }
@@ -616,11 +615,6 @@ ${windowDescriptions}
 AVAILABLE MEDIA FROM MULTIPLE SOURCES (use the number to select):
 ${candidateDescriptions}
 
-MEDIA SOURCES AVAILABLE:
-- AI-IMAGE (${aiImageCount} available): Custom-generated specifically for this video's exact content
-- PEXELS (${pexelsCount} available): Large stock library with diverse professional footage  
-- FREEPIK (${freepikCount} available): Premium stock library with high-quality creative assets
-
 SELECTION CRITERIA (use VISUAL descriptions to make informed decisions):
 1. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed? Don't trust just the query.
 2. CONTENT RELEVANCE - How well does the ACTUAL visual content match the B-roll window's context?
@@ -629,21 +623,18 @@ SELECTION CRITERIA (use VISUAL descriptions to make informed decisions):
 5. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
 6. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
 
-WHEN TO USE VIDEO vs AI-IMAGE:
-- **USE VIDEO** for: action scenes, motion, nature phenomena (water, fire, storms), crowds, traffic, anything that moves
-- **USE AI-IMAGE** for: symbolic concepts, abstract ideas, specific illustrations that stock doesn't have, spiritual/mystical imagery
-- Example: "volcanic eruption" → VIDEO is better (movement). "Ancient spiritual manuscript" → AI-IMAGE may be better (specific concept)
+MEDIA SOURCES AVAILABLE:
+- AI-IMAGE (${aiImageCount} available): Custom-generated visuals with exact prompts for this video's content
+- PEXELS-VIDEO: Professional motion footage
+- FREEPIK-VIDEO: Premium motion footage
+- PEXELS-PHOTO/FREEPIK-PHOTO: Professional still images
 
-SELECTION GUIDELINES:
-- AI-IMAGE (${aiImageCount} available): Custom-generated for specific concepts. Good for symbolic/abstract visuals.
-- PEXELS-VIDEO: Professional motion footage. **Prefer for action/motion content**.
-- FREEPIK-VIDEO: Premium motion footage. **Prefer for action/motion content**.
-- PEXELS-PHOTO/FREEPIK-PHOTO: Static images, use when stillness is appropriate.
-
-IMPORTANT: Do NOT blindly prefer AI images. Evaluate each window's needs:
-- If the query mentions motion/action/phenomena → prefer VIDEO
-- If the query is a specific symbolic concept → AI-IMAGE may be appropriate
-Choose the BEST option for each window based on what the content actually needs.
+CRITICAL RULE — NO SOURCE BIAS: Do NOT prefer or avoid any source (AI-IMAGE vs stock) based on where it comes from.
+Choose purely on CONTENT QUALITY and VISUAL MATCH for each window.
+The only meaningful distinction is VIDEO (has motion) vs STILL IMAGE (no motion):
+- For content that naturally involves movement → VIDEO generally fits better (check the VISUAL description)
+- For concepts, objects, or scenes where stillness works → any still image source is equally valid
+Judge each candidate on what it actually shows (read the VISUAL descriptions), not on whether it is AI-generated or stock.
 
 For windows >6 seconds, you may select 2-3 numbers that will be staggered.
 
@@ -933,23 +924,20 @@ function fallbackSelectForWindow(
     if (window.priority === "high") score += 3;
     else if (window.priority === "medium") score += 1;
 
-    // Motion-aware media selection
+    // Motion-aware media type preference (no source bias — AI-generated vs stock treated equally)
     const isMotionQuery = detectMotionContent(window.suggestedQuery);
 
-    // For motion content, strongly prefer video over static images
     if (isMotionQuery) {
+      // Motion content benefits from video regardless of source
       if (c.type === "video") {
-        score += 20; // Strong preference for video when motion is needed
-      } else if (c.source === "ai") {
-        score += 5; // AI images are static, less suitable for motion
+        score += 20; // Videos convey motion; AI-generated or stock are equal here
       } else {
-        score += 3; // Stock photos also static
+        score += 5; // Still images (any source) are less ideal for motion content
       }
     } else {
-      // For non-motion content, AI images can be good for specific concepts
-      if (c.source === "ai") score += 10; // Moderate preference for AI on non-motion
-      else if (c.type === "video") score += 6; // Videos still valuable
-      else score += 4; // Photos can work for static scenes
+      // For static/conceptual content all still-image sources are equally valid
+      if (c.type === "video") score += 8; // Videos can still work for non-motion
+      else score += 8; // Still images (AI or stock photo) equally valued
     }
 
     // Duration-appropriate media selection

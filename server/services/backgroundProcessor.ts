@@ -886,7 +886,10 @@ async function runProcessingPipeline(
       transcript,
       sanitizedAnalysis.semanticAnalysis || {},
       fillerSegments,
-      enhancedTranscript
+      enhancedTranscript,
+      undefined,
+      undefined,
+      projectId
     );
     addActivity(projectId, `Edit plan ready: ${editPlan.actions?.length || 0} actions planned`);
 
@@ -1333,7 +1336,8 @@ async function runProcessingPipeline(
               fillerSegments,
               enhancedTranscript,
               currentEditPlan,
-              arbitration
+              arbitration,
+              projectId
             );
 
             // 2. RE-SELECT media if we have previous stock variants

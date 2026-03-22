@@ -101,7 +101,7 @@ export async function performPreRenderReview(
   reviewData: ReviewData,
   userPrompt: string
 ): Promise<PreRenderReviewResult> {
-  reviewLogger.info("Starting AI pre-render review with Gemini 2.5 Flash...");
+  reviewLogger.info(`Starting AI pre-render review with ${AI_CONFIG.models.reviewPass}...`);
 
   const approvedCuts = reviewData.editPlan.actions.filter(a => a.type === "cut" && a.approved);
   const approvedKeeps = reviewData.editPlan.actions.filter(a => a.type === "keep" && a.approved);

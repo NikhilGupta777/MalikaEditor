@@ -127,7 +127,9 @@ export async function searchFreepikPhotos(
         freepikId: resource.id,
       }));
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
+    if (error instanceof Error && error.message.startsWith("Circuit breaker is open")) {
+      freepikLogger.warn(`Freepik photo search skipped: ${error.message}`);
+    } else if (axios.isAxiosError(error) && error.response?.status === 401) {
       freepikLogger.warn("Freepik API key invalid or expired");
     } else if (axios.isAxiosError(error) && error.response?.status === 429) {
       freepikLogger.warn("Freepik API rate limit reached (after retries)");
@@ -199,7 +201,9 @@ export async function searchFreepikVideos(
       })
       .filter((item: { url: string }) => item.url && item.url.length > 0);
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 401) {
+    if (error instanceof Error && error.message.startsWith("Circuit breaker is open")) {
+      freepikLogger.warn(`Freepik video search skipped: ${error.message}`);
+    } else if (axios.isAxiosError(error) && error.response?.status === 401) {
       freepikLogger.warn("Freepik API key invalid or expired");
     } else if (axios.isAxiosError(error) && error.response?.status === 429) {
       freepikLogger.warn("Freepik API rate limit reached");

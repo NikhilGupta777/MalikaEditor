@@ -265,7 +265,7 @@ export function ProcessingStatus({
         
         <Progress value={progress} className="h-2" />
         
-        <div className="grid grid-cols-4 gap-2 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           {scenesDetected !== undefined && scenesDetected > 0 && (
             <div className="bg-muted/50 rounded p-2 text-center" data-testid="stat-scenes">
               <div className="font-medium text-foreground">{scenesDetected}</div>

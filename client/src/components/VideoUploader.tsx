@@ -101,7 +101,7 @@ export function VideoUploader({
 
   if (isUploading) {
     return (
-      <Card className="p-8 border-2 border-primary/30 bg-primary/5">
+      <Card className="p-5 sm:p-8 border-2 border-primary/30 bg-primary/5">
         <div className="flex flex-col items-center gap-6">
           <div className="relative">
             <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full animate-pulse" />
@@ -193,7 +193,7 @@ export function VideoUploader({
   return (
     <Card
       className={cn(
-        "p-8 border-2 border-dashed transition-all cursor-pointer",
+        "p-5 sm:p-8 border-2 border-dashed transition-all cursor-pointer",
         isDragging
           ? "border-primary bg-primary/10 scale-[1.02]"
           : "border-muted-foreground/30 hover:border-primary/50 hover:bg-muted/50"

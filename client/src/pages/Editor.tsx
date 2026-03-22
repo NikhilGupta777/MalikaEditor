@@ -996,21 +996,34 @@ export default function Editor() {
     <div className="min-h-screen bg-background flex flex-col">
       {/* Simple Header */}
       <header className="border-b bg-card">
-        <div className="flex items-center justify-between h-14 px-4">
-          <div className="flex items-center gap-3">
-            <Film className="h-6 w-6 text-primary" />
-            <span className="font-bold text-lg">AI Video Editor</span>
+        <div className="flex items-center justify-between h-14 px-3 sm:px-4">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <Film className="h-5 w-5 sm:h-6 sm:w-6 text-primary shrink-0" />
+            <span className="font-bold text-base sm:text-lg truncate">AI Video Editor</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {project && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleNewProject}
                 data-testid="button-new-project"
+                className="hidden xs:flex sm:flex"
               >
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Start Over
+                <RotateCcw className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Start Over</span>
+              </Button>
+            )}
+            {project && (
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={handleNewProject}
+                data-testid="button-new-project-mobile"
+                className="flex xs:hidden sm:hidden h-8 w-8"
+                title="Start Over"
+              >
+                <RotateCcw className="h-4 w-4" />
               </Button>
             )}
             <Button
@@ -1019,9 +1032,10 @@ export default function Editor() {
               onClick={() => setShowLogs(v => !v)}
               data-testid="button-toggle-logs"
               title="Toggle server logs"
+              className="h-8 px-2 sm:px-3"
             >
-              <Terminal className="h-4 w-4 mr-2" />
-              Logs
+              <Terminal className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">Logs</span>
             </Button>
             <ThemeToggle />
           </div>
@@ -1032,8 +1046,11 @@ export default function Editor() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col lg:flex-row">
-        {/* Video Preview - Left/Top */}
-        <div className="flex-1 p-4 flex flex-col min-h-[300px] lg:min-h-0">
+        {/* Video Preview - Left/Top — hidden on mobile when no video */}
+        <div className={cn(
+          "flex-1 p-3 sm:p-4 flex flex-col lg:min-h-0",
+          !previewUrl ? "hidden lg:flex" : "flex min-h-[220px] sm:min-h-[280px]"
+        )}>
           <div className="flex-1 rounded-lg overflow-hidden bg-black relative">
             <VideoPreview
               src={previewUrl || undefined}
@@ -1072,8 +1089,8 @@ export default function Editor() {
         </div>
 
         {/* Control Panel - Right/Bottom */}
-        <div className="w-full lg:w-[480px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto h-[50vh] lg:h-[calc(100vh-56px)]">
-          <div className="p-4 space-y-4">
+        <div className="w-full lg:w-[480px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto flex-1 lg:h-[calc(100vh-56px)] lg:flex-none">
+          <div className="p-3 sm:p-4 space-y-3 sm:space-y-4">
 
             {/* Step 1: Upload */}
             {!project && (

@@ -116,17 +116,72 @@ export function LogViewer({ open, onClose }: LogViewerProps) {
       data-testid="log-viewer"
     >
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 shrink-0">
-        <Terminal className="h-4 w-4 text-green-400" />
-        <span className="text-sm font-mono font-semibold text-green-400">Server Logs</span>
-
-        <div className="flex items-center gap-1 ml-2">
+      <div className="flex flex-col shrink-0 border-b border-zinc-800">
+        {/* Top row: title + action buttons */}
+        <div className="flex items-center gap-2 px-3 py-2">
+          <Terminal className="h-4 w-4 text-green-400 shrink-0" />
+          <span className="text-sm font-mono font-semibold text-green-400">Server Logs</span>
+          <div className="ml-auto flex items-center gap-1">
+            {paused && newCount > 0 && (
+              <button
+                onClick={handleResume}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-xs font-mono hover:bg-yellow-500/30 transition-colors"
+                data-testid="button-resume-logs"
+              >
+                <ChevronDown className="h-3 w-3" />
+                {newCount} new
+              </button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+              onClick={() => paused ? handleResume() : setPaused(true)}
+              title={paused ? "Resume" : "Pause scroll"}
+              data-testid="button-pause-logs"
+            >
+              {paused ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+              onClick={handleClear}
+              title="Clear logs"
+              data-testid="button-clear-logs"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="hidden sm:flex h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+              onClick={() => setFullscreen(f => !f)}
+              title={fullscreen ? "Half screen" : "Full screen"}
+              data-testid="button-fullscreen-logs"
+            >
+              {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+              onClick={onClose}
+              title="Close"
+              data-testid="button-close-logs"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+        {/* Filter row — scrollable on mobile */}
+        <div className="flex items-center gap-1 px-3 pb-2 overflow-x-auto scrollbar-none">
           {(["all", "debug", "info", "warn", "error"] as const).map(lvl => (
             <button
               key={lvl}
               onClick={() => setFilter(lvl)}
               className={cn(
-                "px-2 py-0.5 rounded text-xs font-mono transition-colors",
+                "px-2 py-0.5 rounded text-xs font-mono transition-colors shrink-0",
                 filter === lvl
                   ? "bg-zinc-700 text-white"
                   : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
@@ -136,59 +191,6 @@ export function LogViewer({ open, onClose }: LogViewerProps) {
               {lvl}
             </button>
           ))}
-        </div>
-
-        <div className="ml-auto flex items-center gap-1.5">
-          {paused && newCount > 0 && (
-            <button
-              onClick={handleResume}
-              className="flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400 text-xs font-mono hover:bg-yellow-500/30 transition-colors"
-              data-testid="button-resume-logs"
-            >
-              <ChevronDown className="h-3 w-3" />
-              {newCount} new
-            </button>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-            onClick={() => paused ? handleResume() : setPaused(true)}
-            title={paused ? "Resume" : "Pause scroll"}
-            data-testid="button-pause-logs"
-          >
-            {paused ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-            onClick={handleClear}
-            title="Clear logs"
-            data-testid="button-clear-logs"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-            onClick={() => setFullscreen(f => !f)}
-            title={fullscreen ? "Half screen" : "Full screen"}
-            data-testid="button-fullscreen-logs"
-          >
-            {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-            onClick={onClose}
-            title="Close"
-            data-testid="button-close-logs"
-          >
-            <X className="h-4 w-4" />
-          </Button>
         </div>
       </div>
 
@@ -211,13 +213,13 @@ export function LogViewer({ open, onClose }: LogViewerProps) {
                 entry.level === "error" && "bg-red-950/20"
               )}
             >
-              <span className="text-zinc-600 shrink-0 tabular-nums w-20">
+              <span className="hidden xs:inline text-zinc-600 shrink-0 tabular-nums w-20">
                 {formatTime(entry.timestamp)}
               </span>
               <span className={cn("shrink-0 uppercase font-bold w-10 tabular-nums", LEVEL_STYLES[entry.level])}>
                 {entry.level === "debug" ? "DBG" : entry.level === "info" ? "INF" : entry.level === "warn" ? "WRN" : "ERR"}
               </span>
-              <span className="text-zinc-500 shrink-0 max-w-[90px] truncate">
+              <span className="hidden sm:inline text-zinc-500 shrink-0 max-w-[90px] truncate">
                 [{entry.context}]
               </span>
               <span className={cn("flex-1 break-all leading-relaxed", LEVEL_STYLES[entry.level])}>

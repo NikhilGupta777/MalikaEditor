@@ -138,7 +138,7 @@ export function PromptInput({
             >
               <Film className="h-4 w-4 text-green-500" />
               <span>Add Transitions</span>
-              <span className="text-xs text-muted-foreground ml-1">(crossfade between segments)</span>
+              <span className="hidden sm:inline text-xs text-muted-foreground ml-1">(crossfade between segments)</span>
             </Label>
           </div>
           
@@ -156,11 +156,11 @@ export function PromptInput({
             >
               <ImagePlus className="h-4 w-4 text-pink-500" />
               <span>AI Generated Images</span>
-              <span className="text-xs text-muted-foreground ml-1">(context-aware visuals)</span>
+              <span className="hidden sm:inline text-xs text-muted-foreground ml-1">(context-aware visuals)</span>
             </Label>
           </div>
           
-          <div className="flex items-center justify-between pt-2 border-t">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pt-2 border-t">
             <Label className="flex items-center gap-2">
               <Gauge className="h-4 w-4 text-purple-500" />
               <span>Output Quality</span>
@@ -172,7 +172,7 @@ export function PromptInput({
               }
               disabled={isProcessing}
             >
-              <SelectTrigger className="w-[140px]" data-testid="select-quality-mode">
+              <SelectTrigger className="w-full sm:w-[140px]" data-testid="select-quality-mode">
                 <SelectValue placeholder="Quality" />
               </SelectTrigger>
               <SelectContent>

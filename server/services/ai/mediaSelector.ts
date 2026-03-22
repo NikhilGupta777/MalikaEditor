@@ -293,55 +293,16 @@ interface EnhancedVideoContext {
   };
 }
 
-// Determine optimal B-roll duration based on pacing analysis
+// Return the AI-planned B-roll duration without artificial caps.
+// The AI planner already considers pacing, content type, and context when choosing duration.
+// Only enforce technical floor (0.5s) and ceiling (30s for safety).
 function getOptimalBrollDuration(
   windowStart: number,
   windowEnd: number,
-  pacingAnalysis?: EnhancedVideoContext["pacingAnalysis"]
+  _pacingAnalysis?: EnhancedVideoContext["pacingAnalysis"]
 ): number {
   const requestedDuration = windowEnd - windowStart;
-
-  if (!pacingAnalysis) {
-    // Default: cap at 5 seconds
-    return Math.min(requestedDuration, 5);
-  }
-
-  // Adjust based on overall pacing
-  let maxDuration: number;
-  switch (pacingAnalysis.overallPacing) {
-    case "fast":
-    case "dynamic":
-      maxDuration = 3; // Quick cuts for fast-paced content
-      break;
-    case "slow":
-      maxDuration = 6; // Longer B-roll for slow content
-      break;
-    case "moderate":
-    default:
-      maxDuration = 4;
-  }
-
-  // Check if this window is near a pacing adjustment point
-  // Supports both new format (timestamp/suggestion) and legacy format (start/end/adjustment)
-  const adjustments = pacingAnalysis.suggestedPacingAdjustments || [];
-  for (const adj of adjustments) {
-    // Support both new (timestamp) and legacy (start/end) formats
-    const adjTimestamp = adj.timestamp ?? ((adj as any).start ?? 0);
-    const isNearWindow = adjTimestamp >= windowStart - 2 && adjTimestamp <= windowEnd + 2;
-
-    if (isNearWindow) {
-      // Adjust duration based on pacing recommendation (support both formats)
-      const suggestionText = (adj.suggestion || (adj as any).adjustment || "").toLowerCase();
-      if (suggestionText.includes("speed up") || suggestionText.includes("faster")) {
-        maxDuration = Math.max(2, maxDuration - 1);
-      } else if (suggestionText.includes("slow down") || suggestionText.includes("slower") || suggestionText.includes("add pause")) {
-        maxDuration = Math.min(6, maxDuration + 1);
-      }
-      break;
-    }
-  }
-
-  return Math.min(requestedDuration, maxDuration);
+  return Math.max(0.5, Math.min(requestedDuration, 30));
 }
 
 // Determine if video should be preferred over image based on motion analysis

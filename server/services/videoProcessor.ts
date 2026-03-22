@@ -979,7 +979,7 @@ async function createImageBroll(
   width: number,
   height: number,
   textOverlay?: string,
-  animationPreset: AnimationPreset = "zoom_in"
+  animationPreset: AnimationPreset = "fade_only"
 ): Promise<void> {
   // Use the animation preset system for consistent zoompan effects
   const fps = 30;
@@ -1153,11 +1153,60 @@ interface TransitionResult {
   totalReduction: number; // Sum of all effective durations (total time reduced)
 }
 
+interface PerBoundaryTransition {
+  type: string;
+  duration: number;
+}
+
+function computePerBoundaryTransitions(
+  segments: { start: number; end: number }[]
+): PerBoundaryTransition[] {
+  const transitions: PerBoundaryTransition[] = [];
+
+  const allGaps: number[] = [];
+  for (let i = 1; i < segments.length; i++) {
+    allGaps.push(segments[i].start - segments[i - 1].end);
+  }
+  const medianGap = allGaps.length > 0
+    ? allGaps.sort((a, b) => a - b)[Math.floor(allGaps.length / 2)]
+    : 0;
+
+  for (let i = 1; i < segments.length; i++) {
+    const prevSeg = segments[i - 1];
+    const currSeg = segments[i];
+    const prevDuration = prevSeg.end - prevSeg.start;
+    const currDuration = currSeg.end - currSeg.start;
+    const minSegDur = Math.min(prevDuration, currDuration);
+    const sourceGap = currSeg.start - prevSeg.end;
+
+    let duration: number;
+    if (minSegDur < 2) {
+      duration = 0.2;
+    } else if (minSegDur < 5) {
+      duration = 0.3;
+    } else if (minSegDur < 15) {
+      duration = 0.5;
+    } else {
+      duration = 0.7;
+    }
+
+    let type = "fade";
+    if (sourceGap > 8 && medianGap > 0 && sourceGap > medianGap * 3) {
+      type = "wipeleft";
+    }
+
+    transitions.push({ type, duration });
+  }
+
+  return transitions;
+}
+
 async function concatSegmentsWithTransitions(
   segmentPaths: string[],
   outputPath: string,
   transitionDuration: number = 0.5,
-  tempFiles: string[]
+  tempFiles: string[],
+  perBoundary?: PerBoundaryTransition[]
 ): Promise<TransitionResult> {
   const effectiveDurations: number[] = [];
 
@@ -1170,7 +1219,7 @@ async function concatSegmentsWithTransitions(
     return { effectiveDurations: [], totalReduction: 0 };
   }
 
-  videoLogger.info(`Concatenating ${segmentPaths.length} segments with crossfade transitions (${transitionDuration}s)`);
+  videoLogger.info(`Concatenating ${segmentPaths.length} segments with transitions (base: ${transitionDuration}s, per-boundary: ${perBoundary ? 'yes' : 'no'})`);
 
   let currentPath = segmentPaths[0];
 
@@ -1181,17 +1230,21 @@ async function concatSegmentsWithTransitions(
       ? outputPath
       : path.join(OUTPUT_DIR, `trans_${uuidv4()}_${i}.mp4`);
 
+    const boundaryConfig = perBoundary && perBoundary[i - 1];
+    const transType = boundaryConfig?.type || "fade";
+    const transDur = boundaryConfig?.duration || transitionDuration;
+
     try {
       const actualDuration = await concatTwoWithTransition(
         currentPath,
         nextSegment,
         intermediatePath,
-        "fade",
-        transitionDuration
+        transType,
+        transDur
       );
 
       effectiveDurations.push(actualDuration);
-      videoLogger.debug(`Applied crossfade transition between segment ${i - 1} and ${i} (effective: ${actualDuration.toFixed(2)}s)`);
+      videoLogger.debug(`Applied ${transType} transition (${transDur}s→${actualDuration.toFixed(2)}s) between segment ${i - 1} and ${i}`);
 
       if (!isLastPair) {
         tempFiles.push(intermediatePath);
@@ -1422,10 +1475,21 @@ async function prepareOverlayMedia(
   width: number,
   height: number,
   outputPath: string,
-  animationPreset: AnimationPreset = "zoom_in"
+  animationPreset: AnimationPreset = "fade_only",
+  customFadeDuration?: number
 ): Promise<void> {
-  // Compute fade durations: 0.4s in/out, but never more than 1/3 of total duration
-  const fadeDur = Math.min(0.4, duration / 3);
+  let fadeDur: number;
+  if (customFadeDuration !== undefined) {
+    fadeDur = Math.min(customFadeDuration, duration / 3);
+  } else if (duration < 2) {
+    fadeDur = Math.min(0.15, duration / 3);
+  } else if (duration < 4) {
+    fadeDur = Math.min(0.25, duration / 3);
+  } else if (duration < 8) {
+    fadeDur = Math.min(0.4, duration / 3);
+  } else {
+    fadeDur = Math.min(0.6, duration / 3);
+  }
   const fadeOutStart = Math.max(0, duration - fadeDur);
   const fadeFilter = `fade=t=in:st=0:d=${fadeDur.toFixed(2)},fade=t=out:st=${fadeOutStart.toFixed(2)}:d=${fadeDur.toFixed(2)}`;
 
@@ -1583,21 +1647,18 @@ async function applyAllBrollOverlays(
   }
 
   const outputId = uuidv4();
-  const fadeDuration = 0.5; // Longer fade for smoother transitions
   const { preset, crf } = ENCODING_PRESETS[quality];
 
   videoLogger.info(`Applying ${overlays.length} overlays in single pass (quality: ${quality})`);
 
-  // Step 1: Prepare all overlay video files (sequential to reduce CPU/memory pressure)
-  const preparedOverlays: { path: string; startTime: number; duration: number }[] = [];
+  const preparedOverlays: { path: string; startTime: number; duration: number; fadeDur: number }[] = [];
 
   for (let i = 0; i < overlays.length; i++) {
     const overlay = overlays[i];
     const overlayVideoPath = path.join(OUTPUT_DIR, `overlay_${outputId}_${i}.mp4`);
 
     try {
-      // Use animation preset from overlay, defaulting to zoom_in for images
-      const animPreset = overlay.animationPreset || "zoom_in";
+      const animPreset = overlay.animationPreset || "fade_only";
 
       await prepareOverlayMedia(
         { item: { type: overlay.type, url: "", query: "", duration: overlay.duration }, localPath: overlay.localPath },
@@ -1611,10 +1672,22 @@ async function applyAllBrollOverlays(
       tempFiles.push(overlayVideoPath);
       videoLogger.debug(`Prepared overlay ${i}: at ${overlay.startTime}s for ${overlay.duration}s (animation: ${animPreset})`);
 
+      let overlayFadeDur: number;
+      if (overlay.duration < 2) {
+        overlayFadeDur = Math.min(0.15, overlay.duration / 3);
+      } else if (overlay.duration < 4) {
+        overlayFadeDur = Math.min(0.25, overlay.duration / 3);
+      } else if (overlay.duration < 8) {
+        overlayFadeDur = Math.min(0.4, overlay.duration / 3);
+      } else {
+        overlayFadeDur = Math.min(0.6, overlay.duration / 3);
+      }
+
       preparedOverlays.push({
         path: overlayVideoPath,
         startTime: overlay.startTime,
         duration: overlay.duration,
+        fadeDur: overlayFadeDur,
       });
 
       // Small sleep to let system breathe and prevent SIGKILL
@@ -1643,9 +1716,9 @@ async function applyAllBrollOverlays(
     const overlayStream = `[ov${i}]`;
     const outputStream = i === preparedOverlays.length - 1 ? "[outv]" : `[tmp${i}]`;
 
-    // Apply fade effects and timing shift to overlay
+    const fd = overlay.fadeDur;
     filterParts.push(
-      `[${inputIndex}:v]format=yuva420p,fade=t=in:st=0:d=${fadeDuration}:alpha=1,fade=t=out:st=${Math.max(0, overlay.duration - fadeDuration)}:d=${fadeDuration}:alpha=1,setpts=PTS-STARTPTS+${overlay.startTime}/TB${overlayStream}`
+      `[${inputIndex}:v]format=yuva420p,fade=t=in:st=0:d=${fd.toFixed(2)}:alpha=1,fade=t=out:st=${Math.max(0, overlay.duration - fd).toFixed(2)}:d=${fd.toFixed(2)}:alpha=1,setpts=PTS-STARTPTS+${overlay.startTime}/TB${overlayStream}`
     );
 
     // Composite overlay onto current stream
@@ -2113,9 +2186,9 @@ async function applyEditsInternal(
   }
 
   // CROSSFADE SAFETY: Filter out or merge segments that are too short for transitions
-  // Segments need to be at least 2x the transition duration to allow crossfades on both ends
-  const transitionDuration = 0.5;
-  const minSegmentDuration = transitionDuration * 2; // 1 second minimum
+  // Use 0.2s (smallest possible per-boundary transition) as reference
+  const transitionDuration = 0.2;
+  const minSegmentDuration = transitionDuration * 2; // 0.4 second minimum
 
   if (options.addTransitions && segmentsToKeep.length > 1) {
     const originalCount = segmentsToKeep.length;
@@ -2231,10 +2304,9 @@ async function applyEditsInternal(
   } else {
     // Multiple segments - concatenate
     const segmentPaths: string[] = [];
-    const transitionDurationTarget = 0.5; // Target transition duration
+    const transitionDurationTarget = 0.5;
     const useTransitions = options.addTransitions && segmentsToKeep.length > 1;
 
-    // First, create all segment files
     for (let i = 0; i < segmentsToKeep.length; i++) {
       const seg = segmentsToKeep[i];
       const segPath = path.join(OUTPUT_DIR, `seg_${outputId}_${i}.mp4`);
@@ -2246,12 +2318,12 @@ async function applyEditsInternal(
 
     baseVideoPath = path.join(OUTPUT_DIR, `base_${outputId}.mp4`);
 
-    // Track actual transition durations for precise mapping
     let transitionResult: TransitionResult = { effectiveDurations: [], totalReduction: 0 };
 
     if (useTransitions) {
-      videoLogger.info(`Applying crossfade transitions between ${segmentPaths.length} segments...`);
-      transitionResult = await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, transitionDurationTarget, tempFiles);
+      const perBoundary = computePerBoundaryTransitions(segmentsToKeep);
+      videoLogger.info(`Applying context-aware transitions between ${segmentPaths.length} segments...`);
+      transitionResult = await concatSegmentsWithTransitions(segmentPaths, baseVideoPath, transitionDurationTarget, tempFiles, perBoundary);
     } else {
       await concatSegmentsSimple(segmentPaths, baseVideoPath);
     }
@@ -2498,20 +2570,17 @@ async function applyEditsInternal(
       }
 
       if (outputTime !== null && outputTime >= 0 && outputTime < baseMetadata.duration) {
-        // Calculate duration from AI selector timing or media duration
-        let duration = Math.min(
+        let duration = Math.max(0.5, Math.min(
           sourceEndTime - sourceTime,
-          mediaItem.item.duration || 5,
-          5
-        );
+          mediaItem.item.duration || 30,
+          30
+        ));
 
-        // Clamp duration if extends beyond video end
         if (outputTime + duration > baseMetadata.duration) {
           const overflow = (outputTime + duration) - baseMetadata.duration;
           duration = Math.max(0.5, duration - overflow);
         }
 
-        // Check overlap with existing overlays (AI images and previous stock)
         const overlapsExisting = brollOverlays.some(o =>
           intervalsOverlap(outputTime!, outputTime! + duration, o.startTime, o.startTime + o.duration)
         );
@@ -2522,6 +2591,7 @@ async function applyEditsInternal(
             type: mediaItem.item.type as "video" | "image" | "ai_generated",
             startTime: outputTime,
             duration,
+            animationPreset: (mediaItem.item as any).animationPreset || undefined,
           });
           stockMediaApplied++;
           videoLogger.info(`[Stock OK] ${mediaItem.item.type} at output=${outputTime.toFixed(2)}s (src=${sourceTime.toFixed(2)}s) for ${duration.toFixed(2)}s via ${mappingStrategy}: ${itemQuery.substring(0, 50)}`);
@@ -2551,32 +2621,32 @@ async function applyEditsInternal(
       }
 
       if (outputTime !== null && outputTime >= 0 && outputTime < baseMetadata.duration) {
-        // Calculate initial duration
-        let duration = Math.min(
+        let duration = Math.max(0.5, Math.min(
           action.duration || (action.end && action.start ? action.end - action.start : 4),
-          mediaItem.item.duration || 5,
-          5
-        );
+          mediaItem.item.duration || 30,
+          30
+        ));
 
-        // Clamp duration if extends beyond video end (same safety as AI images)
         if (outputTime + duration > baseMetadata.duration) {
           const overflow = (outputTime + duration) - baseMetadata.duration;
           duration = Math.max(0.5, duration - overflow);
           videoLogger.debug(`[Stock] Clamped duration to ${duration.toFixed(2)}s to fit before video end`);
         }
 
-        // Check if this time overlaps with any existing overlay (using actual durations)
         const overlapsExisting = brollOverlays.some(o =>
           intervalsOverlap(outputTime!, outputTime! + duration, o.startTime, o.startTime + o.duration)
         );
 
         if (!overlapsExisting && duration > 0) {
+          const actionAnimPreset = (action as any).animationPreset;
+          const validPresets = ["zoom_in", "zoom_out", "pan_left", "pan_right", "fade_only"];
           brollOverlays.push({
             localPath: mediaItem.localPath,
             type: mediaItem.item.type as "video" | "image" | "ai_generated",
             startTime: outputTime,
             duration,
             text: action.text,
+            animationPreset: actionAnimPreset && validPresets.includes(actionAnimPreset) ? actionAnimPreset : undefined,
           });
           stockWithoutTimingIdx++;
           stockMediaApplied++;
@@ -2593,7 +2663,7 @@ async function applyEditsInternal(
 
       for (let i = 0; i < remainingStock.length; i++) {
         const startTime = interval * (i + 1);
-        let duration = Math.min(remainingStock[i].item.duration || 5, 3);
+        let duration = Math.max(0.5, Math.min(remainingStock[i].item.duration || 5, 30));
 
         // Clamp duration if extends beyond video end
         if (startTime + duration > baseMetadata.duration) {

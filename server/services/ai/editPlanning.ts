@@ -55,6 +55,7 @@ const EditActionSchema = z.discriminatedUnion("type", [
     transcriptContext: z.string().optional(),
     reason: z.string().optional(),
     priority: z.enum(["low", "medium", "high"]).optional(),
+    animationPreset: z.enum(["zoom_in", "zoom_out", "pan_left", "pan_right", "fade_only"]).optional(),
   }),
   z.object({
     type: z.literal("insert_ai_image"),
@@ -63,6 +64,7 @@ const EditActionSchema = z.discriminatedUnion("type", [
     imagePrompt: z.string().optional(),
     reason: z.string().optional(),
     priority: z.enum(["low", "medium", "high"]).optional(),
+    animationPreset: z.enum(["zoom_in", "zoom_out", "pan_left", "pan_right", "fade_only"]).optional(),
   }),
   z.object({
     type: z.literal("add_caption"),

@@ -155,6 +155,7 @@ export interface OptimizedBrollPlan {
     transcriptContext: string;
     priority: "high" | "medium" | "low";
     reason: string;
+    animationPreset?: string;
   }>;
   fillerActions: Array<{
     start: number;
@@ -211,6 +212,8 @@ const QualityMapSchema = z.object({
   mustKeepSegments: z.array(z.object({ start: z.number(), end: z.number(), reason: z.string() })),
 });
 
+const VALID_ANIMATION_PRESETS = ["zoom_in", "zoom_out", "pan_left", "pan_right", "fade_only"] as const;
+
 const OptimizedBrollPlanSchema = z.object({
   brollPlacements: z.array(z.object({
     start: z.number(),
@@ -220,6 +223,7 @@ const OptimizedBrollPlanSchema = z.object({
     priority: z.enum(["high", "medium", "low"])
       .or(z.string().transform(normalizePriority)),
     reason: z.string(),
+    animationPreset: z.enum(VALID_ANIMATION_PRESETS).optional(),
   })),
   fillerActions: z.array(z.object({
     start: z.number(),
@@ -556,10 +560,17 @@ B-ROLL OPTIMIZATION RULES:
 5. B-roll may appear anywhere in the video — intro, outro, emotional moments, or continuously if that is the right creative choice
 6. Duration: YOU DECIDE what feels right for each clip. Minimum 0.5s (technical floor only).
 
+ANIMATION PRESET (choose per clip):
+- "fade_only": Gentle hold with no movement. Best for text-heavy images, infographics, quotes, or calm moments.
+- "zoom_out": Starts close, reveals the full image. Best for landscapes, wide establishing shots, group photos.
+- "pan_left": Slow pan from right to left. Best for panoramic scenes, timelines, maps, cityscapes.
+- "pan_right": Slow pan from left to right. Best for panoramic scenes, before/after reveals.
+- "zoom_in": Starts wide, pushes in. Use SPARINGLY — only for dramatic emphasis or focusing on a detail.
+
 Respond in JSON format only (no markdown):
 {
   "brollPlacements": [
-    {"start": number, "duration": number, "query": "ULTRA-SPECIFIC search query", "transcriptContext": "what speaker is saying", "priority": "high|medium|low", "reason": "why B-roll here"}
+    {"start": number, "duration": number, "query": "ULTRA-SPECIFIC search query", "transcriptContext": "what speaker is saying", "priority": "high|medium|low", "reason": "why B-roll here", "animationPreset": "fade_only|zoom_out|pan_left|pan_right|zoom_in"}
   ],
   "fillerActions": [{"start": number, "end": number, "word": "the filler word", "action": "cut|overlay"}],
   "cutActions": [{"start": number, "end": number, "reason": "why to cut this segment"}]
@@ -592,11 +603,12 @@ Respond in JSON format only (no markdown):
     const brollPlacements = validateBrollSpacing(
       validated.data.brollPlacements.map((b) => ({
         start: Math.max(0, b.start),
-        duration: Math.max(0.5, b.duration), // Only technical minimum
+        duration: Math.max(0.5, b.duration),
         query: b.query || "background footage",
         transcriptContext: b.transcriptContext,
         priority: b.priority,
         reason: b.reason,
+        animationPreset: b.animationPreset,
       })),
       duration
     );
@@ -613,24 +625,23 @@ Respond in JSON format only (no markdown):
 }
 
 function validateBrollSpacing(
-  placements: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: string; reason: string }>,
+  placements: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: string; reason: string; animationPreset?: string }>,
   duration: number
-): Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> {
+): Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string; animationPreset?: string }> {
   const sorted = [...placements].sort((a, b) => a.start - b.start);
-  const validated: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> = [];
+  const validated: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string; animationPreset?: string }> = [];
   let lastEnd = 0;
 
   const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
 
   for (const placement of sorted) {
-    // Only technical constraints: no overlapping clips AND must start before video ends
     const noOverlap = placement.start >= lastEnd;
     const beforeEnd = placement.start < validDuration - 0.1;
 
     if (noOverlap && beforeEnd) {
-      // Clamp end to video duration
       const clampedDuration = Math.min(placement.duration, validDuration - placement.start);
-      validated.push({ ...placement, duration: Math.max(0.5, clampedDuration), priority: placement.priority as "high" | "medium" | "low" });
+      const validPreset = placement.animationPreset && (VALID_ANIMATION_PRESETS as readonly string[]).includes(placement.animationPreset) ? placement.animationPreset : undefined;
+      validated.push({ ...placement, duration: Math.max(0.5, clampedDuration), priority: placement.priority as "high" | "medium" | "low", animationPreset: validPreset });
       lastEnd = placement.start + clampedDuration;
     } else {
       aiLogger.debug(`Pass 3: Skipping B-roll at ${placement.start}s: noOverlap=${noOverlap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, duration=${validDuration}s)`);
@@ -811,6 +822,13 @@ B-ROLL RULES:
 - NO PLACEHOLDERS: All search queries must be real, descriptive, and content-relevant.
 - JSON STRICTNESS: Respond ONLY with a valid JSON object. No markdown, no backticks, no explanatory text outside the JSON.
 
+ANIMATION PRESET (choose per B-roll clip):
+- "fade_only": Gentle hold with no movement. Best for text-heavy images, infographics, quotes, or calm moments.
+- "zoom_out": Starts close, reveals the full image. Best for landscapes, wide establishing shots, group photos.
+- "pan_left": Slow pan from right to left. Best for panoramic scenes, timelines, maps, cityscapes.
+- "pan_right": Slow pan from left to right. Best for panoramic scenes, before/after reveals.
+- "zoom_in": Starts wide, pushes in. Use SPARINGLY — only for dramatic emphasis or focusing on a detail.
+
 Respond in JSON only (no markdown):
 {
   "structure": {
@@ -828,7 +846,7 @@ Respond in JSON only (no markdown):
     "mustKeepSegments": [{"start": number, "end": number, "reason": "string", "isKeyMoment": boolean}]
   },
   "broll": {
-    "brollPlacements": [{"start": number, "duration": 2-6, "query": "SPECIFIC search query using entities if mentioned", "transcriptContext": "what speaker says", "priority": "high|medium|low", "reason": "string", "preferVideo": boolean, "emotionMatch": "emotion to match", "shouldUseBroll": true, "whyBroll": "explanation of why B-roll is appropriate here"}],
+    "brollPlacements": [{"start": number, "duration": number, "query": "SPECIFIC search query using entities if mentioned", "transcriptContext": "what speaker says", "priority": "high|medium|low", "reason": "string", "preferVideo": boolean, "emotionMatch": "emotion to match", "shouldUseBroll": true, "whyBroll": "explanation of why B-roll is appropriate here", "animationPreset": "fade_only|zoom_out|pan_left|pan_right|zoom_in"}],
     "fillerActions": [{"start": number, "end": number, "word": "string", "action": "cut|overlay"}],
     "cutActions": [{"start": number, "end": number, "reason": "string", "isSpeakerChange": boolean, "isSceneBoundary": boolean}]
   },
@@ -911,11 +929,12 @@ Respond in JSON only (no markdown):
     const brollPlacements = validateBrollSpacing(
       (brollData.brollPlacements || []).map((b: any) => ({
         start: Math.max(0, b.start),
-        duration: Math.max(0.5, b.duration || 4), // Only technical minimum
+        duration: Math.max(0.5, b.duration || 4),
         query: b.query || "background footage",
         transcriptContext: b.transcriptContext || "",
         priority: normalizePriority(b.priority || "medium"),
         reason: b.reason || "",
+        animationPreset: b.animationPreset,
       })),
       duration
     );
@@ -986,6 +1005,7 @@ export async function executePass4QualityReview(
       transcriptContext: broll.transcriptContext,
       reason: broll.reason,
       priority: broll.priority,
+      animationPreset: broll.animationPreset,
     });
   }
 
@@ -1080,6 +1100,7 @@ Respond in JSON format only (no markdown):
 
     const reviewedActions: EditAction[] = validated.data.actions.map(a => {
       const rawAction = a as Record<string, unknown>;
+      const validAnimPresets = ["zoom_in", "zoom_out", "pan_left", "pan_right", "fade_only"];
       return {
         type: a.type,
         start: typeof rawAction.start === "number" ? Math.max(0, rawAction.start) : undefined,
@@ -1090,6 +1111,7 @@ Respond in JSON format only (no markdown):
         reason: typeof rawAction.reason === "string" ? rawAction.reason : undefined,
         priority: typeof rawAction.priority === "string" ? (rawAction.priority as "low" | "medium" | "high") : undefined,
         qualityScore: typeof rawAction.qualityScore === "number" ? rawAction.qualityScore : 50,
+        animationPreset: typeof rawAction.animationPreset === "string" && validAnimPresets.includes(rawAction.animationPreset) ? rawAction.animationPreset : undefined,
       } as EditAction;
     });
 

@@ -53,8 +53,11 @@ The AI services are modularized for transcription, video analysis, semantic anal
 7.  **Self-Review**: AI watches rendered output, evaluates quality, and reports issues/scores.
 
 ### B-Roll and Transitions
-- **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, fade transitions, Ken Burns effect, and smart AI image placement.
-- **Video Transitions**: Implements crossfade transitions between video segments using FFmpeg's `xfade` filter.
+- **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, context-aware fade transitions, per-clip animation presets (fade_only, zoom_in, zoom_out, pan_left, pan_right), and smart AI image placement.
+- **AI Animation Control**: AI planner chooses animation preset per B-roll clip based on content type. Default is `fade_only` (gentle hold). No artificial duration caps — AI's planned durations are respected (0.5–30s safety bounds only).
+- **Context-Aware Transitions**: Per-boundary transition types (fade default, wipeleft at major section breaks where source gap > 8s and > 3× median gap). Transition durations scale with segment length (0.2–0.7s).
+- **Context-Aware B-Roll Fading**: Overlay fade-in/out durations scale with clip length: 0.15s for clips <2s, 0.25s for 2-4s, 0.4s for 4-8s, 0.6s for >8s.
+- **Video Transitions**: Implements crossfade and wipeleft transitions between video segments using FFmpeg's `xfade` filter. Supports fade, wipeleft, wiperight, wipeup, wipedown, slideleft, slideright, circleopen, circleclose.
 - **Enhanced Media Selection System**: AI visually analyzes stock media thumbnails using Gemini Vision, generates detailed descriptions, and intelligently selects the best media for B-roll windows, ensuring global optimality and strict duplicate prevention.
 
 ### Performance and Reliability

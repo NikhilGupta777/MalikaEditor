@@ -309,7 +309,7 @@ export function validateAndFixBrollActions(
 
       // Ensure non-negative
       start = Math.max(0, start);
-      actionDuration = Math.max(0.5, Math.min(actionDuration, 10)); // 0.5-10 seconds
+      actionDuration = Math.max(0.5, Math.min(actionDuration, 30)); // 0.5-30 seconds
 
       // Ensure within video bounds
       if (start >= validDuration) {
@@ -594,8 +594,8 @@ SILENT SEGMENTS (candidates for cutting):
 ${analysis.silentSegments?.map(s => `  - ${s.start.toFixed(1)}s to ${s.end.toFixed(1)}s`).join("\n") || "None detected"}
 
 TRANSCRIPT WITH CONTEXT:
-${transcript.slice(0, 50).map(t => `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`).join("\n")}
-${transcript.length > 50 ? `\n... (${transcript.length - 50} more segments)` : ""}
+${transcript.slice(0, 100).map(t => `[${t.start.toFixed(1)}s-${t.end.toFixed(1)}s]: ${t.text}`).join("\n")}
+${transcript.length > 100 ? `\n... (${transcript.length - 100} more segments)` : ""}
 
 Total video duration: ${analysis.duration.toFixed(1)} seconds
 
@@ -824,8 +824,11 @@ export async function generateSmartEditPlan(
         type: "insert_stock" as const,
         start: p.start,
         end: p.start + p.duration,
+        duration: p.duration,
         stockQuery: p.query,
-        mediaType: "video" as const
+        reason: p.reason,
+        priority: p.priority,
+        animationPreset: p.animationPreset,
       })),
       qualityMetrics: {
         overallScore: 70,

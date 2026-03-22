@@ -710,7 +710,7 @@ export async function executeConsolidatedAnalysis(
   const pacingAnalysis = enhancedAnalysis?.pacingAnalysis;
   const audioVisualSync = enhancedAnalysis?.audioVisualSync;
 
-  const transcriptText = transcript.slice(0, 40).map(t =>
+  const transcriptText = transcript.slice(0, 100).map(t =>
     `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
   ).join("\n");
 
@@ -730,8 +730,8 @@ MOTION ANALYSIS (from full video watching):
 - Has Significant Motion: ${motionAnalysis.hasSignificantMotion ? "YES" : "NO"}
 ${(motionAnalysis.actionSequences?.length || 0) > 0 ? `- Action Sequences:\n${motionAnalysis.actionSequences!.slice(0, 5).map((a) => `  [${safeFixed(a.start)}s-${safeFixed(a.end)}s]: ${a.description}`).join("\n")}` : ""}
 MOTION EDITING GUIDANCE:
-- For HIGH motion segments: Use shorter B-roll (2-3s), prefer VIDEO over images
-- For LOW motion segments: Can use longer B-roll (4-6s), images work well
+- For HIGH motion segments: prefer VIDEO over static images to match the dynamic content
+- For LOW motion segments: images work well for calm, reflective moments
 - Place B-roll during action sequences to enhance visual interest` : "";
 
   // Build transition analysis context for AI
@@ -750,7 +750,7 @@ ${(pacingAnalysis.suggestedPacingAdjustments?.length || 0) > 0 ? `PACING ADJUSTM
 PACING GUIDANCE:
 - SLOW pacing: Add more B-roll, use quick cuts to increase energy
 - FAST pacing: Use minimal B-roll, let content breathe
-- Match B-roll duration to pacing: fast=2-3s, moderate=3-4s, slow=4-5s` : "";
+- Duration: YOU decide what feels right for each clip based on pacing — there is no enforced range` : "";
 
   // Build sync quality context
   const syncContext = audioVisualSync ? `
@@ -1046,7 +1046,7 @@ Generate the FINAL reviewed and refined edit plan.
 Respond in JSON format only (no markdown):
 {
   "actions": [
-    {"type": "keep|cut|insert_stock|add_caption|transition", "start": number, "end": number, "duration": number, "stockQuery": "string", "transcriptContext": "string", "reason": "string", "priority": "high|medium|low", "qualityScore": number (0-100)}
+    {"type": "keep|cut|insert_stock|add_caption|transition", "start": number, "end": number, "duration": number, "stockQuery": "string", "transcriptContext": "string", "reason": "string", "priority": "high|medium|low", "qualityScore": number (0-100), "animationPreset": "fade_only|zoom_out|pan_left|pan_right|zoom_in"}
   ],
   "qualityMetrics": {"pacing": "slow|moderate|fast", "brollRelevance": "high|medium|low", "narrativeFlow": "high|medium|low", "overallScore": number (0-100)},
   "recommendations": ["improvement suggestions"],

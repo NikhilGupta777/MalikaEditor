@@ -54,6 +54,7 @@ interface BrollWindow {
   suggestedQuery: string;
   priority: "high" | "medium" | "low";
   context?: string;
+  animationPreset?: string;
 }
 
 export interface MediaCandidate {
@@ -597,7 +598,7 @@ MOTION GUIDANCE: For windows marked "[MOTION: prefer VIDEO]", prioritize stock V
 PACING ANALYSIS:
 - Overall Pacing: ${videoContext.pacingAnalysis.overallPacing}
 - Pacing Variation: ${videoContext.pacingAnalysis.pacingVariation}%
-PACING GUIDANCE: ${videoContext.pacingAnalysis.overallPacing === "fast" ? "Use shorter B-roll clips (2-3s) for fast-paced content" : videoContext.pacingAnalysis.overallPacing === "slow" ? "Can use longer B-roll clips (4-6s) for slower pacing" : "Use moderate B-roll durations (3-4s)"}` : "";
+PACING GUIDANCE: ${videoContext.pacingAnalysis.overallPacing === "fast" ? "Prefer VIDEO over static images for fast-paced content" : videoContext.pacingAnalysis.overallPacing === "slow" ? "Images work well for slower, reflective pacing" : "Balance video and images for moderate pacing"}` : "";
 
   const prompt = `You are a professional video editor selecting B-roll media for a video.
 
@@ -1052,7 +1053,7 @@ export function convertSelectionsToStockMediaItems(
   for (const selection of selections) {
     const windowDuration = selection.window.end - selection.window.start;
     const clipCount = selection.selectedMedia.length;
-    const clipDuration = clipCount > 1 ? Math.min(windowDuration / clipCount, 4) : windowDuration;
+    const clipDuration = windowDuration / clipCount;
 
     let currentOffset = 0;
     for (let i = 0; i < selection.selectedMedia.length; i++) {
@@ -1078,6 +1079,7 @@ export function convertSelectionsToStockMediaItems(
           duration: media.duration,
           startTime: staggeredStart,
           endTime: staggeredEnd,
+          animationPreset: selection.window.animationPreset as "zoom_in" | "zoom_out" | "pan_left" | "pan_right" | "fade_only" | undefined,
         });
       }
 

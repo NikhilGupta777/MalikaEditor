@@ -928,6 +928,7 @@ async function runProcessingPipeline(
           suggestedQuery: a.stockQuery || a.query || a.prompt || '',
           priority: a.priority || 'medium' as const,
           context: a.reason || a.context || '',
+          animationPreset: a.animationPreset || undefined,
         };
       })
       .filter((w: any) => w.end > w.start); // Ensure valid windows
@@ -1031,7 +1032,7 @@ async function runProcessingPipeline(
       }
 
       const selectionResult = await selectBestMediaForWindows(
-        brollWindows as { start: number; end: number; suggestedQuery: string; priority: "high" | "medium" | "low"; context?: string }[],
+        brollWindows as { start: number; end: number; suggestedQuery: string; priority: "high" | "medium" | "low"; context?: string; animationPreset?: string }[],
         stockVariants,
         generatedAiImages,
         {

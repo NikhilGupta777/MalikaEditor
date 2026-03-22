@@ -857,6 +857,8 @@ export const stockMediaItemSchema = z.object({
   // Timing info for deterministic placement (AI images)
   startTime: coercedNumber().optional(),
   endTime: coercedNumber().optional(),
+  // Animation preset for image overlays (carried from edit plan through media selection)
+  animationPreset: z.enum(["zoom_in", "zoom_out", "pan_left", "pan_right", "fade_only"]).optional(),
 });
 
 export type StockMediaItem = z.infer<typeof stockMediaItemSchema>;

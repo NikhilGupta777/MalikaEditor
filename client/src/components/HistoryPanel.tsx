@@ -66,6 +66,7 @@ function getStatusLabel(status: string): string {
     transcribing: "Transcribing",
     planning: "Planning",
     fetching_stock: "Fetching Media",
+    selecting_media: "Selecting Media",
     generating_ai_images: "Generating Images",
     awaiting_review: "Awaiting Review",
     editing: "Editing",

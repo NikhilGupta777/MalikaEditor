@@ -125,6 +125,12 @@ const STEPS = [
     icon: Image,
   },
   { 
+    id: "selecting_media", 
+    label: "AI selecting best clips",
+    description: "Analyzing thumbnails and choosing the most relevant media for each moment...",
+    icon: Image,
+  },
+  { 
     id: "generating_ai_images", 
     label: "Generating AI images",
     description: "Creating custom AI-generated images based on your content...",

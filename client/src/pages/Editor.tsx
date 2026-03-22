@@ -277,7 +277,7 @@ export default function Editor() {
       }
 
       // Auto-reconnect to processing if project is in a processing state
-      const processingStates = ["analyzing", "transcribing", "planning", "fetching_stock", "generating_ai_images"];
+      const processingStates = ["analyzing", "transcribing", "planning", "fetching_stock", "selecting_media", "generating_ai_images"];
       if (processingStates.includes(loadedProject.status)) {
         debugLog("Editor", "Reconnecting to in-progress processing...");
         setIsProcessing(true);

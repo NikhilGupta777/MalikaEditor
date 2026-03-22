@@ -280,7 +280,7 @@ export async function executePass1StructureAnalysis(
   semanticAnalysis: SemanticAnalysis
 ): Promise<StructuredPlan> {
   const duration = analysis.duration || 0;
-  const transcriptText = transcript.slice(0, 30).map(t =>
+  const transcriptText = transcript.slice(0, 100).map(t =>
     `[${safeFixed(t.start)}s]: ${t.text}`
   ).join("\n");
 
@@ -521,7 +521,7 @@ export async function executePass3BrollOptimization(
     `[${safeFixed(s.start)}s-${safeFixed(s.end)}s] ${s.reason}`
   ).join("\n");
 
-  const transcriptContext = transcript.slice(0, 25).map(t =>
+  const transcriptContext = transcript.slice(0, 100).map(t =>
     `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
   ).join("\n");
 
@@ -661,7 +661,7 @@ function getDefaultBrollPlan(
     .filter(b => b.start !== undefined && b.suggestedQuery)
     .map(b => ({
       start: b.start,
-      duration: Math.min(5, b.end - b.start),
+      duration: Math.max(0.5, b.end - b.start),
       query: b.suggestedQuery,
       transcriptContext: b.context,
       priority: (b.priority || "medium") as "low" | "medium" | "high",

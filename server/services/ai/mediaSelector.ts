@@ -1067,6 +1067,7 @@ export function convertSelectionsToStockMediaItems(
           startTime: staggeredStart,
           endTime: staggeredEnd,
           duration: staggeredEnd - staggeredStart,
+          animationPreset: selection.window.animationPreset,
         };
         aiImages.push(staggeredAiImage);
       } else {

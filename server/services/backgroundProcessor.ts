@@ -1018,6 +1018,7 @@ async function runProcessingPipeline(
       await updateProcessingStage(projectId, "media_fetch");
 
       addActivity(projectId, "AI selecting best media for each B-roll window...");
+      await updateStatus("selecting_media");
 
       // Extract enhancedAnalysis for intelligent media selection (now properly typed in VideoAnalysis)
       const enhancedAnalysis = sanitizedAnalysis.enhancedAnalysis;
@@ -1070,6 +1071,7 @@ async function runProcessingPipeline(
         source: 'ai',
         startTime: img.startTime,
         endTime: img.endTime,
+        animationPreset: img.animationPreset as "zoom_in" | "zoom_out" | "pan_left" | "pan_right" | "fade_only" | undefined,
       }));
 
       stockMedia = [...stockItems, ...aiStockItems];

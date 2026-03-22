@@ -19,6 +19,7 @@ export interface GeneratedAiImage {
   endTime: number;
   duration: number;
   context: string;
+  animationPreset?: string;
 }
 
 export async function generateAiImage(

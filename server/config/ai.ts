@@ -7,17 +7,23 @@ export const AI_CONFIG = {
       secondary: "gpt-4o-mini-transcribe",
       fallback: "gemini-2.5-flash",
     },
-    // Video analysis uses user's own API key with gemini-flash-latest
-    videoAnalysis: "gemini-flash-latest", // Uses GEMINI_VIDEO_ANALYSIS_API_KEY
-    fullVideoWatch: "gemini-flash-latest", // Full video file upload and analysis (uses user's API key)
-    // Semantic analysis uses Replit integration - must use supported model
-    analysis: "gemini-2.5-flash", // For semantic analysis, translation - uses Replit Gemini
-    selfReview: "gemini-2.5-flash", // AI reviews its own rendered output
-    editPlanning: "gemini-2.5-flash",
-    imageGeneration: "gemini-2.5-flash-image",
+    // Video analysis - stable Pro for frame extraction fallback
+    videoAnalysis: "gemini-2.5-pro",
+    // Full video watch - most upstream task, feeds everything downstream, use best reasoning model
+    fullVideoWatch: "gemini-3.1-pro-preview",
+    // Semantic analysis + frame extraction fallback - complex transcript/topic understanding, feeds edit planning
+    analysis: "gemini-3.1-pro-preview",
+    // Post-render self-review - needs strong vision + reasoning to evaluate output quality
+    selfReview: "gemini-2.5-pro",
+    // Edit planning - most critical pipeline task, better reasoning = better actual cuts
+    editPlanning: "gemini-3.1-pro-preview",
+    // Image generation - gemini-2.5-flash-image shut down Jan 2026, use updated model
+    imageGeneration: "gemini-3.1-flash-image-preview",
+    // Media selection + vision - comparison/ranking tasks, speed matters more than depth
     mediaSelection: "gemini-2.5-flash",
-    mediaVision: "gemini-2.5-flash", // Vision-capable model for analyzing stock thumbnails
-    reviewPass: "gemini-2.5-flash",
+    mediaVision: "gemini-2.5-flash",
+    // Pre-render review pass - quality gate before rendering, best reasoning catches more issues
+    reviewPass: "gemini-3.1-pro-preview",
   },
 
   // AI decides overlay counts based on content analysis - no arbitrary limits

@@ -1169,8 +1169,13 @@ export async function registerRoutes(
         }
         sendActivity(`Review data: ${approvedCutActions.length}/${cutActions.length} cuts approved`);
 
-        // Filter out rejected items
-        const approvedActions = reviewData.editPlan.actions.filter(a => a.approved);
+        // Filter out rejected items. Also exclude 'keep' actions: they are AI planning
+        // artifacts and must not override the user's intent. The render engine will derive
+        // what to keep from the approved cuts only — including keep actions here would
+        // silently discard video the user never agreed to remove.
+        const approvedActions = reviewData.editPlan.actions
+          .filter(a => a.approved)
+          .filter(a => a.type !== 'keep');
         const approvedStockMedia = reviewData.stockMedia.filter(m => m.approved);
         const approvedAiImages = reviewData.aiImages.filter(m => m.approved);
 

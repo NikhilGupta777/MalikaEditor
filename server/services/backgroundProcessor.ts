@@ -1679,7 +1679,12 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
 
   // Apply user modifications from reviewData
   if (reviewData.editPlan?.actions) {
-    const approvedActions = reviewData.editPlan.actions.filter((a: any) => a.approved);
+    // Exclude 'keep' actions: they are AI planning artifacts and must not override
+    // the user's intent. The render engine derives what to keep from approved cuts only.
+    // Including keep actions here would silently discard video the user never approved cutting.
+    const approvedActions = reviewData.editPlan.actions
+      .filter((a: any) => a.approved)
+      .filter((a: any) => a.type !== 'keep');
     const approvedStockMedia = (reviewData.stockMedia || []).filter((m: any) => m.approved);
     const approvedAiImages = (reviewData.aiImages || []).filter((m: any) => m.approved);
 

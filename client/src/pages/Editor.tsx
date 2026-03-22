@@ -1300,8 +1300,8 @@ export default function Editor() {
               <ActivityLog activities={activities} isProcessing={isProcessing || isRendering} />
             )}
 
-            {/* AI Chat Companion - Shows during processing */}
-            {project?.id && project?.status !== "pending" && project?.status !== "uploading" && (
+            {/* AI Chat Companion - Shows during processing (not on completed — shown below completion card instead) */}
+            {project?.id && project?.status !== "pending" && project?.status !== "uploading" && project?.status !== "completed" && (
               <Suspense fallback={<PanelLoadingFallback />}>
                 <ChatCompanion projectId={project.id} />
               </Suspense>
@@ -1411,6 +1411,26 @@ export default function Editor() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+
+            {/* AI Chat — Prominently shown in completed state for questions + re-edit */}
+            {project?.id && project?.status === "completed" && (
+              <Suspense fallback={<PanelLoadingFallback />}>
+                <ChatCompanion
+                  projectId={project.id}
+                  className="min-h-[320px]"
+                  onReEditStarted={() => {
+                    // Close background quality SSE — re-edit supersedes it
+                    if (bgQualitySourceRef.current) {
+                      bgQualitySourceRef.current.close();
+                      bgQualitySourceRef.current = null;
+                    }
+                    setBgQualityState(null);
+                    // Reconnect to process SSE — handles 409 (already started) gracefully
+                    handleRetryProcessing();
+                  }}
+                />
+              </Suspense>
             )}
 
             {/* Quality Insights Card */}

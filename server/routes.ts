@@ -100,6 +100,8 @@ import {
   sendCorrectionUpdate,
   sendCompletionUpdate,
   sendErrorUpdate,
+  detectReEditTrigger,
+  executeReEdit,
 } from "./services/chatCompanion";
 import {
   startProcessingJob as startBackgroundProcessing,
@@ -868,6 +870,10 @@ export async function registerRoutes(
     }
 
     // ── Live subscribe: loop is still running ──────────────────────────────────
+    // Immediately inform client that the review is in progress so they don't
+    // hang in "connecting" state waiting for the first event (which can be 40+ seconds away).
+    sendBgEvent({ type: "phase_a_start" });
+
     // Heartbeat to keep connection alive
     const hb = setInterval(() => { if (!closed) res.write(": heartbeat\n\n"); }, 20000);
 
@@ -2066,15 +2072,73 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Project not found" });
       }
 
-      // Add user message
+      // Add user message first
       await addUserMessage(id, message);
 
-      // Get AI response
-      const answerMessage = await answerUserQuestion(id, message);
+      // Load recent messages for trigger detection (before adding user message to avoid double-count)
+      const recentMessages = await getProjectMessages(id, 20);
+
+      // Check if user is confirming a re-edit (trigger word + pending plan in history)
+      const isReEditTrigger = detectReEditTrigger(message, recentMessages);
+
+      if (isReEditTrigger) {
+        // Check project isn't already being processed
+        if (isJobActive(id)) {
+          const stillProcessing = await addCompanionMessage(
+            id, "answer",
+            "I'm already working on something for this project. Let me finish what I'm doing first, then we can apply the changes."
+          );
+          const updatedMessages = await getProjectMessages(id, 3);
+          return res.json({ messages: updatedMessages, reEditStarted: false });
+        }
+
+        // Check source files haven't been deleted
+        const reviewData = project.reviewData as any;
+        const filesDeleted = reviewData?.sourceFilesDeleted || (project as any).sourceFilesDeleted;
+        if (filesDeleted) {
+          await addCompanionMessage(
+            id, "answer",
+            "Unfortunately the source files for this project have been deleted, so I can't re-edit. You'd need to upload the video again to start fresh."
+          );
+          const updatedMessages = await getProjectMessages(id, 3);
+          return res.json({ messages: updatedMessages, reEditStarted: false });
+        }
+
+        // Execute re-edit: updates prompt, posts chat message
+        const { success } = await executeReEdit(id);
+
+        if (!success) {
+          await addCompanionMessage(
+            id, "answer",
+            "I don't have a specific change plan yet. Tell me what you'd like to change — for example: 'the B-roll at 23s doesn't match' or 'make the pacing faster' — and I'll propose a plan before re-editing."
+          );
+          const updatedMessages = await getProjectMessages(id, 3);
+          return res.json({ messages: updatedMessages, reEditStarted: false });
+        }
+
+        // Trigger re-processing from planning stage (re-uses transcript/analysis, re-runs planning+render)
+        const retryResult = await retryProcessingFromStage(id, "planning");
+
+        if (!retryResult.started) {
+          await addCompanionMessage(
+            id, "answer",
+            `Couldn't start re-edit right now: ${retryResult.reason || "unknown error"}. Please try again in a moment.`
+          );
+          const updatedMessages = await getProjectMessages(id, 3);
+          return res.json({ messages: updatedMessages, reEditStarted: false });
+        }
+
+        routesLogger.info(`[Chat] Re-edit triggered for project ${id}`);
+        const updatedMessages = await getProjectMessages(id, 5);
+        return res.json({ messages: updatedMessages, reEditStarted: true });
+      }
+
+      // Normal path: get AI response
+      await answerUserQuestion(id, message);
 
       // Return the new messages
-      const recentMessages = await getProjectMessages(id, 2);
-      res.json({ messages: recentMessages });
+      const updatedMessages = await getProjectMessages(id, 3);
+      res.json({ messages: updatedMessages, reEditStarted: false });
     } catch (error) {
       routesLogger.error("Failed to process chat message:", error);
       res.status(500).json({ error: "Failed to process chat message" });

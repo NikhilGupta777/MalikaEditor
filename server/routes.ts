@@ -116,6 +116,7 @@ import {
   MAX_CONCURRENT_JOBS,
   retryProcessingFromStage,
   subscribeToBgQuality,
+  hasBgQualityLoop,
   type RetryStage,
 } from "./services/backgroundProcessor";
 import { fileStorage, generateFileKey } from "./services/fileStorage";
@@ -827,7 +828,9 @@ export async function registerRoutes(
   });
 
   // SSE stream for background quality loop events (self-review, arbitration, correction)
-  // Client connects after receiving the render "complete" event to see live AI quality work
+  // Client connects after receiving the render "complete" event to see live AI quality work.
+  // If the loop has already finished (selfReviewScore persisted in DB), we replay the result
+  // immediately so late-connecting clients don't hang in "connecting" state forever.
   app.get("/api/videos/:id/background-quality", requireAuth, async (req: Request, res: Response) => {
     const paramResult = idParamSchema.safeParse(req.params);
     if (!paramResult.success) return res.status(400).json({ error: "Invalid project id" });
@@ -846,6 +849,25 @@ export async function registerRoutes(
       if (!closed) res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    // ── Late-connect replay: if the loop already finished, emit the stored result and close ──
+    // This prevents clients that connect after the loop has completed from hanging in "connecting" forever.
+    try {
+      const project = await storage.getVideoProject(id);
+      const reviewData = project?.reviewData as any;
+      const selfReviewScore = reviewData?.selfReviewScore as number | undefined;
+
+      if (selfReviewScore != null && !hasBgQualityLoop(id)) {
+        // Loop is done and score is persisted — replay the result for this late-connecting client
+        sendBgEvent({ type: "phase_a_score", score: selfReviewScore, approved: selfReviewScore >= 75, issues: 0 });
+        sendBgEvent({ type: "done" });
+        if (!closed) res.end();
+        return;
+      }
+    } catch {
+      // Non-critical — fall through to live subscribe
+    }
+
+    // ── Live subscribe: loop is still running ──────────────────────────────────
     // Heartbeat to keep connection alive
     const hb = setInterval(() => { if (!closed) res.write(": heartbeat\n\n"); }, 20000);
 

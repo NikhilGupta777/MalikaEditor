@@ -6,7 +6,7 @@ import type { ProcessingStatus } from "@shared/schema";
 interface RenderSSECallbacks {
   onStatusUpdate: (status: ProcessingStatus) => void;
   onActivity: (activity: { message: string; timestamp: number; details?: Record<string, unknown> }) => void;
-  onComplete: (data: { outputPath: string; duration?: number; aiImageStats?: unknown }) => void;
+  onComplete: (data: { outputPath: string; duration?: number; aiImageStats?: unknown; selfReviewScore?: number | null; selfReviewResult?: unknown }) => void;
   onError: (error: string, suggestion?: string) => void;
   onConnectionLost: () => void;
 }
@@ -46,6 +46,8 @@ export function useRenderSSE(callbacks: RenderSSECallbacks): RenderSSEController
         outputPath: message.outputPath as string,
         duration: message.duration as number | undefined,
         aiImageStats: message.aiImageStats,
+        selfReviewScore: message.selfReviewScore as number | null | undefined,
+        selfReviewResult: message.selfReviewResult,
       });
       closeConnection();
     } else if (message.type === "error") {

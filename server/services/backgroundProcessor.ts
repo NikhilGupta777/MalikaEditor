@@ -48,6 +48,11 @@ export function subscribeToBgQuality(projectId: number, cb: BgQualityCallback): 
   return () => { bgQualityListeners.get(projectId)?.delete(cb); };
 }
 
+/** Returns true if there is an active (in-progress) background quality loop for this project. */
+export function hasBgQualityLoop(projectId: number): boolean {
+  return (bgQualityListeners.get(projectId)?.size ?? 0) > 0;
+}
+
 function emitBgQuality(projectId: number, event: BgQualityEvent) {
   bgQualityListeners.get(projectId)?.forEach(cb => { try { cb(event); } catch {} });
 }

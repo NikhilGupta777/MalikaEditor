@@ -272,7 +272,13 @@ export default function Editor() {
                 toast({ title: "Improved video ready!", description: `Quality score improved from ${ev.oldScore} → ${ev.newScore}` });
                 break;
               case "done":
-                setBgQualityState(prev => prev?.phase === "improved" ? prev : prev?.phase === "accepted" ? prev : { ...(prev ?? {}), phase: "done" });
+                setBgQualityState(prev => {
+                  if (prev?.phase === "improved") return prev;
+                  if (prev?.phase === "accepted") return prev;
+                  // "scored" with no correction path means quality was accepted — promote to accepted
+                  if (prev?.phase === "scored") return { ...prev, phase: "accepted" as const };
+                  return { ...(prev ?? {}), phase: "done" as const };
+                });
                 src.close();
                 break;
             }
@@ -731,6 +737,13 @@ export default function Editor() {
                   outputPath: data.outputPath,
                   duration: data.duration,
                   aiImageStats: data.aiImageStats || prev.aiImageStats,
+                  reviewData: data.selfReviewScore != null
+                    ? {
+                        ...(prev.reviewData as any ?? {}),
+                        selfReviewScore: data.selfReviewScore,
+                        selfReviewResult: data.selfReviewResult ?? null,
+                      }
+                    : prev.reviewData,
                 }
                 : null
             );

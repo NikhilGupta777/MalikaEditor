@@ -297,7 +297,7 @@ SEMANTIC ANALYSIS:
 - Structure hints: ${JSON.stringify(semanticAnalysis.structureAnalysis || {})}
 - Topic flow: ${JSON.stringify(semanticAnalysis.topicFlow?.slice(0, 5) || [])}
 
-TRANSCRIPT (first 30 segments):
+TRANSCRIPT (first 100 segments):
 ${transcriptText}
 
 ANALYZE THE VIDEO STRUCTURE:

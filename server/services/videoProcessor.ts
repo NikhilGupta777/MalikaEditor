@@ -1031,7 +1031,7 @@ async function createImageBroll(
       "-t", String(duration),
       "-vf", filters.join(","),
       "-shortest",
-      "-threads", "2",
+      "-threads", "4",
     ])
     .output(outputPath);
 
@@ -1066,7 +1066,7 @@ async function createVideoBroll(
       "-c:a", "aac",
       "-b:a", "96k",
       "-vf", filters.join(","),
-      "-threads", "2",
+      "-threads", "4",
     ])
     .output(outputPath);
 
@@ -1102,7 +1102,7 @@ async function createVideoSegment(
     "-c:a", "aac",
     "-b:a", "96k",
     "-max_muxing_queue_size", "1024",
-    "-threads", "2",
+    "-threads", "4",
   ];
 
   if (filters.length > 0) {
@@ -1138,7 +1138,7 @@ async function concatSegmentsSimple(
         "-c:a", "aac",
         "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
-        "-threads", "2",
+        "-threads", "4",
       ])
       .output(outputPath);
 
@@ -1285,7 +1285,7 @@ async function burnSubtitles(
     "-preset", "fast",
     "-crf", "23",
     "-c:a", "copy",
-    "-threads", "2",
+    "-threads", "4",
   ])
     .output(outputPath);
 
@@ -1341,7 +1341,7 @@ async function concatTwoWithTransition(
           "-crf", "23",
           "-c:a", "aac",
           "-b:a", "128k",
-          "-threads", "2",
+          "-threads", "4",
         ])
         .output(outputPath);
 
@@ -1380,7 +1380,7 @@ async function concatTwoWithTransition(
     "-c:v", "libx264",
     "-preset", "fast",
     "-crf", "23",
-    "-threads", "2",
+    "-threads", "4",
   ];
 
   if (hasAudio1 && hasAudio2) {
@@ -1503,7 +1503,7 @@ async function prepareOverlayMedia(
         "-an",
         "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,${fadeFilter}`,
         "-pix_fmt", "yuv420p",
-        "-threads", "2",
+        "-threads", "4",
       ])
       .output(outputPath);
 
@@ -1523,7 +1523,7 @@ async function prepareOverlayMedia(
         "-t", String(duration),
         "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,${zoompanFilter},${fadeFilter}`,
         "-pix_fmt", "yuv420p",
-        "-threads", "2",
+        "-threads", "4",
       ])
       .output(outputPath);
 
@@ -2292,7 +2292,7 @@ async function applyEditsInternal(
         "-c:a", "aac",
         "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
-        "-threads", "2",
+        "-threads", "4",
       ])
       .output(baseVideoPath);
 
@@ -2503,6 +2503,7 @@ async function applyEditsInternal(
             type: aiMedia.item.type as "video" | "image" | "ai_generated",
             startTime: finalOutputTime,
             duration: finalOutputDuration,
+            animationPreset: (aiMedia.item as any).animationPreset || undefined,
           });
 
           aiImagesApplied++;

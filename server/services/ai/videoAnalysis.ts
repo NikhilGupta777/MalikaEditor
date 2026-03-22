@@ -552,7 +552,7 @@ Respond in JSON format only (no markdown):
     {
       "start": number,
       "end": number,
-      "suggestedDuration": number (2-6),
+      "suggestedDuration": number,
       "query": "ULTRA-SPECIFIC search query",
       "priority": "high|medium|low",
       "reason": "why B-roll would help",
@@ -945,7 +945,7 @@ Respond in JSON format only (no markdown):
     {
       "start": number,
       "end": number,
-      "suggestedDuration": number (2-6),
+      "suggestedDuration": number,
       "query": "ULTRA-SPECIFIC search query for stock media",
       "priority": "high|medium|low",
       "reason": "why B-roll would help here"

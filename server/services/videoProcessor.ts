@@ -1421,7 +1421,7 @@ interface BrollOverlay {
   startTime: number; // When to show overlay (in output timeline)
   duration: number;
   text?: string;
-  animationPreset?: AnimationPreset; // Animation style for images, defaults to zoom_in
+  animationPreset?: AnimationPreset; // Animation style for images, defaults to fade_only
 }
 
 // Generate zoompan filter expression based on animation preset

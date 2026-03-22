@@ -29,7 +29,6 @@ const envVars: EnvVar[] = [
   // AI Services
   { name: "ASSEMBLYAI_API_KEY", required: false, description: "AssemblyAI API key for transcription" },
   { name: "GEMINI_API_KEY", required: false, description: "Google Gemini API key for AI features" },
-  { name: "GEMINI_VIDEO_ANALYSIS_API_KEY", required: false, description: "Gemini API key for video analysis" },
   { name: "OPENAI_API_KEY", required: false, description: "OpenAI API key for AI features" },
 
   // Media services
@@ -40,6 +39,8 @@ const envVars: EnvVar[] = [
   { name: "PORT", required: false, description: "Server port (defaults to 5000)" },
   { name: "NODE_ENV", required: false, description: "Environment: development or production" },
   { name: "LOG_FILE", required: false, description: "Optional file path to tee logs (helps debug crashes)" },
+  { name: "LOG_LEVEL", required: false, description: "Log level: debug, info, warn, error (default: info)" },
+  { name: "MAX_VIDEO_DURATION_SECONDS", required: false, description: "Max upload video duration in seconds (default: 1800)" },
   { name: "SELF_REVIEW_MAX_VIDEO_MB", required: false, description: "Max video size (MB) for AI self-review (default 50, max 200)" },
 
   // File storage

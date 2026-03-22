@@ -1134,7 +1134,7 @@ function ensureKeepCoverage(actions: EditAction[], duration: number): void {
   const totalKeepDuration = keepActions.reduce((sum, a) => sum + ((a.end || 0) - (a.start || 0)), 0);
   const keepPercentage = (totalKeepDuration / duration) * 100;
 
-  if (keepPercentage < 40 || keepActions.length === 0) {
+  if (keepPercentage < 5 || keepActions.length === 0) {
     aiLogger.warn(`Keep actions only cover ${safeFixed(keepPercentage)}% - adding full video keep`);
     const nonKeepActions = actions.filter(a => a.type !== "keep");
     actions.length = 0;

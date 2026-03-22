@@ -112,7 +112,7 @@ function generateArbitratedCorrections(
             newActions.push({
                 type: "cut",
                 start: issue.timestamp,
-                end: (issue as any).end || (issue.timestamp + 1),
+                end: (issue as any).end ?? (issue.timestamp + 1),
                 reason: `Arbitrated cut: ${issue.description}`
             });
         }

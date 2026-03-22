@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2, Trash2, Clock, Terminal } from "lucide-react";
+import { BackgroundQualityPanel, type BgQualityState } from "@/components/BackgroundQualityPanel";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
@@ -157,7 +158,9 @@ export default function Editor() {
   const [isRendering, setIsRendering] = useState(false);
   const [markedReviewed, setMarkedReviewed] = useState(false);
   const [sourceFilesDeleted, setSourceFilesDeleted] = useState(false);
+  const [bgQualityState, setBgQualityState] = useState<BgQualityState | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const bgQualitySourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
@@ -175,6 +178,8 @@ export default function Editor() {
       setIsRendering(false);
       setMarkedReviewed(false);
       setSourceFilesDeleted(false);
+      setBgQualityState(null);
+      if (bgQualitySourceRef.current) { bgQualitySourceRef.current.close(); bgQualitySourceRef.current = null; }
     }
   }, [projectIdFromUrl]);
 
@@ -216,6 +221,71 @@ export default function Editor() {
       toast({
         title: "Your video is ready!",
         description: "Download your edited video below",
+      });
+
+      // Connect to background quality SSE to show live AI review & correction status
+      const projectId = (data as any).projectId ?? null;
+      const connectBgQuality = (id: number) => {
+        if (bgQualitySourceRef.current) bgQualitySourceRef.current.close();
+        setBgQualityState({ phase: "connecting" });
+        const src = new EventSource(`/api/videos/${id}/background-quality`);
+        bgQualitySourceRef.current = src;
+
+        src.onmessage = (e) => {
+          try {
+            const ev = JSON.parse(e.data);
+            switch (ev.type) {
+              case "phase_a_start":
+                setBgQualityState({ phase: "watching" });
+                break;
+              case "phase_a_score":
+                setBgQualityState({ phase: "scored", score: ev.score, approved: ev.approved, issueCount: ev.issues });
+                break;
+              case "phase_b_skipped":
+                setBgQualityState({ phase: ev.reason?.includes("no correction") ? "accepted" : "accepted" });
+                break;
+              case "phase_b_start":
+                setBgQualityState(prev => ({ ...(prev ?? {}), phase: "correcting", correctionReason: ev.reason }));
+                break;
+              case "phase_b_fetching_media":
+                setBgQualityState(prev => ({ ...(prev ?? {}), phase: "fetching_media" }));
+                break;
+              case "phase_b_rendering":
+                setBgQualityState(prev => ({ ...(prev ?? {}), phase: "rendering" }));
+                break;
+              case "phase_b_reviewing":
+                setBgQualityState(prev => ({ ...(prev ?? {}), phase: "reviewing" }));
+                break;
+              case "phase_b_done":
+                setBgQualityState(prev => ({
+                  ...(prev ?? {}),
+                  phase: "improved",
+                  oldScore: ev.oldScore,
+                  newScore: ev.newScore,
+                  improvedOutputPath: ev.outputPath,
+                }));
+                // Update project outputPath so main download button serves improved version
+                if (ev.outputPath) {
+                  setProject(p => p ? { ...p, outputPath: ev.outputPath } : null);
+                  setPreviewUrl(ev.outputPath);
+                }
+                toast({ title: "Improved video ready!", description: `Quality score improved from ${ev.oldScore} → ${ev.newScore}` });
+                break;
+              case "done":
+                setBgQualityState(prev => prev?.phase === "improved" ? prev : prev?.phase === "accepted" ? prev : { ...(prev ?? {}), phase: "done" });
+                src.close();
+                break;
+            }
+          } catch {}
+        };
+
+        src.onerror = () => { src.close(); setBgQualityState(null); };
+      };
+
+      // The project id is available from the project state — use a small delay to ensure state is set
+      setProject(prev => {
+        if (prev?.id) connectBgQuality(prev.id);
+        return prev;
       });
     },
     onError: (error, suggestion) => {
@@ -433,6 +503,10 @@ export default function Editor() {
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+      }
+      if (bgQualitySourceRef.current) {
+        bgQualitySourceRef.current.close();
+        bgQualitySourceRef.current = null;
       }
       if (xhrRef.current) {
         xhrRef.current.abort();
@@ -1247,7 +1321,23 @@ export default function Editor() {
                     isProcessing={false}
                     isComplete={true}
                   />
-                  {(() => {
+                  {/* Live background AI quality panel — shows while review/correction is running */}
+                  {bgQualityState && (
+                    <div className="mt-3 text-left">
+                      <BackgroundQualityPanel
+                        state={bgQualityState}
+                        onDownloadImproved={(outputPath) => {
+                          const a = document.createElement("a");
+                          a.href = outputPath;
+                          a.download = "";
+                          a.click();
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Static self-review score (shown after quality loop is done, or on page reload) */}
+                  {!bgQualityState && (() => {
                     const selfReviewScore = (project.reviewData as any)?.selfReviewScore as number | undefined;
                     const selfReviewResult = (project.reviewData as any)?.selfReviewResult as any;
                     if (selfReviewScore == null) return null;

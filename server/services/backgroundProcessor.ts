@@ -26,6 +26,33 @@ import path from "path";
 import fs from "fs/promises";
 import { UPLOADS_DIR as UPLOADS_DIR_CONFIG, OUTPUT_DIR as OUTPUT_DIR_CONFIG } from "../config/paths";
 
+// ─── Background Quality Event System ─────────────────────────────────────────
+// Allows the background quality loop to push live status events to connected SSE clients.
+export type BgQualityEvent =
+  | { type: "phase_a_start" }
+  | { type: "phase_a_score"; score: number; approved: boolean; issues: number }
+  | { type: "phase_b_skipped"; reason: string }
+  | { type: "phase_b_start"; reason: string }
+  | { type: "phase_b_fetching_media" }
+  | { type: "phase_b_rendering" }
+  | { type: "phase_b_reviewing" }
+  | { type: "phase_b_done"; oldScore: number; newScore: number; outputPath: string }
+  | { type: "done" };
+
+type BgQualityCallback = (event: BgQualityEvent) => void;
+const bgQualityListeners = new Map<number, Set<BgQualityCallback>>();
+
+export function subscribeToBgQuality(projectId: number, cb: BgQualityCallback): () => void {
+  if (!bgQualityListeners.has(projectId)) bgQualityListeners.set(projectId, new Set());
+  bgQualityListeners.get(projectId)!.add(cb);
+  return () => { bgQualityListeners.get(projectId)?.delete(cb); };
+}
+
+function emitBgQuality(projectId: number, event: BgQualityEvent) {
+  bgQualityListeners.get(projectId)?.forEach(cb => { try { cb(event); } catch {} });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface EditOptionsType {
   addCaptions: boolean;
   addBroll: boolean;
@@ -1813,7 +1840,8 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
   };
 
   (async () => {
-    // ── Phase A: self-review ──────────────────────────────────────────────────
+    // ── Phase A: AI self-review ───────────────────────────────────────────────
+    emitBgQuality(projectId, { type: "phase_a_start" });
     let selfReviewResult: Awaited<ReturnType<typeof performPostRenderSelfReview>>;
     try {
       processorLogger.info(`[BG Quality] Phase A — self-review starting for project ${projectId}`);
@@ -1828,8 +1856,15 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
         bgInputs.analysis
       );
       processorLogger.info(`[BG Quality] Self-review done for project ${projectId}: score=${selfReviewResult.overallScore}, approved=${selfReviewResult.approved}`);
+      emitBgQuality(projectId, {
+        type: "phase_a_score",
+        score: selfReviewResult.overallScore,
+        approved: selfReviewResult.approved,
+        issues: selfReviewResult.issues?.length || 0,
+      });
     } catch (reviewErr) {
       processorLogger.warn(`[BG Quality] Self-review failed (non-critical) for project ${projectId}:`, reviewErr);
+      emitBgQuality(projectId, { type: "done" });
       return;
     }
 
@@ -1851,14 +1886,14 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
       },
     });
 
-    // ── Phase B: arbitration + correction re-render ──────────────────────────
-    // Only attempt if we have a pre-render AI review to arbitrate against
+    // ── Phase B: arbitration + correction re-render ───────────────────────────
     if (!bgInputs.reviewData.aiReview) {
-      processorLogger.info(`[BG Quality] Phase B skipped — no pre-render AI review available for project ${projectId}`);
+      processorLogger.info(`[BG Quality] Phase B skipped — no pre-render AI review for project ${projectId}`);
+      emitBgQuality(projectId, { type: "phase_b_skipped", reason: "No pre-render review available" });
+      emitBgQuality(projectId, { type: "done" });
       return;
     }
 
-    let correctedOutputPath: string | null = null;
     try {
       const aiReview = bgInputs.reviewData.aiReview;
       const arbitration = await arbitrateReviewConflicts(
@@ -1876,43 +1911,95 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
 
       if (!arbitration.shouldReRender || arbitration.confidence <= 70) {
         processorLogger.info(`[BG Quality] No correction needed for project ${projectId} — quality accepted`);
+        emitBgQuality(projectId, { type: "phase_b_skipped", reason: "Quality is good — no correction needed" });
+        emitBgQuality(projectId, { type: "done" });
         return;
       }
 
-      processorLogger.info(`[BG Quality] Phase B — re-rendering correction for project ${projectId}: ${arbitration.justification}`);
+      emitBgQuality(projectId, { type: "phase_b_start", reason: arbitration.justification });
+      processorLogger.info(`[BG Quality] Phase B — correction starting for project ${projectId}: ${arbitration.justification}`);
 
-      // Re-plan with correction feedback
+      // Re-plan with correction feedback (full creative freedom)
       const analysis = bgInputs.analysis as any;
       const correctedPlan = await generateSmartEditPlan(
         bgInputs.prompt,
         analysis,
         bgInputs.transcript,
         analysis?.semanticAnalysis || {},
-        [],        // no filler segments available at this stage
-        null,      // no enhanced transcript at this stage
+        [],
+        null,
         bgInputs.editPlan,
         arbitration,
         projectId
       );
 
-      // Re-render using the corrected plan (keep user's existing stock media)
+      // Fetch fresh stock media for any new or changed B-roll windows in the corrected plan
+      emitBgQuality(projectId, { type: "phase_b_fetching_media" });
+      const newBrollWindows = (correctedPlan.actions || [])
+        .filter((a: any) => (a.type === "insert_stock" || a.type === "insert_ai_image") && typeof a.start === "number")
+        .map((a: any) => ({
+          start: a.start,
+          end: typeof a.end === "number" ? a.end : a.start + (typeof a.duration === "number" ? a.duration : 4),
+          suggestedQuery: a.stockQuery || a.query || a.prompt || bgInputs.prompt,
+          priority: (a.priority || "medium") as "high" | "medium" | "low",
+          context: a.reason || a.context || "",
+        }))
+        .filter((w: any) => w.end > w.start);
+
+      let correctionStockMedia = [...bgInputs.stockMedia];
+
+      if (newBrollWindows.length > 0) {
+        try {
+          const stockQueries = [...new Set(newBrollWindows.map((w: any) => w.suggestedQuery).filter(Boolean))];
+          const freepikEnabled = isFreepikConfigured();
+          const [freshPexels, freshFreepik] = await Promise.all([
+            fetchStockMediaWithVariants(stockQueries),
+            freepikEnabled ? fetchFreepikMediaWithVariants(stockQueries) : Promise.resolve([] as StockMediaVariants[]),
+          ]);
+          const freshVariants: StockMediaVariants[] = [...freshPexels, ...freshFreepik];
+
+          if (freshVariants.length > 0) {
+            const selectionResult = await selectBestMediaForWindows(
+              newBrollWindows,
+              freshVariants,
+              [],
+              {
+                duration: (analysis as any)?.duration || 60,
+                genre: analysis?.semanticAnalysis?.overallTone || "general",
+                tone: analysis?.semanticAnalysis?.overallTone || "professional",
+                topic: analysis?.semanticAnalysis?.mainTopics?.[0] || "various",
+              }
+            );
+            const { stockItems } = convertSelectionsToStockMediaItems(selectionResult.selections);
+            // Merge: fresh selections override old ones for the same time windows
+            correctionStockMedia = [...correctionStockMedia, ...stockItems];
+            processorLogger.info(`[BG Quality] Fetched ${stockItems.length} fresh stock clips for correction`);
+          }
+        } catch (mediaErr) {
+          processorLogger.warn(`[BG Quality] Fresh stock fetch failed (using existing media):`, mediaErr);
+        }
+      }
+
+      // Re-render with corrected plan + fresh media
+      emitBgQuality(projectId, { type: "phase_b_rendering" });
       const correctedEditResult = await applyEdits(
         bgInputs.videoPath,
         correctedPlan as any,
         bgInputs.transcript,
-        bgInputs.stockMedia,
-        bgInputs.editOptions,
+        correctionStockMedia,
+        { ...bgInputs.editOptions, addBroll: correctionStockMedia.length > 0 },
         undefined,
         analysis?.semanticAnalysis
       );
 
-      correctedOutputPath = correctedEditResult.storageKey
+      const correctedOutputPath = correctedEditResult.storageKey
         ? `/output/${correctedEditResult.storageKey.replace(/^output\//, "")}`
         : `/output/${path.basename(correctedEditResult.outputPath)}`;
 
-      processorLogger.info(`[BG Quality] Correction render complete for project ${projectId}: ${correctedOutputPath}`);
+      processorLogger.info(`[BG Quality] Correction render done for project ${projectId}: ${correctedOutputPath}`);
 
-      // Run a final self-review on the corrected output to capture the improved score
+      // Final self-review to capture the improved score
+      emitBgQuality(projectId, { type: "phase_b_reviewing" });
       let finalScore = selfReviewResult.overallScore;
       let finalSelfReviewRecord = selfReviewRecord;
       try {
@@ -1922,7 +2009,7 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
           correctedPlan as any,
           bgInputs.transcript,
           bgInputs.reviewData,
-          bgInputs.stockMedia,
+          correctionStockMedia,
           bgInputs.prompt,
           bgInputs.analysis
         );
@@ -1936,12 +2023,12 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
           detailedFeedback: finalReview.detailedFeedback,
           suggestions: finalReview.suggestions,
         };
-        processorLogger.info(`[BG Quality] Final self-review for project ${projectId}: score=${finalScore}`);
+        processorLogger.info(`[BG Quality] Final review for project ${projectId}: ${selfReviewResult.overallScore} → ${finalScore}`);
       } catch (finalReviewErr) {
-        processorLogger.warn(`[BG Quality] Final self-review failed (non-critical) for project ${projectId}:`, finalReviewErr);
+        processorLogger.warn(`[BG Quality] Final review failed (non-critical) for project ${projectId}:`, finalReviewErr);
       }
 
-      // Update DB: overwrite outputPath with the corrected video + new score
+      // Overwrite outputPath in DB with the improved video
       await storage.updateVideoProject(projectId, {
         outputPath: correctedOutputPath,
         reviewData: {
@@ -1953,11 +2040,19 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
         },
       });
 
-      processorLogger.info(`[BG Quality] Project ${projectId} improved: ${bgInputs.publicOutputPath} → ${correctedOutputPath} (score: ${selfReviewResult.overallScore} → ${finalScore})`);
+      emitBgQuality(projectId, {
+        type: "phase_b_done",
+        oldScore: selfReviewResult.overallScore,
+        newScore: finalScore,
+        outputPath: correctedOutputPath,
+      });
+      processorLogger.info(`[BG Quality] Project ${projectId} corrected: score ${selfReviewResult.overallScore} → ${finalScore}`);
 
     } catch (correctionErr) {
       processorLogger.warn(`[BG Quality] Correction loop failed (non-critical) for project ${projectId}:`, correctionErr);
-      // Original output is still in DB and usable — nothing is broken
+      // Original output is untouched — nothing broken for the user
     }
+
+    emitBgQuality(projectId, { type: "done" });
   })();
 }

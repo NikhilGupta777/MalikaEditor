@@ -115,6 +115,7 @@ import {
   getLastEventId,
   MAX_CONCURRENT_JOBS,
   retryProcessingFromStage,
+  subscribeToBgQuality,
   type RetryStage,
 } from "./services/backgroundProcessor";
 import { fileStorage, generateFileKey } from "./services/fileStorage";
@@ -822,6 +823,43 @@ export async function registerRoutes(
       success: true,
       message: "Review approved. Rendering has started automatically.",
       projectId: id
+    });
+  });
+
+  // SSE stream for background quality loop events (self-review, arbitration, correction)
+  // Client connects after receiving the render "complete" event to see live AI quality work
+  app.get("/api/videos/:id/background-quality", requireAuth, async (req: Request, res: Response) => {
+    const paramResult = idParamSchema.safeParse(req.params);
+    if (!paramResult.success) return res.status(400).json({ error: "Invalid project id" });
+    const id = paramResult.data.id;
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    let closed = false;
+    req.on("close", () => { closed = true; });
+
+    const sendBgEvent = (data: Record<string, unknown>) => {
+      if (!closed) res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Heartbeat to keep connection alive
+    const hb = setInterval(() => { if (!closed) res.write(": heartbeat\n\n"); }, 20000);
+
+    const unsubscribe = subscribeToBgQuality(id, (event) => {
+      sendBgEvent(event);
+      if (event.type === "done") {
+        clearInterval(hb);
+        if (!closed) res.end();
+      }
+    });
+
+    req.on("close", () => {
+      clearInterval(hb);
+      unsubscribe();
     });
   });
 

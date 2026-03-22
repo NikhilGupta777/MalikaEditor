@@ -1963,15 +1963,22 @@ async function applyEditsInternal(
           const filename = path.basename(item.url);
           localPath = path.join(STOCK_DIR, filename);
 
-          // Verify file exists
+          // Verify file exists — if missing, try to recover from persistent storage (S3)
           try {
             await fs.access(localPath);
-            videoLogger.debug(`AI image file exists: ${localPath}`);
-            // DO NOT add to tempFiles - we want to keep these for caching/reusing
+            videoLogger.debug(`AI image file exists locally: ${localPath}`);
           } catch {
-            videoLogger.error(`AI image file not found: ${localPath}`);
-            continue;
+            videoLogger.warn(`AI image not found locally (${localPath}), attempting storage download...`);
+            try {
+              await fs.mkdir(STOCK_DIR, { recursive: true });
+              await fileStorage.downloadFile(`stock/${filename}`, localPath);
+              videoLogger.info(`Recovered AI image from storage: ${localPath}`);
+            } catch (downloadErr) {
+              videoLogger.error(`AI image missing locally and could not download from storage: ${localPath} — ${downloadErr}`);
+              continue;
+            }
           }
+          // DO NOT add to tempFiles - keep for caching/reuse
         } else {
           // Treat as absolute local file path (legacy or direct path)
           localPath = item.url;

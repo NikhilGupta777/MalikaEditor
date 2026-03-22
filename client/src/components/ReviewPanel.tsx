@@ -475,7 +475,14 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
       </CardHeader>
 
       <CardContent>
-        <Tabs defaultValue="editPlan" className="w-full">
+        <Tabs
+          defaultValue={
+            (reviewData.aiImages?.length > 0 || reviewData.stockMedia?.length > 0)
+              ? "media"
+              : "editPlan"
+          }
+          className="w-full"
+        >
           <TabsList className="grid w-full grid-cols-3 mb-4">
             <TabsTrigger value="transcript" data-testid="tab-transcript">
               Transcript ({localReviewData.transcript.filter(t => t.approved).length}/{localReviewData.transcript.length})
@@ -483,8 +490,11 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
             <TabsTrigger value="editPlan" data-testid="tab-editplan">
               Edit Plan ({approvedActions.length}/{localReviewData.editPlan.actions.length})
             </TabsTrigger>
-            <TabsTrigger value="media" data-testid="tab-media">
+            <TabsTrigger value="media" data-testid="tab-media" className="relative">
               Media ({localReviewData.stockMedia.filter(m => m.approved).length + localReviewData.aiImages.filter(m => m.approved).length})
+              {localReviewData.aiImages.length > 0 && (
+                <span className="ml-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full bg-purple-500 text-[9px] text-white font-bold">AI</span>
+              )}
             </TabsTrigger>
           </TabsList>
 
@@ -542,6 +552,14 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
           </TabsContent>
 
           <TabsContent value="editPlan" className="mt-0">
+            {localReviewData.aiImages.length > 0 && (
+              <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-xs text-purple-400">
+                <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                <span>
+                  <strong>{localReviewData.aiImages.length} AI-generated image{localReviewData.aiImages.length !== 1 ? "s" : ""}</strong> will be overlaid — review them in the <strong>Media</strong> tab.
+                </span>
+              </div>
+            )}
             <Card>
               <CardHeader className="py-3">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -687,33 +705,56 @@ export function ReviewPanel({ projectId, reviewData, onApprove, onCancel, isLoad
                 <Card>
                   <CardHeader className="py-3">
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
-                      <Sparkles className="h-4 w-4" />
+                      <Sparkles className="h-4 w-4 text-purple-500" />
                       AI Generated Images ({localReviewData.aiImages.filter(m => m.approved).length}/{localReviewData.aiImages.length})
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-0">
-                    <ScrollArea className="h-[200px]">
-                      <div className="grid grid-cols-2 gap-2 p-4">
+                    <ScrollArea className="h-[260px]">
+                      <div className="grid grid-cols-2 gap-3 p-4">
                         {localReviewData.aiImages.map((media) => (
                           <div
                             key={media.id}
                             className={cn(
-                              "flex items-start gap-2 p-2 rounded-lg border transition-colors",
-                              media.approved ? "bg-background" : "bg-muted/50 opacity-60"
+                              "rounded-lg border overflow-hidden transition-all",
+                              media.approved
+                                ? "bg-background ring-1 ring-purple-500/30"
+                                : "bg-muted/50 opacity-50"
                             )}
+                            data-testid={`card-ai-image-${media.id}`}
                           >
-                            <Checkbox
-                              checked={media.approved}
-                              onCheckedChange={() => toggleMediaApproval(media.id, true)}
-                              data-testid={`checkbox-ai-${media.id}`}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs line-clamp-2">{media.query}</p>
-                              {media.startTime !== undefined && (
-                                <span className="text-xs text-muted-foreground">
-                                  at {formatTime(media.startTime)}
-                                </span>
-                              )}
+                            {(media.thumbnailUrl || media.url) && (
+                              <div className="relative w-full aspect-video bg-muted overflow-hidden">
+                                <img
+                                  src={media.thumbnailUrl || media.url}
+                                  alt={media.query || "AI generated image"}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                                  }}
+                                />
+                                <div className="absolute top-1 right-1">
+                                  <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-bold bg-purple-600 text-white">
+                                    <Sparkles className="h-2 w-2" />AI
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                            <div className="flex items-start gap-2 p-2">
+                              <Checkbox
+                                checked={media.approved}
+                                onCheckedChange={() => toggleMediaApproval(media.id, true)}
+                                data-testid={`checkbox-ai-${media.id}`}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs line-clamp-2 leading-snug">{media.query}</p>
+                                {media.startTime !== undefined && (
+                                  <span className="text-xs text-muted-foreground">
+                                    at {formatTime(media.startTime)}
+                                    {media.endTime !== undefined && ` – ${formatTime(media.endTime)}`}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}

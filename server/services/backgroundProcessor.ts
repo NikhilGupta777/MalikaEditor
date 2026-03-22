@@ -952,7 +952,7 @@ async function runProcessingPipeline(
     if (editOptions.addBroll && stockQueries.length > 0) {
       // PARALLEL PHASE 3: Fetch stock media AND generate AI images simultaneously
       // These are completely independent operations
-      const shouldGenerateAi = editOptions.generateAiImages && analysis.semanticAnalysis;
+      const shouldGenerateAi = editOptions.generateAiImages && (!!analysis.semanticAnalysis || brollWindows.length > 0);
 
       const freepikEnabled = isFreepikConfigured();
       const sourceInfo = freepikEnabled ? 'Pexels + Freepik' : 'Pexels';

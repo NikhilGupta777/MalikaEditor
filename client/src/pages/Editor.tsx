@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
-import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2, Trash2, Clock } from "lucide-react";
+import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2, Trash2, Clock, Terminal } from "lucide-react";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
 import { ProcessingStatus } from "@/components/ProcessingStatus";
@@ -14,6 +14,7 @@ import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ActivityLog } from "@/components/ActivityLog";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { LogViewer } from "@/components/LogViewer";
 
 // Lazy-load heavy panels to reduce initial bundle size
 const ReviewPanel = lazy(() => import("@/components/ReviewPanel").then(m => ({ default: m.ReviewPanel })));
@@ -135,6 +136,7 @@ export default function Editor() {
   const [matchProject, params] = useRoute("/project/:id");
   const projectIdFromUrl = matchProject && params?.id ? parseInt(params.id, 10) : null;
 
+  const [showLogs, setShowLogs] = useState(false);
   const [project, setProject] = useState<VideoProject | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -1011,10 +1013,22 @@ export default function Editor() {
                 Start Over
               </Button>
             )}
+            <Button
+              variant={showLogs ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setShowLogs(v => !v)}
+              data-testid="button-toggle-logs"
+              title="Toggle server logs"
+            >
+              <Terminal className="h-4 w-4 mr-2" />
+              Logs
+            </Button>
             <ThemeToggle />
           </div>
         </div>
       </header>
+
+      <LogViewer open={showLogs} onClose={() => setShowLogs(false)} />
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col lg:flex-row">

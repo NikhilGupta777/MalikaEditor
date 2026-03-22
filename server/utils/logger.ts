@@ -1,3 +1,5 @@
+import { broadcastLog } from "./logBroadcaster";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -41,27 +43,38 @@ class Logger {
     return `${timestamp} [${level.toUpperCase()}] [${this.context}] ${message}`;
   }
 
+  private emit(level: LogLevel, message: string, args: unknown[]): void {
+    const extra = args.length
+      ? " " + args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ")
+      : "";
+    broadcastLog(level, this.context, message + extra);
+  }
+
   debug(message: string, ...args: unknown[]): void {
     if (this.shouldLog("debug")) {
       console.debug(this.formatMessage("debug", message), ...args);
+      this.emit("debug", message, args);
     }
   }
 
   info(message: string, ...args: unknown[]): void {
     if (this.shouldLog("info")) {
       console.log(this.formatMessage("info", message), ...args);
+      this.emit("info", message, args);
     }
   }
 
   warn(message: string, ...args: unknown[]): void {
     if (this.shouldLog("warn")) {
       console.warn(this.formatMessage("warn", message), ...args);
+      this.emit("warn", message, args);
     }
   }
 
   error(message: string, ...args: unknown[]): void {
     if (this.shouldLog("error")) {
       console.error(this.formatMessage("error", message), ...args);
+      this.emit("error", message, args);
     }
   }
 

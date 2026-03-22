@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { storage } from "./storage";
 import { createLogger } from "./utils/logger";
+import { getRecentLogs, subscribeClient, unsubscribeClient } from "./utils/logBroadcaster";
 import { formatErrorForSSE, getUserFriendlyError } from "./utils/errorMessages";
 import { validateVideoMagicBytes } from "./utils/fileValidation";
 import { AI_CONFIG } from "./config/ai";
@@ -2163,6 +2164,35 @@ export async function registerRoutes(
       routesLogger.error("Failed to retry transcription:", error);
       res.status(500).json({ error: "Failed to retry transcription" });
     }
+  });
+
+  // Live log streaming endpoint
+  app.get("/api/logs/stream", (req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    const recent = getRecentLogs();
+    for (const entry of recent) {
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    }
+
+    subscribeClient(res);
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(": heartbeat\n\n");
+      } catch {
+        clearInterval(heartbeat);
+      }
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribeClient(res);
+    });
   });
 
   return httpServer;

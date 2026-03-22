@@ -44,10 +44,10 @@ const envVars: EnvVar[] = [
 
   // File storage
   { name: "FILE_STORAGE_TYPE", required: false, description: "File storage type: 'local' or 's3' (default: local)" },
-  { name: "S3_BUCKET_NAME", required: false, description: "S3 bucket name (required if FILE_STORAGE_TYPE=s3)" },
-  { name: "S3_REGION", required: false, description: "S3 region (required if FILE_STORAGE_TYPE=s3)" },
-  { name: "AWS_ACCESS_KEY_ID", required: false, description: "AWS Access Key ID (required if FILE_STORAGE_TYPE=s3)" },
-  { name: "AWS_SECRET_ACCESS_KEY", required: false, description: "AWS Secret Access Key (required if FILE_STORAGE_TYPE=s3)" },
+  { name: "S3_BUCKET_NAME", required: process.env.FILE_STORAGE_TYPE === "s3", description: "S3 bucket name (required when FILE_STORAGE_TYPE=s3)" },
+  { name: "S3_REGION", required: process.env.FILE_STORAGE_TYPE === "s3", description: "S3 region (required when FILE_STORAGE_TYPE=s3)" },
+  { name: "AWS_ACCESS_KEY_ID", required: process.env.FILE_STORAGE_TYPE === "s3", description: "AWS Access Key ID (required when FILE_STORAGE_TYPE=s3)" },
+  { name: "AWS_SECRET_ACCESS_KEY", required: process.env.FILE_STORAGE_TYPE === "s3", description: "AWS Secret Access Key (required when FILE_STORAGE_TYPE=s3)" },
   { name: "UPLOADS_PATH", required: false, description: "Local uploads directory path (default: system temp)" },
 ];
 

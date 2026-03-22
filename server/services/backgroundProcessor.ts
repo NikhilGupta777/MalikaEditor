@@ -60,7 +60,7 @@ const UPLOADS_DIR = UPLOADS_DIR_CONFIG;
 const OUTPUT_DIR = OUTPUT_DIR_CONFIG;
 
 const processingLocks = new Map<number, { acquired: boolean; timestamp: number }>();
-const LOCK_TIMEOUT_MS = 30 * 60 * 1000;
+const LOCK_TIMEOUT_MS = 90 * 60 * 1000;
 const STALE_JOB_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Cleanup locks on process exit - mark jobs as failed so UI doesn't hang

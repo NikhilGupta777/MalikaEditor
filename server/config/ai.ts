@@ -7,8 +7,6 @@ export const AI_CONFIG = {
       secondary: "gpt-4o-mini-transcribe",
       fallback: "gemini-2.5-flash",
     },
-    // Video analysis - stable Pro for frame extraction fallback
-    videoAnalysis: "gemini-2.5-pro",
     // Full video watch - most upstream task, feeds everything downstream, use best reasoning model
     fullVideoWatch: "gemini-3.1-pro-preview",
     // Semantic analysis + frame extraction fallback - complex transcript/topic understanding, feeds edit planning
@@ -56,7 +54,7 @@ export const AI_CONFIG = {
 
   processing: {
     maxConcurrentJobs: 3,
-    projectExpirationHours: 1,
+    projectExpirationHours: 24,
     maxEventHistory: 100,
     cleanupIntervalMs: 10 * 60 * 1000, // 10 minutes
     sseHeartbeatMs: 5000, // 5 seconds - more frequent to prevent proxy timeouts

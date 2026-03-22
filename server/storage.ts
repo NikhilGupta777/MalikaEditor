@@ -34,6 +34,7 @@ import { z } from "zod";
 import { createLogger } from "./utils/logger";
 import { db } from "./db";
 import { eq, desc, lt, and, gt, sql } from "drizzle-orm";
+import { AI_CONFIG } from "./config/ai";
 
 const logger = createLogger("storage");
 
@@ -172,6 +173,8 @@ export class DatabaseStorage {
     try {
       const normalizedProject = validateAndNormalizeJsonbFields(project as Partial<VideoProject>);
 
+      const expiresAt = new Date(Date.now() + AI_CONFIG.processing.projectExpirationHours * 60 * 60 * 1000);
+
       const [result] = await db.insert(videoProjects).values({
         fileName: project.fileName,
         originalPath: project.originalPath,
@@ -185,6 +188,7 @@ export class DatabaseStorage {
         stockMedia: normalizedProject.stockMedia || null,
         reviewData: normalizedProject.reviewData || null,
         errorMessage: project.errorMessage || null,
+        expiresAt,
       }).returning();
 
       logger.info("Created video project", { id: result.id, fileName: result.fileName });

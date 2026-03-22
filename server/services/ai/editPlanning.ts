@@ -780,7 +780,7 @@ export async function generateSmartEditPlan(
   try {
     aiLogger.info("Consolidated Pass: Analyzing structure, quality, and B-roll in single call...");
     const consolidated = await executeConsolidatedAnalysis(
-      analysis, transcript, semanticAnalysis, fillerSegments, enhancedTranscript
+      analysis, transcript, semanticAnalysis, fillerSegments, enhancedTranscript, prompt
     );
     structuredPlan = consolidated.structuredPlan;
     qualityMap = consolidated.qualityMap;
@@ -802,7 +802,7 @@ export async function generateSmartEditPlan(
 
     aiLogger.info("Pass 3: Optimizing B-roll placement...");
     brollPlan = await executePass3BrollOptimization(
-      analysis, transcript, semanticAnalysis, structuredPlan, qualityMap, fillerSegments
+      analysis, transcript, semanticAnalysis, structuredPlan, qualityMap, fillerSegments, prompt
     );
     aiLogger.debug(`Pass 3 complete: ${brollPlan.brollPlacements.length} B-roll placements, ${brollPlan.fillerActions.length} filler actions`);
   }

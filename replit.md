@@ -41,7 +41,8 @@ The AI services are modularized for transcription, video analysis, semantic anal
 - **Iterative Correction Loop**: AI generates correction plans for auto-fixable issues (transitions, cuts, B-roll, timing, captions). Maximum 2 render iterations with automatic re-render triggers for critical issues or low scores. Actually re-renders with corrected edit plan and stock media.
 - **Self-Review Persistence**: Results stored with project for learning and future reference.
 - **AI Learning System**: Stores successful editing patterns from user-approved edits and high-scoring renders. Retrieves relevant patterns for new projects based on video genre/tone similarity. Applies learned preferences to future edit plan generation. In-memory pattern storage with bounded capacity and age-based pruning.
-- **AI Chat Companion**: Real-time conversational guide that provides explanations throughout the video editing pipeline. Sends automatic updates at each processing stage (upload, transcription, analysis, planning, media fetching, review ready, rendering, self-review, corrections, completion). Users can ask questions about the current state, AI decisions, and get contextual guidance. Uses Gemini AI for intelligent question answering with full project context. Non-blocking design doesn't interfere with autonomous processing.
+- **AI Chat Companion**: Real-time conversational guide that provides explanations throughout the video editing pipeline. Sends automatic updates at each processing stage (upload, transcription, analysis, planning, media fetching, review ready, rendering, self-review, corrections, completion). Users can ask questions about the current state, AI decisions, and get contextual guidance. Uses Gemini AI for intelligent question answering with full project context including stock media data. Non-blocking design doesn't interfere with autonomous processing.
+- **Re-Edit System**: Users can request changes to completed edits via the chat companion. The AI detects change requests, proposes a plan with a "Proposed Changes" card, and on user confirmation triggers a re-edit that resumes processing from the planning stage. The pipeline uses `shouldSkipStage` to skip transcription and analysis during re-edits (loading existing data from DB), and the user's re-edit instructions are passed directly to the consolidated analysis and B-roll optimization AI prompts so the new edit plan reflects the requested changes.
 
 ### Video Processing Pipeline
 1.  **Upload & Analysis**: Video stored, analyzed by AI (Gemini Vision) for motion, transitions, and pacing.
@@ -86,4 +87,4 @@ The AI services are modularized for transcription, video analysis, semantic anal
 -   **PostgreSQL**: Primary data store.
 
 ### Cloud Storage
--   **Google Cloud Storage**: For object storage.
+-   **AWS S3**: For object storage (bucket: `malikaeditor`, region: `us-east-1`).

@@ -503,7 +503,8 @@ export async function executePass3BrollOptimization(
   semanticAnalysis: SemanticAnalysis,
   structuredPlan: StructuredPlan,
   qualityMap: QualityMap,
-  fillerSegments: { start: number; end: number; word: string }[]
+  fillerSegments: { start: number; end: number; word: string }[],
+  userPrompt?: string
 ): Promise<OptimizedBrollPlan> {
   const duration = analysis.duration;
   const genre = analysis.context?.genre || "general";
@@ -525,8 +526,12 @@ export async function executePass3BrollOptimization(
     `[${safeFixed(t.start)}s-${safeFixed(t.end)}s]: ${t.text}`
   ).join("\n");
 
-  const prompt = `You are an expert B-roll optimization specialist. Create an intelligent B-roll placement plan.
+  const userInstructionsBlock = userPrompt
+    ? `\nUSER'S EDITING INSTRUCTIONS (CRITICAL — follow these closely):\n"${userPrompt}"\n`
+    : "";
 
+  const prompt = `You are an expert B-roll optimization specialist. Create an intelligent B-roll placement plan.
+${userInstructionsBlock}
 VIDEO CONTEXT:
 - Duration: ${safeFixed(duration)} seconds
 - Genre: ${genre}
@@ -683,7 +688,8 @@ export async function executeConsolidatedAnalysis(
   transcript: TranscriptSegment[],
   semanticAnalysis: SemanticAnalysis,
   fillerSegments: { start: number; end: number; word: string }[],
-  enhancedTranscript?: TranscriptEnhancedType
+  enhancedTranscript?: TranscriptEnhancedType,
+  userPrompt?: string
 ): Promise<ConsolidatedAnalysisResult> {
   const duration = analysis.duration || 0;
   const genre = analysis.context?.genre || "general";
@@ -758,8 +764,12 @@ AUDIO-VISUAL SYNC:
 - Sync Quality: ${audioVisualSync.syncQuality || "good"}
 ${(audioVisualSync.outOfSyncMoments?.length || 0) > 0 ? `- Sync Issues:\n${audioVisualSync.outOfSyncMoments!.slice(0, 5).map((m) => `  [${safeFixed(m.timestamp)}s]: ${m.issue}`).join("\n")}` : ""}` : "";
 
-  const prompt = `You are an expert video editor with deep understanding of narrative, emotion, and visual storytelling. Perform a COMPREHENSIVE analysis of this video in a single pass.
+  const userInstructionsBlock = userPrompt
+    ? `\nUSER'S EDITING INSTRUCTIONS (CRITICAL — follow these closely):\n"${userPrompt}"\n`
+    : "";
 
+  const prompt = `You are an expert video editor with deep understanding of narrative, emotion, and visual storytelling. Perform a COMPREHENSIVE analysis of this video in a single pass.
+${userInstructionsBlock}
 VIDEO METADATA:
 - Duration: ${safeFixed(duration)} seconds
 - Genre: ${genre}

@@ -21,7 +21,7 @@ import {
   sendReviewReadyUpdate,
   sendErrorUpdate,
 } from "./chatCompanion";
-import type { ProcessingStatus, ReviewData, StockMediaItem, ProcessingStage } from "@shared/schema";
+import type { ProcessingStatus, ReviewData, StockMediaItem, ProcessingStage, TranscriptSegment } from "@shared/schema";
 import path from "path";
 import fs from "fs/promises";
 import { UPLOADS_DIR as UPLOADS_DIR_CONFIG, OUTPUT_DIR as OUTPUT_DIR_CONFIG } from "../config/paths";
@@ -754,155 +754,179 @@ async function runProcessingPipeline(
 
     addActivity(projectId, `Video info: ${metadata.duration.toFixed(1)}s duration, ${metadata.width || 0}x${metadata.height || 0}`);
 
-    // Send upload update to chat companion
-    await sendUploadUpdate(projectId, project.fileName || "video", Math.round(metadata.duration));
+    if (!shouldSkipStage("transcription")) {
+      await sendUploadUpdate(projectId, project.fileName || "video", Math.round(metadata.duration));
+    }
     updateProjectContext(projectId, { duration: Math.round(metadata.duration) });
 
-    // PARALLEL PHASE 1: Extract frames, audio, and detect silence simultaneously
-    // These operations are all independent reads from the video file
-    const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
-    addActivity(projectId, `Starting parallel extraction: ${numFrames} frames + audio${editOptions.removeSilence ? ' + silence detection' : ''}...`);
-
-    const parallelExtractionStart = Date.now();
-
-    const [framePaths, audioPath, silentSegments] = await Promise.all([
-      // Frame extraction
-      extractFrames(videoPath, numFrames),
-      // Audio extraction  
-      extractAudio(videoPath),
-      // Silence detection (if enabled)
-      editOptions.removeSilence ? detectSilence(videoPath) : Promise.resolve([]),
-    ]);
-
-    const parallelExtractionTime = ((Date.now() - parallelExtractionStart) / 1000).toFixed(1);
-    addActivity(projectId, `Parallel extraction complete in ${parallelExtractionTime}s: ${framePaths.length} frames extracted`);
-
-    // Guard against empty frame extraction
-    if (framePaths.length > 0) {
-      tempFiles.push(path.dirname(framePaths[0]));
-    } else {
-      processorLogger.error(`No frames extracted from video - visual analysis may be limited`);
-    }
-    tempFiles.push(audioPath);
-
-    if (editOptions.removeSilence) {
-      addActivity(projectId, `Found ${silentSegments.length} silent segments to remove`);
-    }
-
-    // PHASE 2: Transcription with enhanced AI features (requires audio)
-    await updateStatus("transcribing");
-    addActivity(projectId, "Transcribing audio with AI (speakers, chapters, sentiment)...");
-    const transcriptResult = await transcribeAudioEnhanced(audioPath, metadata.duration);
-    const transcript = transcriptResult.segments;
-    addActivity(projectId, `Transcription complete: ${transcript.length} segments`);
-
-    // Log enhanced features if available
-    if (transcriptResult.speakers && transcriptResult.speakers.length > 0) {
-      addActivity(projectId, `Detected ${transcriptResult.speakers.length} speakers in video`);
-    }
-    if (transcriptResult.chapters && transcriptResult.chapters.length > 0) {
-      addActivity(projectId, `Generated ${transcriptResult.chapters.length} auto-chapters`);
-    }
-    if (transcriptResult.sentiments && transcriptResult.sentiments.length > 0) {
-      const positive = transcriptResult.sentiments.filter((s: { sentiment: string }) => s.sentiment === "positive").length;
-      const negative = transcriptResult.sentiments.filter((s: { sentiment: string }) => s.sentiment === "negative").length;
-      addActivity(projectId, `Sentiment analysis: ${positive} positive, ${negative} negative segments`);
-    }
-    if (transcriptResult.entities && transcriptResult.entities.length > 0) {
-      addActivity(projectId, `Found ${transcriptResult.entities.length} named entities`);
-    }
-
-    await storage.updateVideoProject(projectId, {
-      transcript,
-      // Store enhanced data for later use
-      transcriptEnhanced: {
-        speakers: transcriptResult.speakers,
-        chapters: transcriptResult.chapters,
-        sentiments: transcriptResult.sentiments,
-        entities: transcriptResult.entities,
-        detectedLanguage: transcriptResult.detectedLanguage,
-      }
-    });
-    notifySubscribers(projectId, "transcript", {
-      transcript,
-      enhanced: {
-        speakers: transcriptResult.speakers,
-        chapters: transcriptResult.chapters,
-        sentiments: transcriptResult.sentiments,
-        entities: transcriptResult.entities,
-      }
-    });
-
-    // Send transcription update to chat companion
-    await sendTranscriptionUpdate(projectId, transcript.length, transcriptResult.detectedLanguage);
-    updateProjectContext(projectId, { transcript, status: "transcribing" });
-
-    // Save checkpoint: transcription complete
-    await updateProcessingStage(projectId, "transcription");
-
-    addActivity(projectId, "Performing deep video analysis (AI watching full video)...");
-    const analysis = await analyzeVideoDeep(
-      framePaths,
-      metadata.duration,
-      silentSegments,
-      transcript,
-      videoPath // Pass video path for full video watching
-    );
-
-    const brollWindowCount = analysis.semanticAnalysis?.brollWindows?.length || 0;
-    const hookStrength = analysis.semanticAnalysis?.hookMoments?.[0]?.score || 0;
-    addActivity(projectId, `Deep analysis complete: ${brollWindowCount} B-roll windows, hook strength: ${hookStrength}`);
-
-    // Ensure analysis has valid duration (fallback to metadata.duration or transcript end)
-    const transcriptEnd = transcript[transcript.length - 1]?.end || 0;
-    const validDuration = (analysis.videoAnalysis?.duration && !isNaN(analysis.videoAnalysis.duration))
-      ? analysis.videoAnalysis.duration
-      : (metadata.duration || transcriptEnd || 60);
-
-    // Flatten analysis to match videoAnalysisSchema - spread videoAnalysis props at top level
-    // Include enhancedAnalysis (motion, transitions, pacing, sync) for downstream use
-    const sanitizedAnalysis = {
-      ...analysis.videoAnalysis,
-      duration: validDuration,
-      frames: analysis.videoAnalysis?.frames || [],
-      semanticAnalysis: analysis.semanticAnalysis,
-      // Store enhancedAnalysis for edit planning and media selection (use undefined for optional)
-      enhancedAnalysis: analysis.enhancedAnalysis || undefined,
-      qualityInsights: analysis.qualityInsights || undefined,
+    // Declare variables used across stages — populated either from processing or DB (when skipping)
+    let transcript: TranscriptSegment[];
+    let transcriptResult: {
+      segments: TranscriptSegment[];
+      speakers?: any[];
+      chapters?: any[];
+      sentiments?: any[];
+      entities?: any[];
+      detectedLanguage?: string;
     };
+    let sanitizedAnalysis: any;
 
-    await storage.updateVideoProject(projectId, {
-      analysis: sanitizedAnalysis,
-    });
+    if (shouldSkipStage("transcription") && shouldSkipStage("analysis")) {
+      // ── FAST RESUME: Skip transcription + analysis (re-edit from planning) ──
+      // Load existing data from DB instead of re-running expensive AI calls
+      processorLogger.info(`[Resume] Skipping transcription & analysis for project ${projectId} (resuming from ${resumeFromStage})`);
+      addActivity(projectId, "Skipping transcription & analysis (already complete)...");
 
-    const fillerSegmentsForClient = analysis.semanticAnalysis?.fillerSegments ?? detectFillerWords(transcript);
-    notifySubscribers(projectId, "enhancedAnalysis", {
-      hookMoments: analysis.semanticAnalysis?.hookMoments,
-      topicFlow: analysis.semanticAnalysis?.topicFlow,
-      structureAnalysis: analysis.semanticAnalysis?.structureAnalysis,
-      keyMoments: analysis.semanticAnalysis?.keyMoments,
-      fillerSegments: fillerSegmentsForClient,
-      qualityInsights: {
-        hookStrength,
-        pacingScore: 75,
-        engagementPrediction: 80,
-        recommendations: [],
-      },
-    });
+      transcript = (project.transcript as TranscriptSegment[]) || [];
+      const storedEnhanced = (project as any).transcriptEnhanced || {};
+      transcriptResult = {
+        segments: transcript,
+        speakers: storedEnhanced.speakers || [],
+        chapters: storedEnhanced.chapters || [],
+        sentiments: storedEnhanced.sentiments || [],
+        entities: storedEnhanced.entities || [],
+        detectedLanguage: storedEnhanced.detectedLanguage,
+      };
+      sanitizedAnalysis = (project.analysis as any) || {};
 
-    // Send analysis update to chat companion
-    await sendAnalysisUpdate(projectId, sanitizedAnalysis);
-    updateProjectContext(projectId, { videoAnalysis: sanitizedAnalysis, status: "planning" });
+      updateProjectContext(projectId, {
+        transcript,
+        videoAnalysis: sanitizedAnalysis,
+        status: "planning",
+      });
+    } else {
+      // ── FULL RUN: Extract, transcribe, and analyze ──
 
-    // Save checkpoint: analysis complete
-    await updateProcessingStage(projectId, "analysis");
+      // PARALLEL PHASE 1: Extract frames, audio, and detect silence simultaneously
+      const numFrames = Math.min(12, Math.max(6, Math.floor(metadata.duration / 10)));
+      addActivity(projectId, `Starting parallel extraction: ${numFrames} frames + audio${editOptions.removeSilence ? ' + silence detection' : ''}...`);
+
+      const parallelExtractionStart = Date.now();
+
+      const [framePaths, audioPath, silentSegments] = await Promise.all([
+        extractFrames(videoPath, numFrames),
+        extractAudio(videoPath),
+        editOptions.removeSilence ? detectSilence(videoPath) : Promise.resolve([]),
+      ]);
+
+      const parallelExtractionTime = ((Date.now() - parallelExtractionStart) / 1000).toFixed(1);
+      addActivity(projectId, `Parallel extraction complete in ${parallelExtractionTime}s: ${framePaths.length} frames extracted`);
+
+      if (framePaths.length > 0) {
+        tempFiles.push(path.dirname(framePaths[0]));
+      } else {
+        processorLogger.error(`No frames extracted from video - visual analysis may be limited`);
+      }
+      tempFiles.push(audioPath);
+
+      if (editOptions.removeSilence) {
+        addActivity(projectId, `Found ${silentSegments.length} silent segments to remove`);
+      }
+
+      // PHASE 2: Transcription with enhanced AI features (requires audio)
+      await updateStatus("transcribing");
+      addActivity(projectId, "Transcribing audio with AI (speakers, chapters, sentiment)...");
+      transcriptResult = await transcribeAudioEnhanced(audioPath, metadata.duration);
+      transcript = transcriptResult.segments;
+      addActivity(projectId, `Transcription complete: ${transcript.length} segments`);
+
+      if (transcriptResult.speakers && transcriptResult.speakers.length > 0) {
+        addActivity(projectId, `Detected ${transcriptResult.speakers.length} speakers in video`);
+      }
+      if (transcriptResult.chapters && transcriptResult.chapters.length > 0) {
+        addActivity(projectId, `Generated ${transcriptResult.chapters.length} auto-chapters`);
+      }
+      if (transcriptResult.sentiments && transcriptResult.sentiments.length > 0) {
+        const positive = transcriptResult.sentiments.filter((s: { sentiment: string }) => s.sentiment === "positive").length;
+        const negative = transcriptResult.sentiments.filter((s: { sentiment: string }) => s.sentiment === "negative").length;
+        addActivity(projectId, `Sentiment analysis: ${positive} positive, ${negative} negative segments`);
+      }
+      if (transcriptResult.entities && transcriptResult.entities.length > 0) {
+        addActivity(projectId, `Found ${transcriptResult.entities.length} named entities`);
+      }
+
+      await storage.updateVideoProject(projectId, {
+        transcript,
+        transcriptEnhanced: {
+          speakers: transcriptResult.speakers,
+          chapters: transcriptResult.chapters,
+          sentiments: transcriptResult.sentiments,
+          entities: transcriptResult.entities,
+          detectedLanguage: transcriptResult.detectedLanguage,
+        }
+      });
+      notifySubscribers(projectId, "transcript", {
+        transcript,
+        enhanced: {
+          speakers: transcriptResult.speakers,
+          chapters: transcriptResult.chapters,
+          sentiments: transcriptResult.sentiments,
+          entities: transcriptResult.entities,
+        }
+      });
+
+      await sendTranscriptionUpdate(projectId, transcript.length, transcriptResult.detectedLanguage);
+      updateProjectContext(projectId, { transcript, status: "transcribing" });
+
+      await updateProcessingStage(projectId, "transcription");
+
+      addActivity(projectId, "Performing deep video analysis (AI watching full video)...");
+      const analysis = await analyzeVideoDeep(
+        framePaths,
+        metadata.duration,
+        silentSegments,
+        transcript,
+        videoPath
+      );
+
+      const brollWindowCount = analysis.semanticAnalysis?.brollWindows?.length || 0;
+      const hookStrength = analysis.semanticAnalysis?.hookMoments?.[0]?.score || 0;
+      addActivity(projectId, `Deep analysis complete: ${brollWindowCount} B-roll windows, hook strength: ${hookStrength}`);
+
+      const transcriptEnd = transcript[transcript.length - 1]?.end || 0;
+      const validDuration = (analysis.videoAnalysis?.duration && !isNaN(analysis.videoAnalysis.duration))
+        ? analysis.videoAnalysis.duration
+        : (metadata.duration || transcriptEnd || 60);
+
+      sanitizedAnalysis = {
+        ...analysis.videoAnalysis,
+        duration: validDuration,
+        frames: analysis.videoAnalysis?.frames || [],
+        semanticAnalysis: analysis.semanticAnalysis,
+        enhancedAnalysis: analysis.enhancedAnalysis || undefined,
+        qualityInsights: analysis.qualityInsights || undefined,
+      };
+
+      await storage.updateVideoProject(projectId, {
+        analysis: sanitizedAnalysis,
+      });
+
+      const fillerSegmentsForClient = analysis.semanticAnalysis?.fillerSegments ?? detectFillerWords(transcript);
+      notifySubscribers(projectId, "enhancedAnalysis", {
+        hookMoments: analysis.semanticAnalysis?.hookMoments,
+        topicFlow: analysis.semanticAnalysis?.topicFlow,
+        structureAnalysis: analysis.semanticAnalysis?.structureAnalysis,
+        keyMoments: analysis.semanticAnalysis?.keyMoments,
+        fillerSegments: fillerSegmentsForClient,
+        qualityInsights: {
+          hookStrength,
+          pacingScore: 75,
+          engagementPrediction: 80,
+          recommendations: [],
+        },
+      });
+
+      await sendAnalysisUpdate(projectId, sanitizedAnalysis);
+      updateProjectContext(projectId, { videoAnalysis: sanitizedAnalysis, status: "planning" });
+
+      await updateProcessingStage(projectId, "analysis");
+    }
 
     await updateStatus("planning");
     addActivity(projectId, "Creating intelligent edit plan...");
     const fillerSegments: { start: number; end: number; word: string }[] =
       sanitizedAnalysis.semanticAnalysis?.fillerSegments ?? detectFillerWords(transcript);
 
-    // Create enhanced transcript with rich context for intelligent editing decisions
     const enhancedTranscript = {
       speakers: transcriptResult.speakers || [],
       chapters: transcriptResult.chapters || [],
@@ -969,13 +993,13 @@ async function runProcessingPipeline(
       .filter((w: any) => w.end > w.start); // Ensure valid windows
 
     // Use edit plan B-roll windows (preferred) or fall back to semantic analysis
-    const semanticBrollWindows = analysis.semanticAnalysis?.brollWindows || [];
+    const semanticBrollWindows = sanitizedAnalysis.semanticAnalysis?.brollWindows || [];
     const brollWindows = editPlanBrollWindows.length > 0 ? editPlanBrollWindows : semanticBrollWindows;
 
     processorLogger.info(`B-roll windows: ${editPlanBrollWindows.length} from edit plan, ${semanticBrollWindows.length} from semantic analysis, using ${brollWindows.length}`);
 
     // Log observability info if semantic analysis is missing but we have edit plan windows
-    if (!analysis.semanticAnalysis && editPlanBrollWindows.length > 0) {
+    if (!sanitizedAnalysis.semanticAnalysis && editPlanBrollWindows.length > 0) {
       processorLogger.info(`[EDGE CASE] Semantic analysis missing but ${editPlanBrollWindows.length} edit plan windows available - using edit plan windows only`);
     }
 
@@ -988,7 +1012,7 @@ async function runProcessingPipeline(
     if (editOptions.addBroll && stockQueries.length > 0) {
       // PARALLEL PHASE 3: Fetch stock media AND generate AI images simultaneously
       // These are completely independent operations
-      const shouldGenerateAi = editOptions.generateAiImages && (!!analysis.semanticAnalysis || brollWindows.length > 0);
+      const shouldGenerateAi = editOptions.generateAiImages && (!!sanitizedAnalysis.semanticAnalysis || brollWindows.length > 0);
 
       const freepikEnabled = isFreepikConfigured();
       const sourceInfo = freepikEnabled ? 'Pexels + Freepik' : 'Pexels';
@@ -1008,9 +1032,9 @@ async function runProcessingPipeline(
           : Promise.resolve([] as StockMediaVariants[]),
         // AI image generation (if enabled) - use edit plan B-roll windows for consistency
         // Works even if semanticAnalysis is missing, as long as we have explicit B-roll windows
-        shouldGenerateAi && (analysis.semanticAnalysis || brollWindows.length > 0)
+        shouldGenerateAi && (sanitizedAnalysis.semanticAnalysis || brollWindows.length > 0)
           ? generateAiImagesForVideo(
-            analysis.semanticAnalysis || { brollWindows: [], mainTopics: [], overallTone: "general", keyMoments: [], topicFlow: [], hookMoments: [] },
+            sanitizedAnalysis.semanticAnalysis || { brollWindows: [], mainTopics: [], overallTone: "general", keyMoments: [], topicFlow: [], hookMoments: [] },
             undefined,
             metadata.duration,
             brollWindows
@@ -1072,9 +1096,9 @@ async function runProcessingPipeline(
         generatedAiImages,
         {
           duration: metadata.duration,
-          genre: (analysis as any).context?.genre || analysis.semanticAnalysis?.overallTone || "general",
-          tone: (analysis as any).context?.tone || analysis.semanticAnalysis?.overallTone || "professional",
-          topic: analysis.semanticAnalysis?.mainTopics?.[0] || "various",
+          genre: sanitizedAnalysis.context?.genre || sanitizedAnalysis.semanticAnalysis?.overallTone || "general",
+          tone: sanitizedAnalysis.context?.tone || sanitizedAnalysis.semanticAnalysis?.overallTone || "professional",
+          topic: sanitizedAnalysis.semanticAnalysis?.mainTopics?.[0] || "various",
           // Pass enhanced analysis for intelligent selection
           motionAnalysis,
           pacingAnalysis,
@@ -1112,7 +1136,7 @@ async function runProcessingPipeline(
       aiImageCount = aiStockItems.length;
 
       notifySubscribers(projectId, "aiImages", { count: aiImageCount });
-    } else if (editOptions.generateAiImages && analysis.semanticAnalysis) {
+    } else if (editOptions.generateAiImages && sanitizedAnalysis.semanticAnalysis) {
       await updateStatus("generating_ai_images");
       addActivity(projectId, "Generating AI images for overlays...");
 
@@ -1120,7 +1144,7 @@ async function runProcessingPipeline(
 
       try {
         const aiImages = await generateAiImagesForVideo(
-          analysis.semanticAnalysis,
+          sanitizedAnalysis.semanticAnalysis,
           undefined,
           metadata.duration
         );
@@ -1153,6 +1177,7 @@ async function runProcessingPipeline(
 
     await storage.updateVideoProject(projectId, { stockMedia });
     notifySubscribers(projectId, "stockMedia", { stockMedia });
+    updateProjectContext(projectId, { stockMedia });
 
     // Send media selection update to chat companion
     const stockCount = stockMedia.filter(m => m.type !== 'ai_generated').length;
@@ -1311,7 +1336,7 @@ async function runProcessingPipeline(
           currentStockMedia,
           renderEditOptions,
           undefined,
-          analysis.semanticAnalysis
+          sanitizedAnalysis.semanticAnalysis
         );
 
         addActivity(projectId, isRetry ? "Corrected rendering complete!" : "Initial rendering complete!");
@@ -1394,9 +1419,9 @@ async function runProcessingPipeline(
                 generatedAiImages || [],
                 {
                   duration: metadata.duration,
-                  genre: (analysis as any).context?.genre || analysis.semanticAnalysis?.overallTone || "general",
-                  tone: (analysis as any).context?.tone || analysis.semanticAnalysis?.overallTone || "professional",
-                  topic: analysis.semanticAnalysis?.mainTopics?.[0] || "various",
+                  genre: sanitizedAnalysis.context?.genre || sanitizedAnalysis.semanticAnalysis?.overallTone || "general",
+                  tone: sanitizedAnalysis.context?.tone || sanitizedAnalysis.semanticAnalysis?.overallTone || "professional",
+                  topic: sanitizedAnalysis.semanticAnalysis?.mainTopics?.[0] || "various",
                 }
               );
 

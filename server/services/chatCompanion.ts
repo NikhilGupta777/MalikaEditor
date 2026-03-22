@@ -361,6 +361,20 @@ function buildQualityIssueSummary(reviewData?: any): string {
   return lines.join("\n");
 }
 
+function buildStockMediaSummary(stockMedia?: StockMediaItem[]): string {
+  if (!stockMedia || stockMedia.length === 0) return "No stock media selected yet.";
+
+  const lines = stockMedia.slice(0, 20).map((item: any, idx: number) => {
+    const type = item.mediaType || item.type || "unknown";
+    const query = item.searchQuery || item.query || "";
+    const source = item.source || "unknown";
+    const url = item.url || item.previewUrl || "";
+    return `  [${idx + 1}] ${type.toUpperCase()} from ${source} — query: "${query}"${url ? ` — ${url.substring(0, 60)}...` : ""}`;
+  });
+
+  return lines.join("\n");
+}
+
 function buildContextSummary(context?: ProjectContext): string {
   if (!context) return "No project context available yet.";
 
@@ -406,6 +420,7 @@ export async function answerUserQuestion(
   const editPlanSummary = buildEditPlanSummary(context?.editPlan);
   const qualitySummary = buildQualityIssueSummary(context?.reviewData);
   const contextOverview = buildContextSummary(context);
+  const stockMediaSummary = buildStockMediaSummary(context?.stockMedia);
 
   const aiPrompt = `You are MalikaEditor's AI video editing assistant — intelligent, specific, and deeply knowledgeable about this project.
 
@@ -417,6 +432,9 @@ ${transcriptSummary}
 
 EDIT PLAN APPLIED TO THIS VIDEO:
 ${editPlanSummary}
+
+STOCK MEDIA SELECTED FOR B-ROLL:
+${stockMediaSummary}
 
 AI QUALITY REVIEW RESULTS:
 ${qualitySummary}

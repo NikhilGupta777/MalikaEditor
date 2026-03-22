@@ -1781,57 +1781,69 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
     ? `/output/${editResult.storageKey.replace(/^output\//, "")}`
     : `/output/${path.basename(editResult.outputPath)}`;
 
-  processorLogger.info(`[Background Render] Complete for project ${projectId}, output: ${publicOutputPath}`);
+  processorLogger.info(`[Background Render] Render complete for project ${projectId}, output: ${publicOutputPath}`);
 
-  // Perform self-review in background and persist results
-  let selfReviewData: { selfReviewScore?: number; selfReviewResult?: any } = {};
-  try {
-    const selfReviewResult = await performPostRenderSelfReview(
-      editResult.outputPath,
-      videoPath,
-      finalEditPlan,
-      transcript,
-      reviewData,
-      stockMedia,
-      project.prompt || "",
-      project.analysis as import("@shared/schema").VideoAnalysis | undefined
-    );
-    processorLogger.info(`[Background Render] Self-review complete: score=${selfReviewResult.overallScore}`);
-
-    // Persist self-review results to reviewData for future reference
-    selfReviewData = {
-      selfReviewScore: selfReviewResult.overallScore,
-      selfReviewResult: {
-        overallScore: selfReviewResult.overallScore,
-        watchedFullVideo: selfReviewResult.watchedFullVideo,
-        approved: selfReviewResult.approved,
-        qualityMetrics: selfReviewResult.qualityMetrics,
-        issues: selfReviewResult.issues,
-        detailedFeedback: selfReviewResult.detailedFeedback,
-        suggestions: selfReviewResult.suggestions,
-      },
-    };
-  } catch (reviewErr) {
-    processorLogger.warn(`[Background Render] Self-review failed (non-critical):`, reviewErr);
-  }
-
-  // Mark as completed and store self-review if available
-  const updateData: any = {
+  // ─── STEP 1: Mark completed immediately so the user can download now ───────
+  // Do NOT wait for self-review before delivering the video.
+  await storage.updateVideoProject(projectId, {
     status: "completed" as ProcessingStatus,
     outputPath: publicOutputPath,
+    duration: Math.round(outputMetadata.duration),
+  });
+
+  processorLogger.info(`[Background Render] Project ${projectId} marked completed — video available to user`);
+
+  // ─── STEP 2: Self-review runs as true fire-and-forget ────────────────────
+  // Saves 3-5 minutes of user wait time. The score is persisted to DB when
+  // ready and will appear on the next project fetch / page reload.
+  const selfReviewInputs = {
+    outputPath: editResult.outputPath,
+    videoPath,
+    finalEditPlan: { ...finalEditPlan },
+    transcript: [...transcript],
+    reviewData: { ...reviewData },
+    stockMedia: [...stockMedia],
+    prompt: project.prompt || "",
+    analysis: project.analysis as import("@shared/schema").VideoAnalysis | undefined,
+    existingReviewData: { ...(project.reviewData || {}) },
   };
 
-  // Merge self-review data into reviewData if available
-  if (selfReviewData.selfReviewScore !== undefined) {
-    const existingReviewData = project.reviewData || {};
-    updateData.reviewData = {
-      ...existingReviewData,
-      selfReviewScore: selfReviewData.selfReviewScore,
-      selfReviewResult: selfReviewData.selfReviewResult,
-    };
-  }
+  (async () => {
+    try {
+      processorLogger.info(`[Background Render] Starting background self-review for project ${projectId}`);
+      const selfReviewResult = await performPostRenderSelfReview(
+        selfReviewInputs.outputPath,
+        selfReviewInputs.videoPath,
+        selfReviewInputs.finalEditPlan,
+        selfReviewInputs.transcript,
+        selfReviewInputs.reviewData,
+        selfReviewInputs.stockMedia,
+        selfReviewInputs.prompt,
+        selfReviewInputs.analysis
+      );
 
-  await storage.updateVideoProject(projectId, updateData);
+      processorLogger.info(`[Background Render] Self-review complete for project ${projectId}: score=${selfReviewResult.overallScore}`);
 
-  processorLogger.info(`[Background Render] Project ${projectId} completed successfully`);
+      // Persist score to DB — project is already "completed", just update reviewData
+      await storage.updateVideoProject(projectId, {
+        reviewData: {
+          ...selfReviewInputs.existingReviewData,
+          selfReviewScore: selfReviewResult.overallScore,
+          selfReviewResult: {
+            overallScore: selfReviewResult.overallScore,
+            watchedFullVideo: selfReviewResult.watchedFullVideo,
+            approved: selfReviewResult.approved,
+            qualityMetrics: selfReviewResult.qualityMetrics,
+            issues: selfReviewResult.issues,
+            detailedFeedback: selfReviewResult.detailedFeedback,
+            suggestions: selfReviewResult.suggestions,
+          },
+        },
+      });
+
+      processorLogger.info(`[Background Render] Self-review score persisted for project ${projectId}`);
+    } catch (reviewErr) {
+      processorLogger.warn(`[Background Render] Self-review failed (non-critical) for project ${projectId}:`, reviewErr);
+    }
+  })();
 }

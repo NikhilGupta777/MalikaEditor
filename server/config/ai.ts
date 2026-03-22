@@ -41,7 +41,7 @@ export const AI_CONFIG = {
 
   timing: {
     minWordDurationMs: 80,
-    minBrollGapSeconds: 2, // Reduced from 3 to allow more B-roll placement
+    minBrollGapSeconds: 0, // No enforced gap — AI decides spacing freely
     transitionDurationSeconds: 0.5,
     minSegmentDuration: 1.0,
     // Used as guidance only, not a hard limit

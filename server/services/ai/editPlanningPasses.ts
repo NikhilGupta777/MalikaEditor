@@ -549,18 +549,17 @@ TRANSCRIPT CONTEXT:
 ${transcriptContext}
 
 B-ROLL OPTIMIZATION RULES:
-1. NEVER place B-roll during "high" visual importance segments
-2. Use ULTRA-SPECIFIC queries based on exact transcript context
-3. Match genre/tone: ${genre} content should get ${tone} imagery
-4. DISTRIBUTE EVENLY across the entire video - no clustering
-5. Minimum 3-5 second spacing between B-roll clips
-6. Each B-roll should be 3-5 seconds duration
-7. YOU DECIDE the optimal number of B-roll placements based on content analysis - use as many as the video needs for maximum engagement
+1. Use ULTRA-SPECIFIC queries based on exact transcript context
+2. Match genre/tone: ${genre} content should get ${tone} imagery
+3. YOU DECIDE placement, duration, count, and spacing — there are no enforced limits. Place B-roll wherever it serves the edit best.
+4. Two clips may NOT overlap the same moment in time (clip 2 must start at or after clip 1 ends)
+5. B-roll may appear anywhere in the video — intro, outro, emotional moments, or continuously if that is the right creative choice
+6. Duration: YOU DECIDE what feels right for each clip. Minimum 0.5s (technical floor only).
 
 Respond in JSON format only (no markdown):
 {
   "brollPlacements": [
-    {"start": number, "duration": number (3-5 seconds), "query": "ULTRA-SPECIFIC search query", "transcriptContext": "what speaker is saying", "priority": "high|medium|low", "reason": "why B-roll here"}
+    {"start": number, "duration": number, "query": "ULTRA-SPECIFIC search query", "transcriptContext": "what speaker is saying", "priority": "high|medium|low", "reason": "why B-roll here"}
   ],
   "fillerActions": [{"start": number, "end": number, "word": "the filler word", "action": "cut|overlay"}],
   "cutActions": [{"start": number, "end": number, "reason": "why to cut this segment"}]
@@ -593,7 +592,7 @@ Respond in JSON format only (no markdown):
     const brollPlacements = validateBrollSpacing(
       validated.data.brollPlacements.map((b) => ({
         start: Math.max(0, b.start),
-        duration: Math.min(6, Math.max(2, b.duration)),
+        duration: Math.max(0.5, b.duration), // Only technical minimum
         query: b.query || "background footage",
         transcriptContext: b.transcriptContext,
         priority: b.priority,
@@ -619,21 +618,22 @@ function validateBrollSpacing(
 ): Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> {
   const sorted = [...placements].sort((a, b) => a.start - b.start);
   const validated: Array<{ start: number; duration: number; query: string; transcriptContext: string; priority: "high" | "medium" | "low"; reason: string }> = [];
-  let lastEnd = -5;
+  let lastEnd = 0;
 
-  // Ensure duration is valid (fallback to reasonable default if NaN/undefined)
   const validDuration = (duration && !isNaN(duration) && duration > 0) ? duration : 300;
 
   for (const placement of sorted) {
-    const minGap = AI_CONFIG.timing.minBrollGapSeconds;
-    const hasGap = placement.start >= lastEnd + minGap;
-    const beforeEnd = placement.start < validDuration - 1;
+    // Only technical constraints: no overlapping clips AND must start before video ends
+    const noOverlap = placement.start >= lastEnd;
+    const beforeEnd = placement.start < validDuration - 0.1;
 
-    if (hasGap && beforeEnd) {
-      validated.push({ ...placement, priority: placement.priority as "high" | "medium" | "low" });
-      lastEnd = placement.start + placement.duration;
+    if (noOverlap && beforeEnd) {
+      // Clamp end to video duration
+      const clampedDuration = Math.min(placement.duration, validDuration - placement.start);
+      validated.push({ ...placement, duration: Math.max(0.5, clampedDuration), priority: placement.priority as "high" | "medium" | "low" });
+      lastEnd = placement.start + clampedDuration;
     } else {
-      aiLogger.debug(`Pass 3: Skipping B-roll at ${placement.start}s: hasGap=${hasGap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, duration=${validDuration}s)`);
+      aiLogger.debug(`Pass 3: Skipping B-roll at ${placement.start}s: noOverlap=${noOverlap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, duration=${validDuration}s)`);
     }
   }
 
@@ -795,18 +795,17 @@ INTELLIGENT EDITING RULES (use the rich context data above):
 - SELF-CORRECTION: Your first priority is narrative continuity. Ensure every cut has a justification rooted in quality assessment.
 
 B-ROLL PLACEMENT DECISIONS (explain your reasoning):
-- DECIDE IF B-roll is needed at each point (not always yes!)
-- DON'T add B-roll during high visual importance scenes or emotional peaks
-- DO add B-roll when same speaker talks >15 seconds (visual variety)
+- DECIDE where B-roll will add the most value — you have full creative freedom
+- DO add B-roll when the speaker is describing something visual, during montage sections, or when visual variety improves engagement
 - PREFER VIDEO over images during high-motion segments
 - PREFER IMAGES during reflective/calm segments
 - USE ENTITIES mentioned in transcript for specific B-roll queries
+- Two clips must NOT overlap in time (clip 2 must start at or after clip 1 ends)
 
 B-ROLL RULES:
-- DISTRIBUTE EVENLY across entire video timeline (not clustered at start)
-- YOU DECIDE optimal placement count based on content needs (no fixed limit)
-- AI decides duration (2-6s) based on pacing: fast content = shorter B-roll, slow = longer
-- Minimum 3 second spacing between clips
+- YOU DECIDE placement, count, duration, and spacing — no caps, no forbidden zones, no minimum gaps enforced
+- B-roll may cover the intro, outro, emotional moments, or the entire video if that is the right creative call
+- Duration: YOU DECIDE what feels right per clip. Minimum 0.5s (technical floor only).
 - Match ${genre} content with ${tone} imagery
 - Use ${getBrollStyleHint(genre)}
 - NO PLACEHOLDERS: All search queries must be real, descriptive, and content-relevant.
@@ -912,7 +911,7 @@ Respond in JSON only (no markdown):
     const brollPlacements = validateBrollSpacing(
       (brollData.brollPlacements || []).map((b: any) => ({
         start: Math.max(0, b.start),
-        duration: Math.min(6, Math.max(2, b.duration || 4)),
+        duration: Math.max(0.5, b.duration || 4), // Only technical minimum
         query: b.query || "background footage",
         transcriptContext: b.transcriptContext || "",
         priority: normalizePriority(b.priority || "medium"),
@@ -1016,11 +1015,11 @@ PRELIMINARY ACTIONS (${preliminaryActions.length} total):
 ${actionsSummary}
 
 REVIEW CHECKLIST:
-1. NO OVERLAPPING EDITS
-2. PROPER B-ROLL SPACING - minimum 3 seconds between B-roll clips
-3. NARRATIVE FLOW - edits should preserve story arc
-4. PACING - matches content type (${genre})
-5. B-ROLL RELEVANCE - queries match transcript context
+1. NO OVERLAPPING B-ROLL CLIPS (each clip must start at or after the previous one ends)
+2. NARRATIVE FLOW - edits should preserve story arc
+3. PACING - matches content type (${genre}) and user's prompt
+4. B-ROLL RELEVANCE - queries match transcript context
+5. CREATIVE FREEDOM - do not add artificial spacing or zone restrictions
 
 Generate the FINAL reviewed and refined edit plan.
 

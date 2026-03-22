@@ -1495,8 +1495,8 @@ async function applyOverlaysSequentially(
     const isLast = i === overlays.length - 1;
     const stepOutputPath = isLast ? outputVideoPath : path.join(OUTPUT_DIR, `seq_step_${uuidv4()}_${i}.mp4`);
 
-    // Normalize overlay timing
-    const duration = Math.min(overlay.duration, 5); // Cap duration just in case
+    // Normalize overlay timing — no artificial cap, use whatever the AI planned
+    const duration = Math.max(0.5, overlay.duration);
 
     // Prepare filter for this single overlay
     let overlayFilter = "";
@@ -2002,10 +2002,9 @@ async function applyEditsInternal(
   // Second: Process stock media only if addBroll is enabled
   const stockItems = stockMedia.filter(item => item.type !== "ai_generated");
   if (options.addBroll && stockItems.length > 0) {
-    // Dynamic limit: allow more stock media for longer videos (1 per 10 seconds, min 10, max 50)
-    const maxStockDownloads = Math.min(50, Math.max(10, Math.ceil(metadata.duration / 10)));
-    const stockToProcess = Math.min(stockItems.length, maxStockDownloads);
-    videoLogger.info(`Processing ${stockToProcess} stock media items for overlays (limit: ${maxStockDownloads} for ${metadata.duration.toFixed(0)}s video)...`);
+    // Process all stock media items — no artificial cap. AI decides how many clips to use.
+    const stockToProcess = stockItems.length;
+    videoLogger.info(`Processing ${stockToProcess} stock media items for overlays (${metadata.duration.toFixed(0)}s video)...`);
 
     for (let i = 0; i < stockToProcess; i++) {
       const item = stockItems[i];
@@ -2341,10 +2340,10 @@ async function applyEditsInternal(
         continue;
       }
 
-      // Use provided duration or default if invalid
+      // Use provided duration or default if invalid — no artificial cap
       let finalDuration = DEFAULT_AI_IMAGE_DURATION;
       if (typeof itemDuration === "number" && itemDuration > 0) {
-        finalDuration = Math.min(itemDuration, 5);
+        finalDuration = Math.max(0.5, itemDuration); // Only technical floor
       } else if (itemDuration !== undefined && itemDuration !== null) {
         videoLogger.debug(`[AI Image] Using default duration ${finalDuration}s (provided value was invalid: ${itemDuration}): ${itemQuery.substring(0, 50)}`);
       }

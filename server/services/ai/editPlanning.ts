@@ -440,26 +440,27 @@ export function validateAndFixBrollActions(
   brollWithTiming.sort((a, b) => (a.start || 0) - (b.start || 0));
 
   const validatedBroll: EditAction[] = [];
-  let lastEnd = -3;
+  let lastEnd = 0;
 
   for (const action of brollWithTiming) {
     const start = Math.max(0, action.start || 0);
-    const actionDuration = action.duration || 4;
+    const actionDuration = Math.max(0.5, action.duration || 4); // Only technical minimum: 0.5s
 
-    // Check: must be minBrollGapSeconds after last B-roll AND before video end
-    const minGap = AI_CONFIG.timing.minBrollGapSeconds;
-    const hasGap = start >= lastEnd + minGap;
-    const beforeEnd = start < validDuration - 1;
+    // Only check: clip must not overlap a previous clip AND must start before video end
+    const noOverlap = start >= lastEnd;
+    const beforeEnd = start < validDuration - 0.1;
 
-    if (hasGap && beforeEnd) {
+    if (noOverlap && beforeEnd) {
+      // Clamp end to video duration
+      const clampedDuration = Math.min(actionDuration, validDuration - start);
       validatedBroll.push({
         ...action,
         start,
-        duration: Math.min(6, Math.max(2, actionDuration)),
+        duration: Math.max(0.5, clampedDuration),
       });
-      lastEnd = start + actionDuration;
+      lastEnd = start + clampedDuration;
     } else {
-      aiLogger.debug(`Skipping B-roll at ${start}s: hasGap=${hasGap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, videoDuration=${validDuration}s)`);
+      aiLogger.debug(`Skipping B-roll at ${start}s: noOverlap=${noOverlap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, videoDuration=${validDuration}s)`);
     }
   }
 
@@ -506,19 +507,22 @@ ${editStyleGuidance}
 USER FEEDBACK HISTORY (LEARN FROM THIS):
 ${feedbackContext}
  
-CRITICAL EDITING RULES:
+EDITING RULES — CUTS:
 1. CUTS ARE A LAST RESORT — only cut dead silence (>2s with no speech) or major mistakes/repeated sentences. When in doubt, DO NOT cut.
 2. NEVER cut in the middle of a sentence — only cut between complete thoughts at natural pause points.
 3. If a segment contains a complete thought, preserve it entirely or remove it entirely.
 4. DO NOT cut simply because a section seems slow — preserve the speaker's natural pace and personality.
 5. Prefer fewer, more meaningful cuts over many small cuts. Choppy editing is worse than no editing.
 
-B-ROLL PLACEMENT RULES (VERY IMPORTANT):
+B-ROLL PLACEMENT — USE YOUR FULL INTELLIGENCE:
 6. B-roll OVERLAYS the video — the speaker's audio continues underneath. It is NOT a cut.
-7. ONLY place B-roll when the speaker is describing something visual (an object, place, process, or concept) that can be illustrated.
-8. NEVER place B-roll over the speaker's face during key emotional moments, punchlines, or important conclusions.
-9. NEVER place B-roll over the intro (first 10 seconds) or outro (last 10 seconds).
-10. Ensure each B-roll moment is visually relevant to the exact words being spoken at that timestamp.
+7. You have watched the full video and understand it completely. Use that understanding to decide WHERE, HOW LONG, and HOW MANY B-roll clips to place — the user's prompt is your primary guide.
+8. There are NO forbidden zones — you may place B-roll anywhere in the video including the intro, outro, or over emotional moments IF it serves the user's vision.
+9. There is NO minimum or maximum duration for B-roll — choose whatever duration makes the edit feel best for each clip.
+10. There is NO required gap between B-roll clips — you may place them back-to-back or even fill the entire video with B-roll if that is what the user wants.
+11. There is NO cap on total B-roll percentage — if the user wants wall-to-wall B-roll, deliver that.
+12. Each B-roll should be visually relevant and match what the speaker is saying or the mood/tone the user has requested.
+13. Two B-roll clips may NOT overlap the same moment in time — they can be adjacent (clip 1 ends at 10s, clip 2 starts at 10s) but cannot overlap.
 
 AVAILABLE EDIT ACTIONS:
 
@@ -527,13 +531,6 @@ AVAILABLE EDIT ACTIONS:
 3. "insert_stock" - OVERLAY B-roll stock footage (original audio CONTINUES underneath)
 4. "add_caption" - Add captions for key dialogue
 5. "add_text_overlay" - Add emphasis text
-
-TIMING RULES FOR B-ROLL:
-- Minimum duration: 3 seconds
-- Maximum duration: 8 seconds
-- Optimal duration: 4-6 seconds
-- Leave at least 3 seconds between B-roll overlays to let the viewer reconnect with the speaker
-- Total B-roll time should not exceed 40% of the video duration
 
 B-ROLL SEARCH QUERY GUIDELINES:
 - Be specific and directly match what the speaker is saying at that exact moment
@@ -601,11 +598,11 @@ ${transcript.length > 50 ? `\n... (${transcript.length - 50} more segments)` : "
 Total video duration: ${analysis.duration.toFixed(1)} seconds
 
 CREATE YOUR EDIT PLAN:
-1. USE the pre-identified B-roll opportunities
+1. USE the pre-identified B-roll opportunities — and add more wherever they serve the user's vision
 2. For each insert_stock action, include "transcriptContext" field
 3. Stock queries MUST be specific to content
-4. Ensure B-roll doesn't overlap and has 2+ seconds spacing
-5. Cut silent with no voice or text section carefully while preserving narrative flow
+4. B-roll clips must NOT overlap (clip 2 must start at or after clip 1 ends) — adjacent is fine
+5. Cut silent sections carefully while preserving narrative flow
 
 Respond with a JSON object only (no markdown):
 {

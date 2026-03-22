@@ -1303,7 +1303,7 @@ export default function Editor() {
             {/* AI Chat Companion - Shows during processing (not on completed — shown below completion card instead) */}
             {project?.id && project?.status !== "pending" && project?.status !== "uploading" && project?.status !== "completed" && (
               <Suspense fallback={<PanelLoadingFallback />}>
-                <ChatCompanion projectId={project.id} />
+                <ChatCompanion projectId={project.id} projectStatus={project.status} />
               </Suspense>
             )}
 
@@ -1418,6 +1418,7 @@ export default function Editor() {
               <Suspense fallback={<PanelLoadingFallback />}>
                 <ChatCompanion
                   projectId={project.id}
+                  projectStatus={project.status}
                   className="min-h-[320px]"
                   onReEditStarted={() => {
                     // Close background quality SSE — re-edit supersedes it

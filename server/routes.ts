@@ -2079,7 +2079,8 @@ export async function registerRoutes(
       const recentMessages = await getProjectMessages(id, 20);
 
       // Check if user is confirming a re-edit (trigger word + pending plan in history)
-      const isReEditTrigger = detectReEditTrigger(message, recentMessages);
+      // Re-edit is only available after the first render is complete
+      const isReEditTrigger = detectReEditTrigger(message, recentMessages, project.status);
 
       if (isReEditTrigger) {
         // Check project isn't already being processed

@@ -28,10 +28,11 @@ interface ChatMessage {
 interface ChatCompanionProps {
   projectId: number | null;
   className?: string;
+  projectStatus?: string;
   onReEditStarted?: () => void;
 }
 
-export function ChatCompanion({ projectId, className, onReEditStarted }: ChatCompanionProps) {
+export function ChatCompanion({ projectId, className, projectStatus, onReEditStarted }: ChatCompanionProps) {
   const [input, setInput] = useState("");
   const [isExpanded, setIsExpanded] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -191,7 +192,7 @@ export function ChatCompanion({ projectId, className, onReEditStarted }: ChatCom
 
               {messages.map((message) => {
                 const isUser = message.role === "user";
-                const hasPlan = !!message.metadata?.pendingReEdit;
+                const hasPlan = !!message.metadata?.pendingReEdit && projectStatus === "completed";
 
                 if (isUser) {
                   return (

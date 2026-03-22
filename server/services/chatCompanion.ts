@@ -63,31 +63,33 @@ function dbMessageToChatMessage(dbMsg: ProjectChatMessage): ChatMessage {
 // Load full project context from DB (used when in-memory cache is empty, e.g. after server restart)
 async function ensureContextFromDB(projectId: number): Promise<void> {
   const cached = projectContexts.get(projectId);
-  // If we have a rich context (has editPlan or transcript), no need to reload
-  if (cached && (cached.editPlan || cached.transcript)) return;
+  const needsFullReload = !cached || (!cached.editPlan && !cached.transcript);
 
   try {
     const project = await storage.getVideoProject(projectId);
     if (!project) return;
 
-    const reviewData = project.reviewData as any;
-    const existing = cached || { projectId };
+    if (needsFullReload) {
+      const reviewData = project.reviewData as any;
+      const existing = cached || { projectId };
 
-    projectContexts.set(projectId, {
-      ...existing,
-      title: project.originalFileName || undefined,
-      status: project.status,
-      duration: project.duration || undefined,
-      prompt: project.prompt || undefined,
-      videoAnalysis: (project.analysis as VideoAnalysis) || undefined,
-      transcript: (project.transcript as TranscriptSegment[]) || undefined,
-      editPlan: (project.editPlan as EditPlan) || undefined,
-      stockMedia: (project.stockMedia as StockMediaItem[]) || undefined,
-      reviewData: reviewData || undefined,
-      selfReviewScore: reviewData?.selfReviewScore || undefined,
-    });
-
-    chatLogger.debug(`[Project ${projectId}] Context loaded from DB (${project.status})`);
+      projectContexts.set(projectId, {
+        ...existing,
+        title: project.originalFileName || undefined,
+        status: project.status,
+        duration: project.duration || undefined,
+        prompt: project.prompt || undefined,
+        videoAnalysis: (project.analysis as VideoAnalysis) || undefined,
+        transcript: (project.transcript as TranscriptSegment[]) || undefined,
+        editPlan: (project.editPlan as EditPlan) || undefined,
+        stockMedia: (project.stockMedia as StockMediaItem[]) || undefined,
+        reviewData: reviewData || undefined,
+        selfReviewScore: reviewData?.selfReviewScore || undefined,
+      });
+      chatLogger.debug(`[Project ${projectId}] Context loaded from DB (${project.status})`);
+    } else {
+      cached!.status = project.status;
+    }
   } catch (err) {
     chatLogger.warn(`[Project ${projectId}] Failed to load context from DB: ${err}`);
   }
@@ -210,7 +212,9 @@ export async function clearProjectChat(projectId: number): Promise<void> {
 // ─── Re-edit detection & execution ────────────────────────────────────────────
 
 // Detects if the user is trying to confirm/trigger a re-edit
-export function detectReEditTrigger(question: string, recentMessages: ChatMessage[]): boolean {
+// Only returns true for completed projects — re-edit is not available during first processing
+export function detectReEditTrigger(question: string, recentMessages: ChatMessage[], projectStatus?: string): boolean {
+  if (projectStatus && projectStatus !== "completed") return false;
   const normalized = question.trim().toLowerCase();
 
   // Short confirmations only — if the message is long (>60 chars), it's likely a new instruction,
@@ -399,7 +403,6 @@ export async function answerUserQuestion(
   projectId: number,
   question: string
 ): Promise<{ message: ChatMessage; reEditStarted: false }> {
-  // Always ensure we have full context (handles server restarts / history loads)
   await ensureContextFromDB(projectId);
 
   const context = projectContexts.get(projectId);
@@ -410,7 +413,6 @@ export async function answerUserQuestion(
     .slice(-10)
     .map(m => {
       const role = m.role === "companion" ? "AI Editor" : "User";
-      // Strip [PLAN]...[/PLAN] blocks from history display so AI doesn't re-show them
       const content = m.content.replace(/\[PLAN\][\s\S]*?\[\/PLAN\]/g, "[plan was proposed]");
       return `${role}: ${content}`;
     })
@@ -422,35 +424,9 @@ export async function answerUserQuestion(
   const contextOverview = buildContextSummary(context);
   const stockMediaSummary = buildStockMediaSummary(context?.stockMedia);
 
-  const aiPrompt = `You are MalikaEditor's AI video editing assistant — intelligent, specific, and deeply knowledgeable about this project.
+  const isCompleted = context?.status === "completed";
 
-PROJECT OVERVIEW:
-${contextOverview}
-
-TRANSCRIPT (every spoken segment with exact timestamps):
-${transcriptSummary}
-
-EDIT PLAN APPLIED TO THIS VIDEO:
-${editPlanSummary}
-
-STOCK MEDIA SELECTED FOR B-ROLL:
-${stockMediaSummary}
-
-AI QUALITY REVIEW RESULTS:
-${qualitySummary}
-
-RECENT CONVERSATION:
-${conversationHistory || "(no prior messages)"}
-
-USER'S MESSAGE: "${question}"
-
-INSTRUCTIONS — Read carefully:
-
-1. You have FULL knowledge of this project. Reference specific timestamps, clip descriptions, and spoken words.
-
-2. If the user asks a QUESTION (why did you cut X, what is the quality score, explain the B-roll, etc.):
-   → Answer directly and specifically. 2-4 sentences. Reference exact timestamps and reasons.
-
+  const reEditInstructions = isCompleted ? `
 3. If the user expresses a DESIRE TO CHANGE something (different B-roll, different cuts, faster pacing, different style, fix an issue, etc.):
    → Acknowledge what they want to change in 1-2 sentences
    → Explain how you'll address it specifically (reference exact timestamps)
@@ -463,13 +439,50 @@ INSTRUCTIONS — Read carefully:
 [/PLAN]
 
    IMPORTANT: The [PLAN] block must contain bullet points with SPECIFIC, ACTIONABLE instructions the AI can use to re-plan the edit.
+` : `
+3. If the user expresses a DESIRE TO CHANGE or a PREFERENCE (different B-roll, different cuts, faster pacing, etc.):
+   → Acknowledge their request warmly in 1-2 sentences.
+   → Let them know you've noted their preference and will keep it in mind.
+   → IMPORTANT: Do NOT generate a [PLAN] block. The video is still being processed for the first time — re-editing is not available yet. After the first edit is complete, they can request changes.
+`;
 
+  const completedContext = isCompleted ? `
+STOCK MEDIA SELECTED FOR B-ROLL:
+${stockMediaSummary}
+
+AI QUALITY REVIEW RESULTS:
+${qualitySummary}
+` : "";
+
+  const aiPrompt = `You are MalikaEditor's AI video editing assistant — intelligent, specific, and deeply knowledgeable about this project.
+
+PROJECT OVERVIEW:
+${contextOverview}
+
+TRANSCRIPT (every spoken segment with exact timestamps):
+${transcriptSummary}
+
+EDIT PLAN APPLIED TO THIS VIDEO:
+${editPlanSummary}
+${completedContext}
+RECENT CONVERSATION:
+${conversationHistory || "(no prior messages)"}
+
+USER'S MESSAGE: "${question}"
+
+INSTRUCTIONS — Read carefully:
+
+1. You have FULL knowledge of this project. Reference specific timestamps, clip descriptions, and spoken words.
+
+2. If the user asks a QUESTION (why did you cut X, what is the quality score, explain the B-roll, etc.):
+   → Answer directly and specifically. 2-4 sentences. Reference exact timestamps and reasons.
+${reEditInstructions}
 4. If the user is giving GENERAL FEEDBACK ("looks good", "nice work", "I like it") or asking a yes/no question:
    → Respond conversationally without a plan block.
 
 5. NEVER be generic. Every response must reference specifics from the project above.
 6. Keep responses concise. Don't repeat what the user said.
-7. Don't include the [PLAN] block if there's nothing specific to change.
+7. Don't include the [PLAN] block if there's nothing specific to change.${!isCompleted ? "\n8. NEVER output a [PLAN] block. The video hasn't completed its first edit yet." : ""}
 
 Your response:`;
 

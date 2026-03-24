@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, lazy, Suspense } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
-import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2, Trash2, Clock, Terminal, PanelLeftClose, PanelLeftOpen, MessageSquare } from "lucide-react";
+import { Film, Sparkles, CheckCircle2, RotateCcw, Wand2, Edit3, Zap, AlertCircle, TrendingUp, Loader2, Trash2, Clock, Terminal, PanelLeftClose, PanelLeftOpen, Menu } from "lucide-react";
 import { BackgroundQualityPanel, type BgQualityState } from "@/components/BackgroundQualityPanel";
 import { VideoUploader } from "@/components/VideoUploader";
 import { PromptInput } from "@/components/PromptInput";
@@ -14,8 +14,8 @@ import { StockMediaPreview } from "@/components/StockMediaPreview";
 import { DownloadButton } from "@/components/DownloadButton";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ActivityLog } from "@/components/ActivityLog";
-import { HistoryPanel } from "@/components/HistoryPanel";
 import { LogViewer } from "@/components/LogViewer";
+import { ProjectSidebar } from "@/components/ProjectSidebar";
 
 // Lazy-load heavy panels to reduce initial bundle size
 const ReviewPanel = lazy(() => import("@/components/ReviewPanel").then(m => ({ default: m.ReviewPanel })));
@@ -138,6 +138,7 @@ export default function Editor() {
   const projectIdFromUrl = matchProject && params?.id ? parseInt(params.id, 10) : null;
 
   const [showLogs, setShowLogs] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 1024);
   const [project, setProject] = useState<VideoProject | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -1096,60 +1097,78 @@ export default function Editor() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      {/* Simple Header */}
-      <header className="border-b bg-card">
-        <div className="flex items-center justify-between h-14 px-3 sm:px-4">
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            <Film className="h-5 w-5 sm:h-6 sm:w-6 text-primary shrink-0" />
-            <span className="font-bold text-base sm:text-lg truncate">AI Video Editor</span>
-          </div>
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {project && (
+    <div className="min-h-screen bg-background flex">
+      <ProjectSidebar
+        isOpen={sidebarOpen}
+        activeProjectId={project?.id ?? projectIdFromUrl}
+        onViewProject={(id) => setLocation(`/project/${id}`)}
+        onNewProject={handleNewProject}
+        onClose={() => setSidebarOpen(false)}
+      />
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="border-b bg-card">
+          <div className="flex items-center justify-between h-14 px-3 sm:px-4">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <Button
-                variant="outline"
-                size="sm"
-                onClick={handleNewProject}
-                data-testid="button-new-project"
-                className="hidden xs:flex sm:flex"
-              >
-                <RotateCcw className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">Start Over</span>
-              </Button>
-            )}
-            {project && (
-              <Button
-                variant="outline"
+                variant="ghost"
                 size="icon"
-                onClick={handleNewProject}
-                data-testid="button-new-project-mobile"
-                className="flex xs:hidden sm:hidden h-8 w-8"
-                title="Start Over"
+                onClick={() => setSidebarOpen(v => !v)}
+                className="h-8 w-8 shrink-0"
+                title="Toggle sidebar"
+                data-testid="button-toggle-sidebar"
               >
-                <RotateCcw className="h-4 w-4" />
+                {sidebarOpen ? <PanelLeftClose className="h-5 w-5" /> : <PanelLeftOpen className="h-5 w-5" />}
               </Button>
-            )}
-            <Button
-              variant={showLogs ? "secondary" : "outline"}
-              size="sm"
-              onClick={() => setShowLogs(v => !v)}
-              data-testid="button-toggle-logs"
-              title="Toggle server logs"
-              className="h-8 px-2 sm:px-3"
-            >
-              <Terminal className="h-4 w-4 sm:mr-2" />
-              <span className="hidden sm:inline">Logs</span>
-            </Button>
-            <ThemeToggle />
+              <span className="font-bold text-base sm:text-lg truncate lg:hidden">MalikaEditor</span>
+            </div>
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {project && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleNewProject}
+                  data-testid="button-new-project"
+                  className="hidden xs:flex sm:flex"
+                >
+                  <RotateCcw className="h-4 w-4 sm:mr-2" />
+                  <span className="hidden sm:inline">Start Over</span>
+                </Button>
+              )}
+              {project && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleNewProject}
+                  data-testid="button-new-project-mobile"
+                  className="flex xs:hidden sm:hidden h-8 w-8"
+                  title="Start Over"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                </Button>
+              )}
+              <Button
+                variant={showLogs ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => setShowLogs(v => !v)}
+                data-testid="button-toggle-logs"
+                title="Toggle server logs"
+                className="h-8 px-2 sm:px-3"
+              >
+                <Terminal className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Logs</span>
+              </Button>
+              <ThemeToggle />
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <LogViewer open={showLogs} onClose={() => setShowLogs(false)} />
+        <LogViewer open={showLogs} onClose={() => setShowLogs(false)} />
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col lg:flex-row">
-        {/* Video Preview - Left/Top — hidden on mobile when no video */}
+        {/* Main Content */}
+        <div className="flex-1 flex flex-col lg:flex-row">
+        {/* Video Preview — only show when a project is active */}
+        {project && (
         <div className={cn(
           "flex-1 p-3 sm:p-4 flex flex-col lg:min-h-0",
           !previewUrl ? "hidden lg:flex" : "flex min-h-[220px] sm:min-h-[280px]"
@@ -1190,9 +1209,15 @@ export default function Editor() {
             </div>
           )}
         </div>
+        )}
 
-        {/* Control Panel - Right/Bottom */}
-        <div className="w-full lg:w-[480px] border-t lg:border-t-0 lg:border-l bg-card/50 overflow-y-auto flex-1 lg:h-[calc(100vh-56px)] lg:flex-none">
+        {/* Control Panel - Right/Bottom (full width when no project, fixed width otherwise) */}
+        <div className={cn(
+          "border-t lg:border-t-0 bg-card/50 overflow-y-auto lg:h-[calc(100vh-56px)]",
+          project
+            ? "w-full lg:w-[480px] lg:border-l lg:flex-none"
+            : "flex-1 flex items-start justify-center"
+        )}>
           <div className="p-3 sm:p-4 space-y-3 sm:space-y-4">
 
             {/* Step 1: Upload */}
@@ -1213,12 +1238,6 @@ export default function Editor() {
                   uploadProgress={uploadProgress}
                 />
 
-                <HistoryPanel
-                  onViewProject={(projectId) => {
-                    setLocation(`/project/${projectId}`);
-                  }}
-                  className="mt-4"
-                />
               </div>
             )}
 
@@ -1550,6 +1569,7 @@ export default function Editor() {
               />
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>

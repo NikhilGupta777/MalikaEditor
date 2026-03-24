@@ -36,6 +36,7 @@ export function ChatCompanion({ projectId, className, projectStatus, onReEditSta
   const [input, setInput] = useState("");
   const [isExpanded, setIsExpanded] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const queryClient = useQueryClient();
 
@@ -59,9 +60,7 @@ export function ChatCompanion({ projectId, className, projectStatus, onReEditSta
   const messages = messagesData?.messages || [];
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   const sendMutation = useMutation({
@@ -175,8 +174,8 @@ export function ChatCompanion({ projectId, className, projectStatus, onReEditSta
 
       {isExpanded && (
         <>
-          {/* Message list */}
-          <ScrollArea className="flex-1 min-h-0" ref={scrollRef}>
+          {/* Message list — fixed height with internal scroll like a real chat */}
+          <ScrollArea className="h-[320px] max-h-[45vh]" ref={scrollRef}>
             <div className="p-4 space-y-3">
               {isLoading && messages.length === 0 && (
                 <div className="text-center text-muted-foreground text-xs py-6">Loading conversation...</div>
@@ -305,6 +304,7 @@ export function ChatCompanion({ projectId, className, projectStatus, onReEditSta
                   </div>
                 </div>
               )}
+              <div ref={messagesEndRef} />
             </div>
           </ScrollArea>
 

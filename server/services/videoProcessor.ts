@@ -1573,11 +1573,8 @@ async function applyOverlaysSequentially(
     if (overlay.type === "video") {
       overlayFilter = `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black[ov];[0:v][ov]overlay=enable='between(t,${ffFloat(overlay.startTime)},${ffFloat(overlay.startTime + duration)})':eof_action=pass[v]`;
     } else {
-      // Image overlay with simple zoompan
-      const fps = 30;
-      const totalFrames = Math.ceil(duration * fps);
-      // Simplify simple zoom for sequential mode to reduce filter graph complexity
-      const zoompan = `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=${width}x${height}:fps=${fps}`;
+      const seqAnimPreset = overlay.animationPreset || "fade_only";
+      const zoompan = getZoompanFilter(seqAnimPreset, duration, width, height);
       overlayFilter = `[1:v]${zoompan}[ov];[0:v][ov]overlay=enable='between(t,${ffFloat(overlay.startTime)},${ffFloat(overlay.startTime + duration)})':eof_action=pass[v]`;
     }
 
@@ -2690,6 +2687,7 @@ async function applyEditsInternal(
             type: remainingStock[i].item.type as "video" | "image" | "ai_generated",
             startTime,
             duration,
+            animationPreset: (remainingStock[i].item as any).animationPreset || undefined,
           });
         }
       }

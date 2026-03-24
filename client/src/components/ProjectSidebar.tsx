@@ -158,13 +158,14 @@ export function ProjectSidebar({ isOpen, activeProjectId, onViewProject, onNewPr
       )}
 
       <aside
+        data-state={isOpen ? "open" : "closed"}
         className={cn(
-          "fixed top-0 left-0 z-50 h-full w-[280px] bg-card border-r flex flex-col",
+          "fixed top-0 left-0 z-50 h-full bg-card border-r flex flex-col",
           "transition-all duration-300 ease-in-out",
-          "lg:relative lg:z-auto lg:translate-x-0 lg:shrink-0",
+          "lg:relative lg:z-auto lg:shrink-0",
           isOpen
-            ? "translate-x-0 lg:ml-0"
-            : "-translate-x-full lg:ml-[-280px]"
+            ? "w-[280px] translate-x-0"
+            : "w-[280px] -translate-x-full lg:translate-x-0 lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0"
         )}
       >
         <div className="flex items-center gap-2 p-4 border-b min-h-[57px]">

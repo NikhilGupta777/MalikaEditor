@@ -135,6 +135,7 @@ async function analyzeThumbnailWithVision(
     const prompt = `Describe this ${mediaType === "video" ? "video thumbnail" : "stock photo"} in 1-2 sentences. 
 Focus on: main subjects, actions, setting, mood, colors, and quality.
 Be specific about what you SEE, not what the search query "${query}" suggests.
+IMPORTANT: If the image has any visible watermark, logo overlay, or branding text (e.g. "FREEPIK", "Shutterstock", "Getty"), START your description with "⚠️ WATERMARKED:".
 Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
 
     const result = await gemini.models.generateContent({
@@ -189,7 +190,7 @@ async function analyzeThumbnailBatchWithVision(
 
     try {
       const parts: any[] = [
-        { text: `Describe each of the following ${validThumbnails.length} media items in 1-2 sentences each.\nFor each, focus on: main subjects, actions, setting, mood, colors, and quality.\nBe specific about what you SEE.\n\nRespond with a JSON array of descriptions in order, e.g. ["description1", "description2", ...]` }
+        { text: `Describe each of the following ${validThumbnails.length} media items in 1-2 sentences each.\nFor each, focus on: main subjects, actions, setting, mood, colors, and quality.\nBe specific about what you SEE.\nIMPORTANT: If the image has any visible watermark, logo overlay, or branding text (e.g. "FREEPIK", "Shutterstock", "Getty"), START your description with "⚠️ WATERMARKED:" so we can deprioritize it.\n\nRespond with a JSON array of descriptions in order, e.g. ["description1", "description2", ...]` }
       ];
 
       validThumbnails.forEach((t, idx) => {
@@ -478,8 +479,12 @@ export async function selectBestMediaForWindows(
   }
 
   const analyzedCount = visualDescriptions.size;
+  const watermarkedCount = [...visualDescriptions.values()].filter(d => d.includes("WATERMARKED")).length;
+  if (watermarkedCount > 0) {
+    selectorLogger.warn(`Detected ${watermarkedCount} watermarked assets in visual analysis — they will be deprioritized`);
+  }
   if (analyzedCount > 0) {
-    selectorLogger.info(`Applied visual analysis to ${analyzedCount} stock media candidates`);
+    selectorLogger.info(`Applied visual analysis to ${analyzedCount} media candidates (${watermarkedCount} watermarked)`);
   }
 
   try {
@@ -691,16 +696,18 @@ AVAILABLE MEDIA FROM MULTIPLE SOURCES (use the number to select):
 ${candidateDescriptions}
 
 SELECTION CRITERIA (use VISUAL descriptions to make informed decisions):
-1. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed?
-2. CONTENT RELEVANCE - How well does the ACTUAL visual content match the B-roll window's context?
-3. VISUAL QUALITY - Is it professional, well-lit, and suitable for the video's tone?
-4. MEDIA TYPE - Consider whether video (motion) or a still image works better for each specific moment. Some moments benefit from motion, others from a striking still image. Use your editorial judgment.
-5. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
-6. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
+1. WATERMARK CHECK - NEVER select any media whose VISUAL description contains "WATERMARKED". Watermarked content is unusable. Skip it entirely.
+2. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed?
+3. CONTENT RELEVANCE - How well does the ACTUAL visual content match the B-roll window's context?
+4. VISUAL QUALITY - Is it professional, well-lit, and suitable for the video's tone?
+5. MEDIA TYPE - Consider whether video (motion) or a still image works better for each specific moment. Some moments benefit from motion, others from a striking still image. Use your editorial judgment.
+6. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
+7. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
 
 Choose the BEST asset for each window based purely on visual quality, content match, and editorial fit.
 AI-generated images, stock videos, and stock photos are all equally valid — pick whichever genuinely fits best.
 Judge each candidate on what it actually shows (read the VISUAL descriptions), not on its source.
+CRITICAL: Do NOT select any asset flagged as WATERMARKED in its VISUAL description.
 
 For windows >6 seconds, you may select 2-3 numbers that will be staggered.
 

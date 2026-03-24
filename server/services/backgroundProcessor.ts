@@ -20,6 +20,9 @@ import {
   sendMediaSelectionUpdate,
   sendReviewReadyUpdate,
   sendErrorUpdate,
+  sendSelfReviewUpdate,
+  sendCorrectionUpdate,
+  addCompanionMessage,
 } from "./chatCompanion";
 import type { ProcessingStatus, ReviewData, StockMediaItem, ProcessingStage, TranscriptSegment } from "@shared/schema";
 import path from "path";
@@ -1887,6 +1890,7 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
         bgInputs.analysis
       );
       processorLogger.info(`[BG Quality] Self-review done for project ${projectId}: score=${selfReviewResult.overallScore}, approved=${selfReviewResult.approved}`);
+      sendSelfReviewUpdate(projectId, selfReviewResult.overallScore, selfReviewResult.issues?.length || 0).catch(() => {});
       emitBgQuality(projectId, {
         type: "phase_a_score",
         score: selfReviewResult.overallScore,
@@ -1949,6 +1953,9 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
 
       emitBgQuality(projectId, { type: "phase_b_start", reason: arbitration.justification });
       processorLogger.info(`[BG Quality] Phase B — correction starting for project ${projectId}: ${arbitration.justification}`);
+      const issueDetails = selfReviewResult.issues?.map(i => `${i.severity}: ${i.description}`).join("; ") || "";
+      sendCorrectionUpdate(projectId, 1, selfReviewResult.issues?.length || 0).catch(() => {});
+      processorLogger.info(`[BG Quality] Issues driving correction: ${issueDetails}`);
 
       // Re-plan with correction feedback (full creative freedom)
       const analysis = bgInputs.analysis as any;
@@ -1964,24 +1971,24 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
         projectId
       );
 
-      // Fetch fresh stock media for any new or changed B-roll windows in the corrected plan
       emitBgQuality(projectId, { type: "phase_b_fetching_media" });
       const newBrollWindows = (correctedPlan.actions || [])
         .filter((a: any) => (a.type === "insert_stock" || a.type === "insert_ai_image") && typeof a.start === "number")
         .map((a: any) => ({
           start: a.start,
           end: typeof a.end === "number" ? a.end : a.start + (typeof a.duration === "number" ? a.duration : 4),
-          suggestedQuery: a.stockQuery || a.query || a.prompt || bgInputs.prompt,
+          suggestedQuery: a.stockQuery || a.query || "",
           priority: (a.priority || "medium") as "high" | "medium" | "low",
           context: a.reason || a.context || "",
         }))
-        .filter((w: any) => w.end > w.start);
+        .filter((w: any) => w.end > w.start && w.suggestedQuery.length > 0);
 
-      let correctionStockMedia = [...bgInputs.stockMedia];
+      let correctionStockMedia: StockMediaItem[] = [];
 
       if (newBrollWindows.length > 0) {
         try {
           const stockQueries = [...new Set(newBrollWindows.map((w: any) => w.suggestedQuery).filter(Boolean))];
+          processorLogger.info(`[BG Quality] Fetching fresh stock for ${stockQueries.length} queries: ${stockQueries.map(q => q.slice(0, 40)).join(", ")}`);
           const freepikEnabled = isFreepikConfigured();
           const [freshPexels, freshFreepik] = await Promise.all([
             fetchStockMediaWithVariants(stockQueries),
@@ -2002,13 +2009,18 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
               }
             );
             const { stockItems } = convertSelectionsToStockMediaItems(selectionResult.selections);
-            // Merge: fresh selections override old ones for the same time windows
-            correctionStockMedia = [...correctionStockMedia, ...stockItems];
-            processorLogger.info(`[BG Quality] Fetched ${stockItems.length} fresh stock clips for correction`);
+            correctionStockMedia = stockItems;
+            processorLogger.info(`[BG Quality] Selected ${stockItems.length} fresh stock clips for correction (replacing old media)`);
           }
         } catch (mediaErr) {
           processorLogger.warn(`[BG Quality] Fresh stock fetch failed (using existing media):`, mediaErr);
+          correctionStockMedia = [...bgInputs.stockMedia];
         }
+      }
+
+      if (correctionStockMedia.length === 0) {
+        processorLogger.info(`[BG Quality] No fresh stock available, keeping original media`);
+        correctionStockMedia = [...bgInputs.stockMedia];
       }
 
       // Re-render with corrected plan + fresh media
@@ -2078,6 +2090,13 @@ async function runBackgroundRender(projectId: number, project: any, reviewData: 
         outputPath: correctedOutputPath,
       });
       processorLogger.info(`[BG Quality] Project ${projectId} corrected: score ${selfReviewResult.overallScore} → ${finalScore}`);
+      const improvement = finalScore - selfReviewResult.overallScore;
+      const improvementNote = improvement > 0 ? ` Score improved by ${improvement} points (${selfReviewResult.overallScore} → ${finalScore}).` : "";
+      addCompanionMessage(projectId, "milestone",
+        `I've completed my self-correction! I re-rendered the video with improved B-roll and edits.${improvementNote} The corrected video is now available for download.`,
+        "correction_complete",
+        { oldScore: selfReviewResult.overallScore, newScore: finalScore }
+      ).catch(() => {});
 
     } catch (correctionErr) {
       processorLogger.warn(`[BG Quality] Correction loop failed (non-critical) for project ${projectId}:`, correctionErr);

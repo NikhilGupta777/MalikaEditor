@@ -49,10 +49,10 @@ The AI services are modularized for transcription, video analysis, semantic anal
 1.  **Upload & Analysis**: Video stored, analyzed by AI (Gemini Vision) for motion, transitions, and pacing.
 2.  **Transcription**: Audio extracted and transcribed.
 3.  **Planning**: AI generates edit plan using a multi-pass system.
-4.  **Media Acquisition**: Fetches stock media from Pexels and Freepik, and generates custom AI images.
+4.  **Media Acquisition**: Fetches stock media from Pexels and Freepik, and generates custom AI images. All media (AI + stock) go through Gemini Vision visual analysis for content descriptions and watermark detection.
 5.  **User Review**: User reviews and modifies transcript, approves/rejects edit actions, and selects media. Includes a 2-minute auto-accept timer.
 6.  **Rendering**: FFmpeg applies approved edits and outputs the final video.
-7.  **Self-Review**: AI watches rendered output, evaluates quality, and reports issues/scores.
+7.  **Self-Review**: AI watches rendered output, evaluates quality, and reports issues/scores. If issues found, generates corrected plan with proper stock queries, fetches fresh replacement media (not merged with old), and re-renders. Chat companion notified of issues found, corrections applied, and final score.
 
 ### B-Roll and Transitions
 - **B-Roll Implementation**: Supports full-frame overlays with original audio continuity, context-aware fade transitions, per-clip animation presets (fade_only, zoom_in, zoom_out, pan_left, pan_right), and smart AI image placement.

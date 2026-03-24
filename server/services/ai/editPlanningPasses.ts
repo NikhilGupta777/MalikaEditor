@@ -1206,13 +1206,15 @@ ${JSON.stringify(previousPlan.actions.slice(0, 50))}... (showing first 50 action
 ### TASK:
 1. Review the flagged actions and the arbitrator's justification.
 2. Generate a NEW set of actions that fixes these specific issues.
-3. If a B-roll was "distracting", replace it with a better query or remove it.
+3. If a B-roll was "distracting" or had watermarks, replace it with a better stockQuery or remove it.
 4. If a "cut" was missed, add it.
 5. Maintain the overall narrative flow.
 
+IMPORTANT: Every "insert_stock" action MUST include a descriptive "stockQuery" field (e.g. "dramatic sunset over ocean waves") — this is used to search stock media providers. NEVER use generic text or the user's prompt as stockQuery.
+
 Return ONLY a JSON object with:
 {
-  "actions": [...],
+  "actions": [{"type": "keep|cut|insert_stock", "start": number, "end": number, "duration": number, "stockQuery": "descriptive search query for stock media", "reason": "why"}],
   "justification": "Why this new plan is better",
   "fixedIssues": ["List of issues from the target list that are now resolved"]
 }`;

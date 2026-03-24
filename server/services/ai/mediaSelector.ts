@@ -6,6 +6,7 @@ import type { StockMediaItem } from "@shared/schema";
 import type { StockMediaVariants } from "../pexelsService";
 import type { GeneratedAiImage } from "./imageGeneration";
 import axios from "axios";
+import { promises as fsPromises } from "fs";
 
 const selectorLogger = createLogger("media-selector");
 
@@ -87,9 +88,15 @@ export interface MediaSelectionResult {
   stockImagesUsed: number;
 }
 
-// Fetch thumbnail image as base64
 async function fetchThumbnailAsBase64(url: string): Promise<{ base64: string; mimeType: string } | null> {
   try {
+    if (url.startsWith("/") || url.startsWith("./") || url.startsWith("../") || url.match(/^[A-Za-z]:\\/)) {
+      const data = await fsPromises.readFile(url);
+      const ext = url.split(".").pop()?.toLowerCase() || "jpeg";
+      const mimeMap: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
+      return { base64: data.toString("base64"), mimeType: mimeMap[ext] || "image/jpeg" };
+    }
+
     const response = await axios.get(url, {
       responseType: 'arraybuffer',
       timeout: VISUAL_ANALYSIS_TIMEOUT,
@@ -303,9 +310,10 @@ async function analyzeMediaThumbnails(
   candidates: MediaCandidate[],
   brollWindows?: BrollWindow[]
 ): Promise<Map<string, string>> {
+  const aiCandidates = candidates.filter(c => c.source === "ai" && c.thumbnailUrl);
   let stockCandidates = candidates.filter(c => c.source === "stock" && c.thumbnailUrl);
 
-  if (stockCandidates.length === 0) {
+  if (aiCandidates.length === 0 && stockCandidates.length === 0) {
     return new Map();
   }
 
@@ -313,24 +321,28 @@ async function analyzeMediaThumbnails(
     stockCandidates = preFilterCandidatesByMetadata(stockCandidates, brollWindows, MAX_VISION_CANDIDATES);
   }
 
-  selectorLogger.info(`Analyzing ${stockCandidates.length} stock media thumbnails with batched Gemini Vision...`);
+  const allToAnalyze = [...aiCandidates, ...stockCandidates];
+  const aiCount = aiCandidates.length;
+  const stockCount = stockCandidates.length;
+
+  selectorLogger.info(`Analyzing ${allToAnalyze.length} media thumbnails with batched Gemini Vision (${aiCount} AI images + ${stockCount} stock)...`);
   const startTime = Date.now();
 
-  const batchInput = stockCandidates.map(c => ({
+  const batchInput = allToAnalyze.map(c => ({
     id: c.id,
     url: c.thumbnailUrl!,
     query: c.query,
-    mediaType: c.type as "image" | "video",
+    mediaType: (c.source === "ai" ? "image" : c.type) as "image" | "video",
   }));
 
   const results = await analyzeThumbnailBatchWithVision(batchInput);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  const failedCount = stockCandidates.length - results.size;
+  const failedCount = allToAnalyze.length - results.size;
   if (failedCount > 0) {
-    selectorLogger.warn(`Visual analysis: ${failedCount}/${stockCandidates.length} thumbnails failed — they will be selected without visual context`);
+    selectorLogger.warn(`Visual analysis: ${failedCount}/${allToAnalyze.length} thumbnails failed — they will be selected without visual context`);
   }
-  selectorLogger.info(`Visual analysis complete: ${results.size}/${stockCandidates.length} thumbnails analyzed in ${elapsed}s (batched, ~${Math.ceil(stockCandidates.length / BATCH_VISION_SIZE)} API calls)`);
+  selectorLogger.info(`Visual analysis complete: ${results.size}/${allToAnalyze.length} thumbnails analyzed in ${elapsed}s (batched, ~${Math.ceil(allToAnalyze.length / BATCH_VISION_SIZE)} API calls)`);
 
   return results;
 }
@@ -552,6 +564,7 @@ function buildAllCandidates(
       source: "ai",
       query: ai.prompt,
       url: `ai_image_${i}`,
+      thumbnailUrl: ai.filePath,
       description: `Custom AI-generated image: "${ai.prompt.slice(0, 100)}..."`,
       originalAiImage: ai,
     });

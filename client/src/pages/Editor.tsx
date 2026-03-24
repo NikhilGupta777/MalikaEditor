@@ -1170,13 +1170,13 @@ export default function Editor() {
         {/* Video Preview — only show when a project is active */}
         {project && (
         <div className={cn(
-          "flex-1 p-3 sm:p-4 flex flex-col lg:min-h-0",
-          !previewUrl ? "hidden lg:flex" : "flex min-h-[220px] sm:min-h-[280px]"
+          "flex-1 p-3 sm:p-4 flex flex-col lg:min-h-0 min-w-0",
+          !previewUrl ? "hidden lg:flex" : "flex"
         )}>
-          <div className="flex-1 rounded-lg overflow-hidden bg-black relative">
+          <div className="flex-1 flex items-center justify-center min-h-0 relative">
             <VideoPreview
               src={previewUrl || undefined}
-              className="h-full"
+              className="w-full max-h-full"
               currentTime={currentTime}
               onTimeUpdate={handleTimeUpdate}
               onDurationChange={handleDurationChange}
@@ -1215,7 +1215,7 @@ export default function Editor() {
         <div className={cn(
           "border-t lg:border-t-0 bg-card/50 overflow-y-auto lg:h-[calc(100vh-56px)]",
           project
-            ? "w-full lg:w-[480px] lg:border-l lg:flex-none"
+            ? "w-full lg:w-[380px] xl:w-[420px] lg:border-l lg:flex-none"
             : "flex-1 flex items-start justify-center"
         )}>
           <div className="p-3 sm:p-4 space-y-3 sm:space-y-4">

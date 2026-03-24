@@ -735,7 +735,7 @@ export async function generateSmartEditPlan(
       previousPlan,
       arbitrationResult.justification,
       flaggedActions,
-      null
+      undefined
     );
 
     return correctedPlan;

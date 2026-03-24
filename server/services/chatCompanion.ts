@@ -75,7 +75,7 @@ async function ensureContextFromDB(projectId: number): Promise<void> {
 
       projectContexts.set(projectId, {
         ...existing,
-        title: project.originalFileName || undefined,
+        title: project.fileName || undefined,
         status: project.status,
         duration: project.duration || undefined,
         prompt: project.prompt || undefined,

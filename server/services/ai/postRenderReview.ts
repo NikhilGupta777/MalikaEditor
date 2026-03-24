@@ -669,24 +669,19 @@ export function shouldTriggerReRender(
     };
   }
 
-  const criticalIssues = selfReviewResult.issues.filter(i => i.severity === "critical" && i.autoFixable);
+  const autoFixableIssues = selfReviewResult.issues.filter(i => i.autoFixable);
 
-  if (criticalIssues.length > 0) {
+  if (autoFixableIssues.length > 0) {
+    const criticalCount = autoFixableIssues.filter(i => i.severity === "critical").length;
+    const captionCount = autoFixableIssues.filter(i => i.type === "captions").length;
     return {
       shouldReRender: true,
-      reason: `${criticalIssues.length} critical auto-fixable issue(s) detected`,
-    };
-  }
-
-  if (selfReviewResult.overallScore < 50 && selfReviewResult.issues.filter(i => i.autoFixable).length > 0) {
-    return {
-      shouldReRender: true,
-      reason: `Low quality score (${selfReviewResult.overallScore}/100) with fixable issues`,
+      reason: `${autoFixableIssues.length} auto-fixable issue(s) detected (${criticalCount} critical, ${captionCount} caption)`,
     };
   }
 
   return {
     shouldReRender: false,
-    reason: selfReviewResult.approved ? "Quality approved" : "No auto-fixable issues",
+    reason: selfReviewResult.approved ? "Quality approved — no fixable issues" : "No auto-fixable issues",
   };
 }

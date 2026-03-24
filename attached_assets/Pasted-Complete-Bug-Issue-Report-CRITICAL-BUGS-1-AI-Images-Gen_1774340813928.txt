@@ -1,0 +1,95 @@
+Complete Bug & Issue Report
+CRITICAL BUGS
+1. AI Images Generated but Never Used (Waste of API Credits)
+
+Your logs show: WARNING: 7 AI images were generated but NONE were selected
+Root cause: The media selector has a strong bias toward video over static images. When it sees "motion" content, it always picks stock videos over AI-generated images. So the system spends API credits generating 7 images with Gemini, then throws them all away.
+Files: server/services/ai/mediaSelector.ts (line 463), backgroundProcessor.ts
+2. Caption Spelling Fixes Are a No-Op
+
+The self-review correctly detects the "Khan Pralay" vs "Khand Pralay" inconsistency and marks it AutoFixable: true
+But the fix does nothing. The adjust_caption handler just logs "Caption adjustment queued (requires re-render)" — it never actually modifies the transcript text
+If it triggers a re-render, it re-renders with the same misspelled transcript, wasting time and compute
+File: server/services/ai/postRenderReview.ts (line 614-617)
+3. Pre-render Review JSON Parsing Failure
+
+Your logs show: Attempt 1: Could not extract JSON from response — the AI wraps its response in markdown code blocks (```json)
+The parser eventually recovers, but on the first attempt it fails because it can't strip the markdown fence properly
+When parsing fully fails, it defaults to auto-approve with 75% confidence, which means bad edits can slip through
+File: server/services/ai/preRenderReview.ts
+VIDEO PLAYER BUGS
+4. No Keyboard Shortcuts at All
+
+YouTube has: Space (play/pause), Left/Right arrows (seek), M (mute), F (fullscreen), 0-9 (seek to %), J/K/L (seek/play)
+Your player has zero keyboard support. No keydown listener exists anywhere in VideoPreview.tsx
+5. No Playback Speed Control
+
+No 0.5x/1x/1.5x/2x speed selector. The playbackRate property is never set on the video element
+YouTube's speed control is one of the most-used features
+6. Video Loading Hack
+
+Uses a setTimeout(500ms) to force setIsLoaded(true) — this is unreliable and can show controls before the video is actually playable
+AI CHAT ISSUES
+7. Chat Polls Every 3 Seconds Forever
+
+Even when the project is completed and nobody is chatting, the frontend fires GET /api/videos/19/chat every 3 seconds indefinitely
+Your logs show hundreds of these 304 responses stacking up
+Should slow to 10-15 seconds or stop entirely when no conversation is active
+8. Chat Says "No Issues Found" When Issues Exist
+
+From your screenshot: You asked "hey fix the issues you found after reviewing" and the AI replied "my automated quality review actually didn't flag any issues"
+But the self-review DID find an issue (the Khan/Khand Pralay spelling). The AI chat doesn't have access to the self-review results in its context properly, or the self-review data wasn't saved to the DB before the chat reads it
+PROCESSING PIPELINE ISSUES
+9. Thumbnail Analysis is Extremely Slow
+
+"Analyzing 70 stock media thumbnails with Gemini Vision" — this makes 70 individual API calls (5 concurrent)
+At ~1.5s per call, this is ~21 seconds of processing time just for thumbnail descriptions
+Should batch multiple images per API call instead of one-by-one
+10. Time Spent on Unnecessary Stages
+
+Full video deep analysis runs even for short 46-second videos
+AI image generation runs, generates 7 images, then all 7 get discarded
+This is wasted API credits and processing time (the generation itself takes time too)
+SELF-REVIEW ISSUES
+11. Self-Review Finds Issues but Doesn't Act
+
+Score: 95/100, 1 issue found (caption spelling), marked AutoFixable: true
+Arbitrator decides shouldReRender=false because score is above threshold
+So the issue is detected, logged, but nothing happens — it never reaches the user either
+The caption issue is visible in the final video but silently accepted
+12. Self-Review Score Always Too Generous
+
+Both project 18 (97/100) and project 19 (95/100) scored very high
+The self-review prompt may be too lenient, accepting almost everything as "great"
+UI/UX ISSUES
+13. "No video loaded" on Left Panel (Desktop)
+
+Your screenshot shows the large empty area on the left with "No video loaded" while the upload zone is on the right
+The video preview area takes up 60% of the screen with nothing useful in it before upload
+14. Duplicate Upload Button Not Clear
+
+The "browse files" link in the drop zone and the project history with "View" button create a confusing interaction model
+15. Edit Options Default State
+
+"Add Transitions" and "AI Generated Images" are unchecked by default
+Given they're core features of the "AI editing" pitch, they should be enabled by default — or at least "AI Generated Images" should be since the user specifically asked for them
+16. "Ready" Status Badge Misleading
+
+After upload, it shows "Ready" next to the duration badge even during processing setup — could confuse users into thinking the edit is ready
+LEARNING PATTERN SYSTEM
+17. Learning System Exists but Has Weak Influence
+
+The system does store patterns and retrieve them — it's not fake
+However, learned preferences are injected as text into the LLM prompt as "User Feedback History" — the AI can easily ignore them
+No hard constraints are enforced (like "always use these transitions" or "never exceed X seconds of B-roll")
+The 30-day decay means patterns expire fairly quickly
+RESOURCE WASTE
+18. Chat 304s Flood the Logs
+
+Hundreds of GET /api/videos/19/chat 304 lines every session
+Makes it nearly impossible to find real errors in the logs
+Should be reduced or moved to a lower log level
+19. Orphaned Job Handling
+
+On server restart, jobs are marked as "failed" — project 18 went from "completed" to "failed" after a restart during re-edit processing
+Users see a "Failed" badge on what was actually a successfully completed project

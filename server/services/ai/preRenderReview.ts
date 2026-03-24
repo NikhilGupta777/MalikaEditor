@@ -1,6 +1,7 @@
 import { getGeminiClient } from "./clients";
 import { createLogger } from "../../utils/logger";
 import { AI_CONFIG } from "../../config/ai";
+import { withRetry, AI_RETRY_OPTIONS } from "../../utils/retry";
 import { extractJsonFromResponse } from "./normalization";
 import { z } from "zod";
 import type { EditPlan, VideoAnalysis, TranscriptSegment, ReviewData } from "@shared/schema";
@@ -257,6 +258,111 @@ function getDefaultReviewResult(): PreRenderReviewResult {
     pacingScore: 70,
     summary: "Automatic review - edits appear reasonable based on user selections.",
   };
+}
+
+export interface TranscriptCorrection {
+  segmentIndex: number;
+  originalText: string;
+  correctedText: string;
+  reason: string;
+}
+
+export async function correctTranscriptBeforeRender(
+  transcript: TranscriptSegment[]
+): Promise<{ correctedTranscript: TranscriptSegment[]; corrections: TranscriptCorrection[] }> {
+  if (!transcript || transcript.length === 0) {
+    return { correctedTranscript: transcript, corrections: [] };
+  }
+
+  reviewLogger.info(`Running pre-render transcript correction on ${transcript.length} segments...`);
+
+  try {
+    const gemini = getGeminiClient();
+
+    const transcriptLines = transcript.slice(0, 100).map((seg, idx) =>
+      `[${idx}] "${seg.text}"`
+    ).join("\n");
+
+    const prompt = `You are a professional caption proofreader. Review these transcript segments for:
+1. Spelling errors and typos
+2. Inconsistent proper noun spellings (same name spelled differently)
+3. Obvious word errors from speech-to-text (e.g., homophones, misheard words)
+
+TRANSCRIPT SEGMENTS:
+${transcriptLines}
+
+Only flag segments that have CLEAR errors. Do not change style, punctuation preferences, or rephrase.
+
+Respond with JSON only:
+{
+  "corrections": [
+    {"segmentIndex": 0, "correctedText": "fixed text here", "reason": "brief reason"}
+  ]
+}
+
+If no corrections needed, respond: {"corrections": []}`;
+
+    const response = await withRetry(
+      async () => {
+        const result = await gemini.models.generateContent({
+          model: AI_CONFIG.models.reviewPass,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+        });
+        return result.text || "";
+      },
+      "transcript-correction",
+      AI_RETRY_OPTIONS
+    );
+
+    const jsonString = extractJsonFromResponse(response);
+    if (!jsonString) {
+      reviewLogger.warn("No JSON in transcript correction response");
+      return { correctedTranscript: transcript, corrections: [] };
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonString);
+    } catch {
+      reviewLogger.warn("Failed to parse transcript correction JSON");
+      return { correctedTranscript: transcript, corrections: [] };
+    }
+
+    const corrections: TranscriptCorrection[] = [];
+    const correctedTranscript = [...transcript];
+
+    if (parsed.corrections && Array.isArray(parsed.corrections)) {
+      for (const fix of parsed.corrections) {
+        const idx = fix.segmentIndex;
+        if (idx >= 0 && idx < correctedTranscript.length && fix.correctedText) {
+          const original = correctedTranscript[idx].text;
+          if (original !== fix.correctedText) {
+            corrections.push({
+              segmentIndex: idx,
+              originalText: original,
+              correctedText: fix.correctedText,
+              reason: fix.reason || "spelling correction",
+            });
+            correctedTranscript[idx] = { ...correctedTranscript[idx], text: fix.correctedText };
+          }
+        }
+      }
+    }
+
+    if (corrections.length > 0) {
+      reviewLogger.info(`Pre-render transcript correction: fixed ${corrections.length} segment(s)`);
+      corrections.forEach(c => {
+        reviewLogger.info(`  [${c.segmentIndex}] "${c.originalText}" → "${c.correctedText}" (${c.reason})`);
+      });
+    } else {
+      reviewLogger.info("Pre-render transcript correction: no errors found");
+    }
+
+    return { correctedTranscript, corrections };
+  } catch (error) {
+    reviewLogger.error("Transcript correction failed:", error);
+    return { correctedTranscript: transcript, corrections: [] };
+  }
 }
 
 export interface EditFeedback {

@@ -291,7 +291,7 @@ export async function recoverInterruptedJobs(): Promise<void> {
     const orphanedProjects = allProjects.filter(p => {
       if (["awaiting_review", "completed", "failed", "cancelled"].includes(p.status)) return false;
       if (p.processingStage === "review_ready" || p.processingStage === "complete") return false;
-      if (p.status === "rendering" && p.outputPath) return false;
+      if (p.outputPath) return false;
       return (
         inProgressStatuses.includes(p.status) ||
         (p.processingStage &&

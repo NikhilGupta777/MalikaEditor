@@ -69,6 +69,7 @@ import {
   generateSmartEditPlan,
   detectFillerWords,
   performPreRenderReview,
+  correctTranscriptBeforeRender,
   performPostRenderSelfReview,
   shouldAutoCorrect,
   generateCorrectionPlan,
@@ -1392,7 +1393,19 @@ export async function registerRoutes(
         throw new Error("No edit plan found. Please run analysis first.");
       }
 
-      // Ensure editPlan has proper structure for applyEdits
+      try {
+        sendActivity("Checking captions for spelling and word errors...");
+        const { correctedTranscript, corrections } = await correctTranscriptBeforeRender(transcript);
+        if (corrections.length > 0) {
+          transcript = correctedTranscript;
+          sendActivity(`Fixed ${corrections.length} caption error(s) before rendering`);
+          routesLogger.info(`[Render] Pre-render transcript corrections: ${corrections.length}`);
+          await storage.updateVideoProject(id, { transcript: correctedTranscript as any });
+        }
+      } catch (corrErr) {
+        routesLogger.warn("[Render] Pre-render transcript correction failed (non-critical):", corrErr);
+      }
+
       const finalEditPlan = {
         ...editPlan,
         actions: editPlan.actions || [],
@@ -1435,9 +1448,9 @@ export async function registerRoutes(
       const editOptions: EditOptions = {
         addCaptions: storedOptions.addCaptions ?? true,
         addBroll: stockMedia.length > 0,
-        removeSilence: hasApprovedCuts, // Only remove silence if user approved cut actions
+        removeSilence: hasApprovedCuts,
         generateAiImages: stockMedia.some(m => m.type === 'ai_generated'),
-        addTransitions: storedOptions.addTransitions ?? false,
+        addTransitions: storedOptions.addTransitions ?? true,
         renderQuality,
       };
 

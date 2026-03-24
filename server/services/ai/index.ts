@@ -39,11 +39,13 @@ export {
 
 export {
   performPreRenderReview,
+  correctTranscriptBeforeRender,
   recordEditFeedback,
   getFeedbackSummary,
   getFeedbackContextForPlanning,
   clearFeedbackCache,
   type PreRenderReviewResult,
+  type TranscriptCorrection,
   type EditFeedback,
   type FeedbackSummary
 } from "./preRenderReview";

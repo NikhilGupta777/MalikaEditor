@@ -282,6 +282,7 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
+      if (res.statusCode === 304 && path.includes("/chat")) return;
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
         // Truncate large responses to avoid log spam (transcripts, etc.)

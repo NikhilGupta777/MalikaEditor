@@ -565,12 +565,13 @@ B-ROLL OPTIMIZATION RULES:
 5. B-roll may appear anywhere in the video — intro, outro, emotional moments, or continuously if that is the right creative choice
 6. Duration: YOU DECIDE what feels right for each clip. Minimum 0.5s (technical floor only).
 
-ANIMATION PRESET (choose per clip):
+ANIMATION PRESET (choose per clip — MUST VARY across clips, do NOT use the same preset for every clip):
 - "fade_only": Gentle hold with no movement. Best for text-heavy images, infographics, quotes, or calm moments.
 - "zoom_out": Starts close, reveals the full image. Best for landscapes, wide establishing shots, group photos.
 - "pan_left": Slow pan from right to left. Best for panoramic scenes, timelines, maps, cityscapes.
 - "pan_right": Slow pan from left to right. Best for panoramic scenes, before/after reveals.
 - "zoom_in": Starts wide, pushes in. Use SPARINGLY — only for dramatic emphasis or focusing on a detail.
+IMPORTANT: Use a MIX of presets. If you have 5+ clips, use at least 3 different presets. Variety keeps the viewer engaged.
 
 Respond in JSON format only (no markdown):
 {
@@ -650,6 +651,18 @@ function validateBrollSpacing(
       lastEnd = placement.start + clampedDuration;
     } else {
       aiLogger.debug(`Pass 3: Skipping B-roll at ${placement.start}s: noOverlap=${noOverlap}, beforeEnd=${beforeEnd} (lastEnd=${lastEnd}s, duration=${validDuration}s)`);
+    }
+  }
+
+  if (validated.length >= 3) {
+    const usedPresets = new Set(validated.map(v => v.animationPreset || "fade_only"));
+    const requiredUnique = Math.min(3, validated.length);
+    if (usedPresets.size < requiredUnique) {
+      const cyclePresets = ["zoom_out", "pan_left", "fade_only", "pan_right", "zoom_in"];
+      for (let i = 0; i < validated.length; i++) {
+        validated[i] = { ...validated[i], animationPreset: cyclePresets[i % cyclePresets.length] };
+      }
+      aiLogger.info(`Pass 3: Diversified animation presets (was ${usedPresets.size} unique → now cycled across ${validated.length} clips)`);
     }
   }
 
@@ -832,12 +845,13 @@ B-ROLL RULES:
 - NO PLACEHOLDERS: All search queries must be real, descriptive, and content-relevant.
 - JSON STRICTNESS: Respond ONLY with a valid JSON object. No markdown, no backticks, no explanatory text outside the JSON.
 
-ANIMATION PRESET (choose per B-roll clip):
+ANIMATION PRESET (choose per B-roll clip — MUST VARY across clips, do NOT use the same preset for every clip):
 - "fade_only": Gentle hold with no movement. Best for text-heavy images, infographics, quotes, or calm moments.
 - "zoom_out": Starts close, reveals the full image. Best for landscapes, wide establishing shots, group photos.
 - "pan_left": Slow pan from right to left. Best for panoramic scenes, timelines, maps, cityscapes.
 - "pan_right": Slow pan from left to right. Best for panoramic scenes, before/after reveals.
 - "zoom_in": Starts wide, pushes in. Use SPARINGLY — only for dramatic emphasis or focusing on a detail.
+IMPORTANT: Use a MIX of presets. If you have 5+ clips, use at least 3 different presets. Variety keeps the viewer engaged.
 
 Respond in JSON only (no markdown):
 {
@@ -1050,6 +1064,7 @@ REVIEW CHECKLIST:
 3. PACING - matches content type (${genre}) and user's prompt
 4. B-ROLL RELEVANCE - queries match transcript context
 5. CREATIVE FREEDOM - do not add artificial spacing or zone restrictions
+6. ANIMATION VARIETY - ensure insert_stock actions use a MIX of animationPreset values (zoom_out, pan_left, fade_only, pan_right, zoom_in). Do NOT give every clip the same preset.
 
 Generate the FINAL reviewed and refined edit plan.
 

@@ -9,6 +9,7 @@ import axios from "axios";
 import type { VideoAnalysis, FrameAnalysis, EditPlan, EditAction, TranscriptSegment, StockMediaItem, SemanticAnalysis } from "@shared/schema";
 import { createLogger } from "../utils/logger";
 import { AI_CONFIG } from "../config/ai";
+import { getGeminiClient } from "./ai/clients";
 import { fileStorage, generateFileKey } from "./fileStorage";
 
 /** Round a number to 3 decimal places for use in FFmpeg filter strings.
@@ -671,6 +672,88 @@ function escapeFFmpegText(text: string): string {
     .replace(/:/g, "\\:")
     .replace(/\[/g, "\\[")
     .replace(/\]/g, "\\]");
+}
+
+// AI-powered caption word correction — fixes individual misheard words without replacing the whole caption
+async function correctCaptionWords(
+  captions: CaptionWithWords[]
+): Promise<CaptionWithWords[]> {
+  if (captions.length === 0) return captions;
+
+  try {
+    const gemini = getGeminiClient();
+    const model = AI_CONFIG.models.editPlanning;
+
+    const captionTexts = captions.map((c, i) => `[${i}] "${c.text}"`).join("\n");
+
+    const prompt = `You are a transcript proofreader. Below are caption segments from a video transcription. 
+Some words may have been misheard by the speech-to-text system (e.g. similar-sounding words swapped, partial words, garbled text).
+
+CAPTIONS:
+${captionTexts}
+
+TASK: For each caption that has a mistake, return ONLY the corrections needed. Do NOT change words that are correct. Only fix clearly wrong words.
+
+Return a JSON object:
+{
+  "corrections": [
+    {"index": 0, "original": "wrong word", "corrected": "right word"},
+    ...
+  ]
+}
+
+If all captions look correct, return {"corrections": []}.
+IMPORTANT: Only fix obvious transcription errors. Do NOT rephrase, rewrite, or add words. Keep the speaker's actual words.`;
+
+    const result = await gemini.models.generateContent({
+      model,
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: { responseMimeType: "application/json" }
+    });
+
+    const responseText = result.text || "{}";
+    let parsed: any;
+    try {
+      parsed = JSON.parse(responseText);
+    } catch {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { corrections: [] };
+    }
+
+    const corrections: Array<{ index: number; original: string; corrected: string }> = parsed.corrections || [];
+    if (corrections.length === 0) {
+      videoLogger.info(`[Caption Correction] All ${captions.length} captions look correct — no changes needed`);
+      return captions;
+    }
+
+    videoLogger.info(`[Caption Correction] Applying ${corrections.length} word corrections`);
+
+    const corrected = captions.map((cap, idx) => {
+      const fixes = corrections.filter(c => c.index === idx);
+      if (fixes.length === 0) return cap;
+
+      let newText = cap.text;
+      let newWords = cap.words ? [...cap.words] : undefined;
+
+      for (const fix of fixes) {
+        if (!fix.original || !fix.corrected) continue;
+        videoLogger.debug(`[Caption Correction] [${idx}] "${fix.original}" → "${fix.corrected}"`);
+        newText = newText.split(fix.original).join(fix.corrected);
+        if (newWords) {
+          newWords = newWords.map(w =>
+            w.word === fix.original ? { ...w, word: fix.corrected } : w
+          );
+        }
+      }
+
+      return { ...cap, text: newText, words: newWords };
+    });
+
+    return corrected;
+  } catch (err) {
+    videoLogger.warn(`[Caption Correction] AI correction failed, using original captions:`, err);
+    return captions;
+  }
 }
 
 // Word timing type for karaoke-style captions
@@ -2837,6 +2920,16 @@ async function applyEditsInternal(
     videoLogger.info(`Mapped ${adjustedCaptions.length} captions to output timeline (from ${transcript.length} + ${captionActions.length} sources)`);
   } else {
     videoLogger.info(`Captions disabled or skipped. addCaptions=${options.addCaptions}`);
+  }
+
+  // Apply AI word-level correction to fix misheard words before burning captions
+  if (adjustedCaptions.length > 0) {
+    try {
+      const correctedCaptions = await correctCaptionWords(adjustedCaptions);
+      adjustedCaptions.splice(0, adjustedCaptions.length, ...correctedCaptions);
+    } catch (corrErr) {
+      videoLogger.warn(`[Caption Correction] Skipping AI correction:`, corrErr);
+    }
   }
 
   // Apply captions if any - use ASS format for karaoke-style highlighting

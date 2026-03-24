@@ -108,13 +108,11 @@ async function fetchThumbnailAsBase64(url: string): Promise<{ base64: string; mi
   }
 }
 
-// Analyze a single thumbnail using Gemini Vision
 async function analyzeThumbnailWithVision(
   thumbnailUrl: string,
   query: string,
   mediaType: "image" | "video"
 ): Promise<string> {
-  // Check cache first
   if (visualAnalysisCache.has(thumbnailUrl)) {
     return visualAnalysisCache.get(thumbnailUrl)!;
   }
@@ -133,7 +131,7 @@ Be specific about what you SEE, not what the search query "${query}" suggests.
 Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
 
     const result = await gemini.models.generateContent({
-      model: AI_CONFIG.models.mediaVision, // Use vision-capable model for thumbnail analysis
+      model: AI_CONFIG.models.mediaVision,
       contents: [{
         role: "user",
         parts: [
@@ -144,15 +142,89 @@ Format: "[Subject] [action/state] in [setting]. [Mood/quality note]"`;
     });
 
     const description = result.text?.trim() || "Visual content analyzed";
-
-    // Cache the result with LRU eviction
     addToCacheWithEviction(thumbnailUrl, description);
-
     return description;
   } catch (error) {
     selectorLogger.debug(`Vision analysis failed for: ${thumbnailUrl.slice(0, 50)}...`);
     return `Stock ${mediaType} matching "${query}"`;
   }
+}
+
+const BATCH_VISION_SIZE = 5;
+
+async function analyzeThumbnailBatchWithVision(
+  candidates: { url: string; query: string; mediaType: "image" | "video"; id: string }[]
+): Promise<Map<string, string>> {
+  const results = new Map<string, string>();
+  const uncached = candidates.filter(c => {
+    if (visualAnalysisCache.has(c.url)) {
+      results.set(c.id, visualAnalysisCache.get(c.url)!);
+      return false;
+    }
+    return true;
+  });
+
+  if (uncached.length === 0) return results;
+
+  const gemini = getGeminiClient();
+
+  for (let i = 0; i < uncached.length; i += BATCH_VISION_SIZE) {
+    const batch = uncached.slice(i, i + BATCH_VISION_SIZE);
+    const thumbnails = await Promise.all(
+      batch.map(async (c) => ({ ...c, thumbnail: await fetchThumbnailAsBase64(c.url) }))
+    );
+
+    const validThumbnails = thumbnails.filter(t => t.thumbnail !== null);
+    if (validThumbnails.length === 0) {
+      batch.forEach(c => results.set(c.id, `Stock ${c.mediaType} matching "${c.query}"`));
+      continue;
+    }
+
+    try {
+      const parts: any[] = [
+        { text: `Describe each of the following ${validThumbnails.length} media items in 1-2 sentences each.\nFor each, focus on: main subjects, actions, setting, mood, colors, and quality.\nBe specific about what you SEE.\n\nRespond with a JSON array of descriptions in order, e.g. ["description1", "description2", ...]` }
+      ];
+
+      validThumbnails.forEach((t, idx) => {
+        parts.push({ text: `\n[Image ${idx + 1}] (${t.mediaType}, query: "${t.query}"):` });
+        parts.push({ inlineData: { mimeType: t.thumbnail!.mimeType, data: t.thumbnail!.base64 } });
+      });
+
+      const result = await gemini.models.generateContent({
+        model: AI_CONFIG.models.mediaVision,
+        contents: [{ role: "user", parts }],
+      });
+
+      const responseText = result.text?.trim() || "";
+      let descriptions: string[] = [];
+
+      try {
+        const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          descriptions = JSON.parse(jsonMatch[0]);
+        }
+      } catch {
+        descriptions = responseText.split(/\n+/).filter(l => l.trim().length > 10);
+      }
+
+      validThumbnails.forEach((t, idx) => {
+        const desc = descriptions[idx] || `Stock ${t.mediaType} matching "${t.query}"`;
+        addToCacheWithEviction(t.url, desc);
+        results.set(t.id, desc);
+      });
+
+      const invalidFromBatch = batch.filter(c => !validThumbnails.find(v => v.id === c.id));
+      invalidFromBatch.forEach(c => results.set(c.id, `Stock ${c.mediaType} matching "${c.query}"`));
+    } catch (error) {
+      selectorLogger.debug(`Batch vision analysis failed, falling back to individual`);
+      for (const t of batch) {
+        const desc = await analyzeThumbnailWithVision(t.url, t.query, t.mediaType);
+        results.set(t.id, desc);
+      }
+    }
+  }
+
+  return results;
 }
 
 // Pre-filter candidates using metadata before expensive Vision API calls
@@ -227,48 +299,38 @@ function preFilterCandidatesByMetadata(
   return filtered;
 }
 
-// Batch analyze thumbnails with concurrency control
 async function analyzeMediaThumbnails(
   candidates: MediaCandidate[],
   brollWindows?: BrollWindow[]
 ): Promise<Map<string, string>> {
-  const results = new Map<string, string>();
   let stockCandidates = candidates.filter(c => c.source === "stock" && c.thumbnailUrl);
 
   if (stockCandidates.length === 0) {
-    return results;
+    return new Map();
   }
 
-  // Apply metadata-based pre-filtering to reduce Vision API calls
   if (brollWindows && stockCandidates.length > MAX_VISION_CANDIDATES) {
     stockCandidates = preFilterCandidatesByMetadata(stockCandidates, brollWindows, MAX_VISION_CANDIDATES);
   }
 
-  selectorLogger.info(`Analyzing ${stockCandidates.length} stock media thumbnails with Gemini Vision...`);
+  selectorLogger.info(`Analyzing ${stockCandidates.length} stock media thumbnails with batched Gemini Vision...`);
   const startTime = Date.now();
 
-  // Process in batches for concurrency control
-  for (let i = 0; i < stockCandidates.length; i += VISUAL_ANALYSIS_CONCURRENCY) {
-    const batch = stockCandidates.slice(i, i + VISUAL_ANALYSIS_CONCURRENCY);
+  const batchInput = stockCandidates.map(c => ({
+    id: c.id,
+    url: c.thumbnailUrl!,
+    query: c.query,
+    mediaType: c.type as "image" | "video",
+  }));
 
-    const batchPromises = batch.map(async (candidate) => {
-      const description = await analyzeThumbnailWithVision(
-        candidate.thumbnailUrl!,
-        candidate.query,
-        candidate.type as "image" | "video"
-      );
-      results.set(candidate.id, description);
-    });
-
-    await Promise.all(batchPromises);
-  }
+  const results = await analyzeThumbnailBatchWithVision(batchInput);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   const failedCount = stockCandidates.length - results.size;
   if (failedCount > 0) {
-    selectorLogger.warn(`Visual analysis: ${failedCount}/${stockCandidates.length} thumbnails failed silently — they will be selected without visual context`);
+    selectorLogger.warn(`Visual analysis: ${failedCount}/${stockCandidates.length} thumbnails failed — they will be selected without visual context`);
   }
-  selectorLogger.info(`Visual analysis complete: ${results.size}/${stockCandidates.length} thumbnails analyzed in ${elapsed}s`);
+  selectorLogger.info(`Visual analysis complete: ${results.size}/${stockCandidates.length} thumbnails analyzed in ${elapsed}s (batched, ~${Math.ceil(stockCandidates.length / BATCH_VISION_SIZE)} API calls)`);
 
   return results;
 }
@@ -616,25 +678,16 @@ AVAILABLE MEDIA FROM MULTIPLE SOURCES (use the number to select):
 ${candidateDescriptions}
 
 SELECTION CRITERIA (use VISUAL descriptions to make informed decisions):
-1. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed? Don't trust just the query.
+1. VISUAL MATCH - Read the VISUAL description carefully. Does what you SEE match what's needed?
 2. CONTENT RELEVANCE - How well does the ACTUAL visual content match the B-roll window's context?
-3. VISUAL QUALITY - Based on the VISUAL description, is it professional, well-lit, and suitable?
-4. MOTION vs STATIC - **CRITICAL**: For content involving movement, action, nature phenomena (floods, tornadoes, fire, water, crowds, traffic, etc.), STRONGLY PREFER VIDEO over static images. Motion content needs motion!
+3. VISUAL QUALITY - Is it professional, well-lit, and suitable for the video's tone?
+4. MEDIA TYPE - Consider whether video (motion) or a still image works better for each specific moment. Some moments benefit from motion, others from a striking still image. Use your editorial judgment.
 5. TIMING FIT - For videos, does the duration match the window? For images, is it suitable for static display?
 6. NARRATIVE FLOW - Does this media enhance the story based on what it ACTUALLY shows?
 
-MEDIA SOURCES AVAILABLE:
-- AI-IMAGE (${aiImageCount} available): Custom-generated visuals with exact prompts for this video's content
-- PEXELS-VIDEO: Professional motion footage
-- FREEPIK-VIDEO: Premium motion footage
-- PEXELS-PHOTO/FREEPIK-PHOTO: Professional still images
-
-CRITICAL RULE — NO SOURCE BIAS: Do NOT prefer or avoid any source (AI-IMAGE vs stock) based on where it comes from.
-Choose purely on CONTENT QUALITY and VISUAL MATCH for each window.
-The only meaningful distinction is VIDEO (has motion) vs STILL IMAGE (no motion):
-- For content that naturally involves movement → VIDEO generally fits better (check the VISUAL description)
-- For concepts, objects, or scenes where stillness works → any still image source is equally valid
-Judge each candidate on what it actually shows (read the VISUAL descriptions), not on whether it is AI-generated or stock.
+Choose the BEST asset for each window based purely on visual quality, content match, and editorial fit.
+AI-generated images, stock videos, and stock photos are all equally valid — pick whichever genuinely fits best.
+Judge each candidate on what it actually shows (read the VISUAL descriptions), not on its source.
 
 For windows >6 seconds, you may select 2-3 numbers that will be staggered.
 
@@ -924,20 +977,14 @@ function fallbackSelectForWindow(
     if (window.priority === "high") score += 3;
     else if (window.priority === "medium") score += 1;
 
-    // Motion-aware media type preference (no source bias — AI-generated vs stock treated equally)
     const isMotionQuery = detectMotionContent(window.suggestedQuery);
 
     if (isMotionQuery) {
-      // Motion content benefits from video regardless of source
-      if (c.type === "video") {
-        score += 20; // Videos convey motion; AI-generated or stock are equal here
-      } else {
-        score += 5; // Still images (any source) are less ideal for motion content
-      }
+      if (c.type === "video") score += 10;
+      else score += 6;
     } else {
-      // For static/conceptual content all still-image sources are equally valid
-      if (c.type === "video") score += 8; // Videos can still work for non-motion
-      else score += 8; // Still images (AI or stock photo) equally valued
+      if (c.type === "video") score += 7;
+      else score += 8;
     }
 
     // Duration-appropriate media selection

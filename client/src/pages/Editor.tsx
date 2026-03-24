@@ -150,8 +150,8 @@ export default function Editor() {
     addCaptions: true,
     addBroll: true,
     removeSilence: true,
-    generateAiImages: false,
-    addTransitions: false,
+    generateAiImages: true,
+    addTransitions: true,
     qualityMode: "balanced",
   });
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
@@ -381,8 +381,8 @@ export default function Editor() {
             addCaptions: String(storedOptions?.addCaptions ?? true),
             addBroll: String(storedOptions?.addBroll ?? true),
             removeSilence: String(storedOptions?.removeSilence ?? true),
-            generateAiImages: String(storedOptions?.generateAiImages ?? false),
-            addTransitions: String(storedOptions?.addTransitions ?? false),
+            generateAiImages: String(storedOptions?.generateAiImages ?? true),
+            addTransitions: String(storedOptions?.addTransitions ?? true),
             reconnect: "true",
           });
 

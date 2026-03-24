@@ -1534,7 +1534,8 @@ export async function registerRoutes(
                   correctionPlan,
                   currentEditPlan,
                   currentStockMedia,
-                  lastSelfReview
+                  lastSelfReview,
+                  transcript
                 );
 
                 // Send correction update to chat companion with actual correction count

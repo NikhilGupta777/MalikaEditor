@@ -19,7 +19,6 @@ import {
   safeJsonParse,
 } from "./editPlanningPasses";
 import { getFeedbackContextForPlanning } from "./preRenderReview";
-import { getLearningContext, retrievePatterns, applyLearnedPreferences } from "./learningSystem";
 import { type ArbitrationResult } from "./arbitration";
 import type {
   VideoAnalysis,
@@ -730,16 +729,13 @@ export async function generateSmartEditPlan(
     // Identify actions flagged for replacement
     const flaggedActions = (arbitrationResult.correctionPlan || []).filter(a => (a as any).needsReplacement);
 
-    // Apply learned preferences to the correction logic
-    const learningCtx = await getLearningContext(analysis, prompt);
-
     const correctedPlan = await executePass5CorrectionPass(
       analysis,
       transcript,
       previousPlan,
       arbitrationResult.justification,
       flaggedActions,
-      learningCtx
+      null
     );
 
     return correctedPlan;
@@ -761,16 +757,7 @@ export async function generateSmartEditPlan(
     }
   }
 
-  // PHASE 4: Apply learned preferences from previous successful edits
-  const learningContext = await getLearningContext(analysis, prompt);
-  if (learningContext) {
-    aiLogger.info("[Learning] Applying learned preferences from successful past edits");
-  }
-  const learnedPreferences = await applyLearnedPreferences(analysis, prompt);
-  const relevantPatterns = await retrievePatterns(["cut", "transition", "broll", "pacing"], analysis, prompt, 5);
-  if (relevantPatterns.length > 0) {
-    aiLogger.info(`[Learning] Found ${relevantPatterns.length} relevant patterns from past edits`);
-  }
+  const learningContext: string | null = null;
 
   let structuredPlan: StructuredPlan;
   let qualityMap: QualityMap;

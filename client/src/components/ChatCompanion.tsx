@@ -51,9 +51,9 @@ export function ChatCompanion({ projectId, className, projectStatus, onReEditSta
       return response.json();
     },
     enabled: !!projectId && isExpanded,
-    refetchInterval: isExpanded ? 3000 : false,
+    refetchInterval: isExpanded ? (projectStatus === "completed" ? 10000 : 3000) : false,
     refetchIntervalInBackground: false,
-    staleTime: 1500,
+    staleTime: projectStatus === "completed" ? 5000 : 1500,
   });
 
   const messages = messagesData?.messages || [];

@@ -548,7 +548,8 @@ export function applyCorrectionPlan(
   correctionPlan: CorrectionPlan,
   editPlan: EditPlan,
   stockMedia: StockMediaItem[],
-  selfReviewResult: SelfReviewResult
+  selfReviewResult: SelfReviewResult,
+  transcript?: TranscriptSegment[]
 ): AppliedCorrections {
   selfReviewLogger.info("═══════════════════════════════════════════════════════");
   selfReviewLogger.info("APPLYING AUTO-CORRECTIONS");
@@ -612,8 +613,33 @@ export function applyCorrectionPlan(
         break;
 
       case "adjust_caption":
-        correctionsSummary.push("Caption adjustment queued (requires re-render)");
-        appliedCount++;
+        if (action.targetTimestamp && action.description && transcript) {
+          const targetTime = action.targetTimestamp;
+          const matchingSegments = transcript.filter(seg =>
+            seg.start !== undefined && seg.end !== undefined &&
+            targetTime >= seg.start && targetTime <= seg.end
+          );
+          if (matchingSegments.length > 0) {
+            for (const seg of matchingSegments) {
+              const oldText = seg.text;
+              const fixMatch = action.description.match(/["'](.+?)["']\s*(?:→|->|to)\s*["'](.+?)["']/);
+              if (fixMatch) {
+                const [, wrong, correct] = fixMatch;
+                if (seg.text.includes(wrong)) {
+                  seg.text = seg.text.replace(wrong, correct);
+                  correctionsSummary.push(`Caption fixed at ${targetTime}s: "${wrong}" → "${correct}"`);
+                  appliedCount++;
+                }
+              } else if (oldText !== action.description && action.description.length > 0) {
+                seg.text = action.description;
+                correctionsSummary.push(`Caption replaced at ${targetTime}s`);
+                appliedCount++;
+              }
+            }
+          } else {
+            correctionsSummary.push(`Caption fix skipped: no segment at ${targetTime}s`);
+          }
+        }
         break;
     }
   }

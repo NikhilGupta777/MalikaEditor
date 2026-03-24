@@ -43,8 +43,6 @@ export function VideoPreview({
   const [error, setError] = useState<string | null>(null);
   const [isSeeking, setIsSeeking] = useState(false);
 
-  const currentTime = externalTime !== undefined ? externalTime : internalTime;
-
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -133,10 +131,10 @@ export function VideoPreview({
       setInternalTime(0);
       setDuration(0);
       setIsPlaying(false);
-      
+
       const video = videoRef.current;
       video.load();
-      
+
       if (video.readyState >= 2) {
         setIsLoaded(true);
         if (video.duration && isFinite(video.duration)) {
@@ -144,18 +142,6 @@ export function VideoPreview({
           onDurationChange?.(video.duration);
         }
       }
-      
-      const loadTimeout = setTimeout(() => {
-        if (video.readyState >= 1) {
-          setIsLoaded(true);
-          if (video.duration && isFinite(video.duration)) {
-            setDuration(video.duration);
-            onDurationChange?.(video.duration);
-          }
-        }
-      }, 500);
-      
-      return () => clearTimeout(loadTimeout);
     }
   }, [src, onDurationChange]);
 
@@ -350,7 +336,7 @@ export function VideoPreview({
       >
         <div className="mb-3">
           <Slider
-            value={[currentTime]}
+            value={[internalTime]}
             min={0}
             max={duration || 100}
             step={0.1}
@@ -422,7 +408,7 @@ export function VideoPreview({
 
           <div className="flex items-center gap-4">
             <span className="text-white text-sm font-mono">
-              {formatTime(currentTime)} / {formatTime(duration)}
+              {formatTime(internalTime)} / {formatTime(duration)}
             </span>
             <Button
               variant="ghost"
